@@ -1264,9 +1264,10 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 // candidate set across repeat calls and across backends [F0930-17]. Hand-rolled
 // (not sqlc) like getTaskByID/TasksFiltered above, over the same table.
 //
-// prefix is assumed pre-validated by the caller (task_id_resolver.go) against
-// ^[0-9a-f]{8,}$ — hex-only, so no LIKE-escaping is needed here (unlike Q
-// above, prefix can never contain a % or _ wildcard character).
+// prefix is the caller's own canonicalized standard id-text prefix (hex
+// digits and dashes) — neither character is a LIKE wildcard, so no
+// LIKE-escaping is needed here (unlike Q above, which can contain a
+// caller-supplied % or _).
 func (s *Store) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]TaskIDTitle, error) {
 	const q = `SELECT id, title FROM tasks
 		WHERE id::text LIKE $1 || '%' AND ($2::uuid IS NULL OR workspace_id = $2)

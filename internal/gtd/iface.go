@@ -187,10 +187,12 @@ type StoreIface interface {
 	// FindTaskIDsByPrefix returns up to limit tasks whose id (lowercase hex,
 	// no dashes stripped) starts with prefix, scoped to the configured
 	// workspace, ordered by id for deterministic candidate sets across
-	// backends and across repeat calls [F0930-17]. prefix is assumed
-	// pre-validated by the caller (internal/mcp/task_id_resolver.go) against
-	// ^[0-9a-f]{8,}$ — this method does no format validation of its own and
-	// never LIKE-escapes prefix (hex-only input has no wildcard characters).
+	// backends and across repeat calls [F0930-17]. prefix is the caller's
+	// own canonicalized standard-id-text prefix (hex digits and dashes at
+	// the standard UUID positions, produced by
+	// internal/mcp/task_id_resolver.go's canonicalTaskIDPrefix) — this
+	// method does no format validation of its own and never LIKE-escapes
+	// prefix (neither hex digits nor dashes are LIKE wildcard characters).
 	// Empty result (not an error) when no task matches.
 	FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]TaskIDTitle, error)
 	UpdateProjectStatus(ctx context.Context, id uuid.UUID, status ProjectStatus) (*db.Project, error)

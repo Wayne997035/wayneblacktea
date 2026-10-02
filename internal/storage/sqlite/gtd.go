@@ -1107,8 +1107,9 @@ func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, err
 // migrations/sqlite/000012_sqlite_baseline.up.sql), so no cast is needed
 // before the LIKE, unlike the Postgres twin's id::text.
 //
-// prefix is assumed pre-validated by the caller against ^[0-9a-f]{8,}$ — no
-// LIKE-escaping needed (hex-only input has no wildcard characters).
+// prefix is the caller's own canonicalized standard id-text prefix (hex
+// digits and dashes) — neither character is a LIKE wildcard, so no
+// LIKE-escaping is needed here.
 func (s *GTDStore) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]gtd.TaskIDTitle, error) {
 	const q = `SELECT id, title FROM tasks
 		WHERE id LIKE ?1 || '%' AND (?2 IS NULL OR workspace_id = ?2)

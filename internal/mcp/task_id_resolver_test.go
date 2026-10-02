@@ -16,6 +16,45 @@ func prefixOf(id uuid.UUID) string {
 	return strings.ReplaceAll(id.String(), "-", "")[:8]
 }
 
+// prefixOfN returns id's first n raw hex chars (no dashes), n <= 32 — used
+// for SEC-197-01's boundary cases where the exact prefix length (crossing a
+// dash position or not) is the thing under test, not just "any valid prefix"
+// the way prefixOf's fixed 8 chars is.
+func prefixOfN(id uuid.UUID, n int) string {
+	return strings.ReplaceAll(id.String(), "-", "")[:n]
+}
+
+// TestCanonicalTaskIDPrefix is SEC-197-01's unit-level acceptance: every hex
+// length canonicalTaskIDPrefix dash-inserts differently must land the dash
+// at the correct standard-UUID-text position. The 9/13/17/21 cases are "one
+// char past a dash boundary" (dash must appear immediately before the last
+// char); the 8/12/16/20 cases are "exactly at a dash boundary" (no dash yet
+// — the boundary hasn't been crossed); 31 is the regex's own upper bound.
+func TestCanonicalTaskIDPrefix(t *testing.T) {
+	t.Parallel()
+	const hexSrc = "0123456789abcdef0123456789abcde" // 31 raw hex chars
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{8, "01234567"},
+		{9, "01234567-8"},
+		{12, "01234567-89ab"},
+		{13, "01234567-89ab-c"},
+		{16, "01234567-89ab-cdef"},
+		{17, "01234567-89ab-cdef-0"},
+		{20, "01234567-89ab-cdef-0123"},
+		{21, "01234567-89ab-cdef-0123-4"},
+		{31, "01234567-89ab-cdef-0123-456789abcde"},
+	}
+	for _, tc := range cases {
+		got := canonicalTaskIDPrefix(hexSrc[:tc.n])
+		if got != tc.want {
+			t.Errorf("canonicalTaskIDPrefix(%d chars) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
+
 // fakeAmbiguousGTDStore embeds noopGTDStore (tools_contextpack_fakes_test.go,
 // same package) so every gtd.StoreIface method it doesn't override is a
 // harmless no-op, and overrides only FindTaskIDsByPrefix to deterministically
@@ -367,4 +406,89 @@ func TestSeamTaskIDPrefix_MutationVisibleToDownstreamMiddleware(t *testing.T) {
 			"a downstream middleware reading req.GetArguments() on this request would still see the raw prefix",
 			got, id.String())
 	}
+}
+
+// TestSeamTaskIDPrefix_NineAndThirteenCharPrefix is SEC-197-01's seam-layer
+// acceptance: a 9-char prefix crosses the first dash position (UUID text's
+// 9th char is always '-') and a 13-char prefix crosses the second — both are
+// exactly the lengths that produced a guaranteed-wrong, un-dashed LIKE
+// pattern before canonicalTaskIDPrefix existed. Checks both resolution
+// (get_task succeeds) and the args-mutation contract (same assertion style
+// as TestSeamTaskIDPrefix_MutationVisibleToDownstreamMiddleware above).
+func TestSeamTaskIDPrefix_NineAndThirteenCharPrefix(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		n    int
+	}{
+		{"9-char prefix (crosses first dash)", 9},
+		{"13-char prefix (crosses second dash)", 13},
+	}
+	for _, tc := range cases {
+		n := tc.n
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newTestWorkSessionServer(t)
+			id := seedTask(t, s)
+
+			args := map[string]any{"task_id": prefixOfN(id, n)}
+			req := mcpmsg.CallToolRequest{}
+			req.Params.Arguments = args
+
+			res, err := seam(s, "get_task", s.handleGetTask)(context.Background(), req)
+			if err != nil {
+				t.Fatalf("get_task error: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("%d-char prefix call should succeed, got: %s", n, resultText(res))
+			}
+			if got, _ := args["task_id"].(string); got != id.String() {
+				t.Errorf("args[task_id] after seam validation = %q, want resolved full UUID %q", got, id.String())
+			}
+		})
+	}
+}
+
+// TestSeamTaskIDPrefix_LengthBoundaries is SEC-197-01's upper-bound
+// acceptance: 31 chars is taskIDPrefixRe's own max (still a prefix lookup);
+// 32 chars is a complete dashless UUID literal, caught by uuid.Parse before
+// the prefix regex ever runs; 33 chars matches neither form and must be
+// rejected the same way any other malformed task_id is.
+func TestSeamTaskIDPrefix_LengthBoundaries(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+
+	t.Run("31-char prefix resolves via FindTaskIDsByPrefix", func(t *testing.T) {
+		t.Parallel()
+		id := seedTask(t, s)
+		r := callGetTask(t, s, map[string]any{"task_id": prefixOfN(id, 31)})
+		if r.IsError {
+			t.Fatalf("31-char prefix call should succeed, got: %s", resultText(r))
+		}
+		if !strings.Contains(resultText(r), id.String()) {
+			t.Errorf("response should contain resolved full UUID %s, got: %s", id, resultText(r))
+		}
+	})
+
+	t.Run("32-char dashless hex parses directly as a full UUID, no prefix query", func(t *testing.T) {
+		t.Parallel()
+		id := seedTask(t, s)
+		r := callGetTask(t, s, map[string]any{"task_id": prefixOfN(id, 32)})
+		if r.IsError {
+			t.Fatalf("32-char dashless UUID call should succeed, got: %s", resultText(r))
+		}
+		if !strings.Contains(resultText(r), id.String()) {
+			t.Errorf("response should contain resolved full UUID %s, got: %s", id, resultText(r))
+		}
+	})
+
+	t.Run("33-char hex is invalid, matches neither a full UUID nor a bounded prefix", func(t *testing.T) {
+		t.Parallel()
+		id := seedTask(t, s)
+		tooLong := prefixOfN(id, 32) + "0"
+		r := callGetTask(t, s, map[string]any{"task_id": tooLong})
+		if !r.IsError || resultText(r) != errMsgInvalidTaskIDUUID {
+			t.Errorf("got %q, want %q", resultText(r), errMsgInvalidTaskIDUUID)
+		}
+	})
 }

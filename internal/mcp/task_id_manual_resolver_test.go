@@ -233,68 +233,109 @@ func TestRecordOutcome_TaskIDPrefix_OnlyForTaskEntity(t *testing.T) {
 // TestSetSessionHandoff_RefTaskIDPrefix covers F0930-19's third manual call
 // site: per-element resolution inside next_actions, with the index-prefixed
 // error convention parseAndValidateNextActions already uses for every other
-// per-element validation failure.
+// per-element validation failure. Cases are their own top-level functions
+// (refTaskIDPrefixCase*) so gocyclo scores each separately from this
+// dispatcher, same pattern as TestLogDecision_TaskIDPrefix above.
 func TestSetSessionHandoff_RefTaskIDPrefix(t *testing.T) {
 	t.Parallel()
+	cases := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{"positive: unique prefix resolves to the full UUID in the stored handoff", refTaskIDPrefixCaseUniquePrefix},
+		{"positive: 9-char prefix (crosses the first dash, SEC-197-01) resolves to the full UUID", refTaskIDPrefixCaseNineChar},
+		{"negative: index 1's ambiguous prefix fails with a next_actions[1]: prefix, index 0 unaffected", refTaskIDPrefixCaseAmbiguous},
+	}
+	for _, tc := range cases {
+		run := tc.run
+		t.Run(tc.name, func(t *testing.T) { t.Parallel(); run(t) })
+	}
+}
 
-	t.Run("positive: unique prefix resolves to the full UUID in the stored handoff", func(t *testing.T) {
-		t.Parallel()
-		s := newTestWorkSessionServer(t)
-		id := seedTask(t, s)
-		raw, err := json.Marshal([]session.NextAction{
-			{Step: 1, Title: "step one", RefTaskID: strPtr(prefixOf(id))},
-		})
-		if err != nil {
-			t.Fatalf("marshal next_actions: %v", err)
-		}
-		r := callSetSessionHandoff(t, s, map[string]any{
-			"intent": "continue work", "next_actions": string(raw),
-		})
-		if r.IsError {
-			t.Fatalf("prefix call should succeed, got: %s", resultText(r))
-		}
-		var view struct {
-			NextActions []session.NextAction `json:"next_actions"`
-		}
-		if err := json.Unmarshal([]byte(resultText(r)), &view); err != nil {
-			t.Fatalf("unmarshal response: %v\nraw=%s", err, resultText(r))
-		}
-		if len(view.NextActions) != 1 || view.NextActions[0].RefTaskID == nil {
-			t.Fatalf("expected 1 next_action with a resolved ref_task_id, got: %+v", view.NextActions)
-		}
-		if *view.NextActions[0].RefTaskID != id.String() {
-			t.Errorf("ref_task_id = %q, want resolved full UUID %q", *view.NextActions[0].RefTaskID, id.String())
-		}
+func refTaskIDPrefixCaseUniquePrefix(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	raw, err := json.Marshal([]session.NextAction{
+		{Step: 1, Title: "step one", RefTaskID: strPtr(prefixOf(id))},
 	})
+	if err != nil {
+		t.Fatalf("marshal next_actions: %v", err)
+	}
+	r := callSetSessionHandoff(t, s, map[string]any{
+		"intent": "continue work", "next_actions": string(raw),
+	})
+	if r.IsError {
+		t.Fatalf("prefix call should succeed, got: %s", resultText(r))
+	}
+	var view struct {
+		NextActions []session.NextAction `json:"next_actions"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &view); err != nil {
+		t.Fatalf("unmarshal response: %v\nraw=%s", err, resultText(r))
+	}
+	if len(view.NextActions) != 1 || view.NextActions[0].RefTaskID == nil {
+		t.Fatalf("expected 1 next_action with a resolved ref_task_id, got: %+v", view.NextActions)
+	}
+	if *view.NextActions[0].RefTaskID != id.String() {
+		t.Errorf("ref_task_id = %q, want resolved full UUID %q", *view.NextActions[0].RefTaskID, id.String())
+	}
+}
 
-	t.Run("negative: index 1's ambiguous prefix fails with a next_actions[1]: prefix, index 0 unaffected", func(t *testing.T) {
-		t.Parallel()
-		s := newTestWorkSessionServer(t)
-		idA, idB := uuid.New(), uuid.New()
-		s.gtd = fakeByPrefixGTDStore{
-			responses: map[string][]gtd.TaskIDTitle{
-				"aaaaaaaa": {{ID: idA, Title: "task A"}},
-				"bbbbbbbb": {{ID: idA, Title: "task A"}, {ID: idB, Title: "task B"}},
-			},
-		}
-		raw, err := json.Marshal([]session.NextAction{
-			{Step: 1, Title: "step one", RefTaskID: strPtr("aaaaaaaa")},
-			{Step: 2, Title: "step two", RefTaskID: strPtr("bbbbbbbb")},
-		})
-		if err != nil {
-			t.Fatalf("marshal next_actions: %v", err)
-		}
-		r := callSetSessionHandoff(t, s, map[string]any{
-			"intent": "continue work", "next_actions": string(raw),
-		})
-		if !r.IsError {
-			t.Fatalf("ambiguous ref_task_id at index 1 must error, got success: %s", resultText(r))
-		}
-		if !strings.HasPrefix(resultText(r), "next_actions[1]: ") {
-			t.Errorf("error should be prefixed next_actions[1]:, got: %s", resultText(r))
-		}
-		if !strings.Contains(resultText(r), "ambiguous") {
-			t.Errorf("error should mention ambiguity, got: %s", resultText(r))
-		}
+func refTaskIDPrefixCaseNineChar(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	id := seedTask(t, s)
+	raw, err := json.Marshal([]session.NextAction{
+		{Step: 1, Title: "step one", RefTaskID: strPtr(prefixOfN(id, 9))},
 	})
+	if err != nil {
+		t.Fatalf("marshal next_actions: %v", err)
+	}
+	r := callSetSessionHandoff(t, s, map[string]any{
+		"intent": "continue work", "next_actions": string(raw),
+	})
+	if r.IsError {
+		t.Fatalf("9-char prefix call should succeed, got: %s", resultText(r))
+	}
+	var view struct {
+		NextActions []session.NextAction `json:"next_actions"`
+	}
+	if err := json.Unmarshal([]byte(resultText(r)), &view); err != nil {
+		t.Fatalf("unmarshal response: %v\nraw=%s", err, resultText(r))
+	}
+	if len(view.NextActions) != 1 || view.NextActions[0].RefTaskID == nil {
+		t.Fatalf("expected 1 next_action with a resolved ref_task_id, got: %+v", view.NextActions)
+	}
+	if *view.NextActions[0].RefTaskID != id.String() {
+		t.Errorf("ref_task_id = %q, want resolved full UUID %q", *view.NextActions[0].RefTaskID, id.String())
+	}
+}
+
+func refTaskIDPrefixCaseAmbiguous(t *testing.T) {
+	s := newTestWorkSessionServer(t)
+	idA, idB := uuid.New(), uuid.New()
+	s.gtd = fakeByPrefixGTDStore{
+		responses: map[string][]gtd.TaskIDTitle{
+			"aaaaaaaa": {{ID: idA, Title: "task A"}},
+			"bbbbbbbb": {{ID: idA, Title: "task A"}, {ID: idB, Title: "task B"}},
+		},
+	}
+	raw, err := json.Marshal([]session.NextAction{
+		{Step: 1, Title: "step one", RefTaskID: strPtr("aaaaaaaa")},
+		{Step: 2, Title: "step two", RefTaskID: strPtr("bbbbbbbb")},
+	})
+	if err != nil {
+		t.Fatalf("marshal next_actions: %v", err)
+	}
+	r := callSetSessionHandoff(t, s, map[string]any{
+		"intent": "continue work", "next_actions": string(raw),
+	})
+	if !r.IsError {
+		t.Fatalf("ambiguous ref_task_id at index 1 must error, got success: %s", resultText(r))
+	}
+	if !strings.HasPrefix(resultText(r), "next_actions[1]: ") {
+		t.Errorf("error should be prefixed next_actions[1]:, got: %s", resultText(r))
+	}
+	if !strings.Contains(resultText(r), "ambiguous") {
+		t.Errorf("error should mention ambiguity, got: %s", resultText(r))
+	}
 }

@@ -22,10 +22,34 @@ const taskIDPrefixLimit = 3
 const errMsgTaskNotFound = "task not found"
 
 // taskIDPrefixRe is D3's locked regex for a resolvable task_id prefix:
-// lowercase hex, 8+ chars, anchored. Uppercase is deliberately NOT
-// normalized — an uppercase-hex string falls through to the invalid-UUID
-// case below, per D3's own locked decision, not a gap left by this file.
-var taskIDPrefixRe = regexp.MustCompile(`^[0-9a-f]{8,}$`)
+// lowercase hex, 8–31 chars, anchored. The upper bound is 31, not unbounded:
+// a 32-char lowercase-hex string is itself a valid dashless UUID literal and
+// is already caught by uuid.Parse above this check (google/uuid's own
+// case-32 branch), so it never reaches this regex; 33+ chars therefore falls
+// through to the invalid-UUID case below, same as any other malformed input.
+// Uppercase is deliberately NOT normalized — an uppercase-hex string falls
+// through to the invalid-UUID case below, per D3's own locked decision, not
+// a gap left by this file.
+var taskIDPrefixRe = regexp.MustCompile(`^[0-9a-f]{8,31}$`)
+
+// canonicalTaskIDPrefix inserts dashes into a raw hex prefix at the standard
+// UUID text positions (after the 8th, 12th, 16th, and 20th hex character),
+// producing the prefix of the canonical dashed UUID text form that the
+// store's id column actually contains (SEC-197-01): UUID text's 9th
+// character is always '-', so a 9+ char raw hex prefix sent straight to a
+// LIKE '<prefix>%' query can never match any row. Only inserts a dash when
+// hex is long enough to have reached that position; a prefix shorter than 9
+// chars is returned unchanged.
+func canonicalTaskIDPrefix(hex string) string {
+	var b strings.Builder
+	for i, c := range hex {
+		if i == 8 || i == 12 || i == 16 || i == 20 {
+			b.WriteByte('-')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
 
 // resolveTaskID resolves raw into a full task UUID, workspace-scoped
 // [F0930-17][F0930-18][F0930-19]:
@@ -34,7 +58,10 @@ var taskIDPrefixRe = regexp.MustCompile(`^[0-9a-f]{8,}$`)
 //     google/uuid's own case-32 branch) → return it unchanged. A 32-char
 //     lowercase-hex string therefore never reaches step 2, even though it
 //     also matches taskIDPrefixRe.
-//  2. raw matches taskIDPrefixRe → s.gtd.FindTaskIDsByPrefix(ctx, raw, 3):
+//  2. raw matches taskIDPrefixRe → s.gtd.FindTaskIDsByPrefix(ctx,
+//     canonicalTaskIDPrefix(raw), 3) (SEC-197-01: the store's id column is
+//     dashed UUID text, so a raw hex prefix of 9+ chars must have its
+//     dashes inserted before the LIKE comparison, or it can never match):
 //     - 0 rows → "task not found"
 //     - 1 row → its id
 //     - >=2 rows → an error listing every candidate's id + clipSafe'd title
@@ -50,7 +77,7 @@ func (s *Server) resolveTaskID(ctx context.Context, raw string) (uuid.UUID, *mcp
 	if !taskIDPrefixRe.MatchString(raw) {
 		return uuid.UUID{}, mcp.NewToolResultError(errMsgInvalidTaskIDUUID)
 	}
-	candidates, err := s.gtd.FindTaskIDsByPrefix(ctx, raw, taskIDPrefixLimit)
+	candidates, err := s.gtd.FindTaskIDsByPrefix(ctx, canonicalTaskIDPrefix(raw), taskIDPrefixLimit)
 	if err != nil {
 		return uuid.UUID{}, storeErrorResult("resolving task_id prefix", err)
 	}
