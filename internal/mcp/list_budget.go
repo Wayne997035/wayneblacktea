@@ -34,7 +34,7 @@ const listRuneBudget = 18000
 // directly would let a CJK-heavy page run up to 3x over the stated rune
 // budget. Only whole trailing rows are ever dropped, never a partial field.
 //
-// F197-L2: the FIRST row is always kept as-is, regardless of its own size —
+// The FIRST row is always kept as-is, regardless of its own size —
 // the budget comparison only applies from the second row onward. A page MUST
 // make forward progress: callers advance pagination by offset+returned
 // (e.g. tools_decision.go), and list_decisions has no single-record read to
@@ -65,6 +65,8 @@ func truncateListByRuneBudget[T any](rows []T, maxRunes int) (kept []T, truncate
 			break
 		}
 		itemRunes := utf8.RuneCountInString(string(encoded))
+		// [F197-L2] Only rows after the first are budget-checked, so every
+		// page makes forward progress (see the doc comment above).
 		if len(kept) > 0 {
 			itemRunes++ // joining comma before this element
 			if totalRunes+itemRunes > maxRunes {
