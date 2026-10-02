@@ -342,6 +342,21 @@ func TestScheduler_DailyPendingProposalsPrune_RetainsDecisionOutcomeReviewPropos
 	seed(keptID, "scheduler:decision_outcome_review")
 	seed(deletedID, "api:activity_classifier")
 
+	// F198-R1-01: proposed_by IS NULL, same age/status/type as deletedID —
+	// NOT(type = 'task' AND proposed_by = '...') evaluates to NULL (not
+	// true) when proposed_by IS NULL, so this row must still be deleted,
+	// not permanently exempted alongside the real decision_outcome_review
+	// row. nullProposedByID is seeded directly (not via the seed() closure
+	// above, which only accepts a string) with an explicit NULL literal.
+	nullProposedByID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals
+		(id, type, payload, status, proposed_by, created_at, resolved_at)
+		VALUES ($1, 'task', '{}'::jsonb, $2, NULL, $3, $3)`,
+		nullProposedByID, rejectedStatus, resolved100Days); err != nil {
+		t.Fatalf("seed proposed_by=NULL: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", nullProposedByID) })
+
 	sc := &Scheduler{disciplinePool: pool}
 	sc.runDailyPendingProposalsPrune()
 
@@ -358,6 +373,15 @@ func TestScheduler_DailyPendingProposalsPrune_RetainsDecisionOutcomeReviewPropos
 	if deletedCount != 0 {
 		t.Errorf("other proposed_by, same age/status: count = %d, want 0 "+
 			"(exclusion must not cover the whole type='task' population)", deletedCount)
+	}
+	var nullProposedByCount int
+	nullProposedByRow := pool.QueryRow(ctx, "SELECT COUNT(*) FROM pending_proposals WHERE id = $1", nullProposedByID)
+	if err := nullProposedByRow.Scan(&nullProposedByCount); err != nil {
+		t.Fatalf("count nullProposedByID: %v", err)
+	}
+	if nullProposedByCount != 0 {
+		t.Errorf("F198-R1-01: proposed_by=NULL, resolved >90d: count = %d, want 0 "+
+			"(NULL proposed_by must not be permanently exempted from this DELETE)", nullProposedByCount)
 	}
 }
 

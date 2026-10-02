@@ -1207,10 +1207,14 @@ WHERE status = 'pending' AND type = 'task'
 	// can never match a pending row even if the WHERE were re-ordered.
 	// F197-L1: the first arm excludes 'scheduler:decision_outcome_review'
 	// proposals — see pendingProposalsResolvedRetention's doc comment above
-	// for why those must survive this DELETE indefinitely.
+	// for why those must survive this DELETE indefinitely. F198-R1-01:
+	// COALESCE(proposed_by, '') because proposed_by is nullable and a NOT(...)
+	// wrapped around a plain equality is NULL (not true) when proposed_by IS
+	// NULL, which would make the whole first arm never match a NULL-proposed_by
+	// row — permanently exempting it from this DELETE instead of just this one.
 	const q = `DELETE FROM pending_proposals
 WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` + pendingProposalsResolvedRetention + `'
-       AND NOT (type = 'task' AND proposed_by = 'scheduler:decision_outcome_review'))
+       AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review'))
    OR (status = 'pending' AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingDecisionRetention + `' AND type = 'decision')`
 	tag, err := s.disciplinePool.Exec(ctx, q)
 	if err != nil {
