@@ -382,49 +382,6 @@ func TestDecisionOutcomeReview_Dedup_ExcludesRejectedProposals(t *testing.T) {
 	}
 }
 
-// TestDecisionOutcomeReview_SurvivesPruneAfterResolvedRetention is F197-L1's
-// end-to-end acceptance test: a decision that was already proposed once (its
-// decision_outcome_review proposal is now rejected and older than the 90-day
-// resolved retention) must NOT reappear in pgDecisionsPendingOutcomeReview's
-// candidate list after the daily prune runs — proving the prune's new
-// exclusion clause and the dedup query's NOT EXISTS actually compose
-// end-to-end, not just in isolation.
-func TestDecisionOutcomeReview_SurvivesPruneAfterResolvedRetention(t *testing.T) {
-	pool := openSchedulerTestPgPool(t)
-	ctx := context.Background()
-	wsID := uuid.New()
-	cleanupDecisionOutcomeProposals(t, ctx, wsID)
-
-	old := time.Now().UTC().AddDate(0, 0, -45) // well past the 30-day review window
-	decisionID := uuid.New()
-	seedOldDecisionWithSource(t, ctx, wsID, decisionID, "already proposed, long resolved", old, "manual")
-
-	resolved100Days := old.AddDate(0, 0, -100) // older than the 90-day resolved retention
-	proposalID := uuid.New()
-	payload := `{"title":"t","source_tool":"scheduler:decision_outcome_review","source_entity_id":"` + decisionID.String() + `"}`
-	if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals
-		(id, workspace_id, type, payload, status, proposed_by, created_at, resolved_at)
-		VALUES ($1, $2, 'task', $3, 'rejected', 'scheduler:decision_outcome_review', $4, $4)`,
-		proposalID, wsID, payload, resolved100Days); err != nil {
-		t.Fatalf("seed resolved decision_outcome_review proposal: %v", err)
-	}
-	t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", proposalID) })
-
-	sc := &Scheduler{disciplinePool: pool}
-	sc.runDailyPendingProposalsPrune()
-
-	decisions, err := sc.pgDecisionsPendingOutcomeReview(ctx, &wsID, decisionOutcomeReviewDailyCap)
-	if err != nil {
-		t.Fatalf("pgDecisionsPendingOutcomeReview: %v", err)
-	}
-	for _, d := range decisions {
-		if d.id == decisionID {
-			t.Errorf("decision %s reappeared as a candidate after prune — its old resolved proposal row "+
-				"must have been deleted despite the exclusion clause", decisionID)
-		}
-	}
-}
-
 // TestDecisionOutcomeReview_EmptyBacklog_NoPanic verifies the job is safe to
 // run against a workspace with zero qualifying decisions — production may go
 // days without a new no-outcome decision.

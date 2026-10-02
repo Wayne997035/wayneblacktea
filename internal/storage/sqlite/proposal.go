@@ -321,14 +321,6 @@ func (s *ProposalStore) AutoProposeConceptFromKnowledge(
 // transient mark failure shouldn't block the resolved-row cleanup). Returns
 // (markedRows, deletedRows, err); err is errors.Join(markErr, delErr) so a
 // caller can log both failures if both steps fail independently.
-//
-// F197-L1: rows proposed by 'scheduler:decision_outcome_review' are excluded
-// from the resolved-row delete arm below and retained permanently regardless
-// of resolution — the decision-outcome dedup query (cognitive_jobs.go) treats
-// "a proposal row for this decision has ever existed" as the signal that it
-// was already proposed, so deleting a resolved row here would let the SAME
-// decision get re-proposed once the mark-to-rejected window plus this
-// resolved retention have both elapsed.
 func (s *ProposalStore) MarkAndDeleteStaleProposals(
 	ctx context.Context, taskRetention, decisionRetention, resolvedRetention time.Duration, markReason string,
 ) (markedRows, deletedRows int64, err error) {
@@ -354,12 +346,9 @@ func (s *ProposalStore) MarkAndDeleteStaleProposals(
 
 	// resolved_at IS NULL on still-pending rows, so the first arm can never
 	// match a pending row — same invariant the Postgres query's comment
-	// documents. F197-L1: the first arm excludes
-	// 'scheduler:decision_outcome_review' proposals — see this method's doc
-	// comment above for why those must survive this DELETE indefinitely.
+	// documents.
 	const deleteQ = `DELETE FROM pending_proposals
-		WHERE (status IN ('accepted', 'rejected') AND resolved_at < ?1
-		       AND NOT (type = 'task' AND proposed_by = 'scheduler:decision_outcome_review'))
+		WHERE (status IN ('accepted', 'rejected') AND resolved_at < ?1)
 		   OR (status = 'pending' AND type = 'decision' AND created_at < ?2)`
 	delRes, delExecErr := s.db.conn.ExecContext(ctx, deleteQ, resolvedCutoff, decisionCutoff)
 	if delExecErr != nil {

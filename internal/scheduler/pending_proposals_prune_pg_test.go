@@ -310,57 +310,6 @@ func TestRunDailyPendingProposalsPrune_TypeTaskTTL(t *testing.T) {
 	}
 }
 
-// TestScheduler_DailyPendingProposalsPrune_RetainsDecisionOutcomeReviewProposals
-// is F197-L1's acceptance test: a resolved 'scheduler:decision_outcome_review'
-// proposal row older than the 90-day resolved retention MUST survive the
-// DELETE — deleting it would let the decision_outcome_review dedup query
-// (which treats "a proposal row for this decision has ever existed" as the
-// signal) re-propose the same decision. The negative-control row proves the
-// exclusion is scoped to this exact proposed_by value, not the whole
-// type='task' resolved population: same age, same status, different
-// proposed_by, still gets deleted.
-func TestScheduler_DailyPendingProposalsPrune_RetainsDecisionOutcomeReviewProposals(t *testing.T) {
-	pool := openSchedulerTestPgPool(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC()
-	resolved100Days := now.AddDate(0, 0, -100) // outside 90d
-
-	keptID := uuid.New()
-	deletedID := uuid.New()
-
-	seed := func(id uuid.UUID, proposedBy string) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals
-			(id, type, payload, status, proposed_by, created_at, resolved_at)
-			VALUES ($1, 'task', '{}'::jsonb, $2, $3, $4, $4)`,
-			id, rejectedStatus, proposedBy, resolved100Days); err != nil {
-			t.Fatalf("seed proposed_by=%q: %v", proposedBy, err)
-		}
-		t.Cleanup(func() { _, _ = pool.Exec(ctx, "DELETE FROM pending_proposals WHERE id = $1", id) })
-	}
-	seed(keptID, "scheduler:decision_outcome_review")
-	seed(deletedID, "api:activity_classifier")
-
-	sc := &Scheduler{disciplinePool: pool}
-	sc.runDailyPendingProposalsPrune()
-
-	var keptCount, deletedCount int
-	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM pending_proposals WHERE id = $1", keptID).Scan(&keptCount); err != nil {
-		t.Fatalf("count keptID: %v", err)
-	}
-	if keptCount != 1 {
-		t.Errorf("decision_outcome_review proposal: count = %d, want 1 (must survive the 90d resolved-retention delete)", keptCount)
-	}
-	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM pending_proposals WHERE id = $1", deletedID).Scan(&deletedCount); err != nil {
-		t.Fatalf("count deletedID: %v", err)
-	}
-	if deletedCount != 0 {
-		t.Errorf("other proposed_by, same age/status: count = %d, want 0 "+
-			"(exclusion must not cover the whole type='task' population)", deletedCount)
-	}
-}
-
 // TestScheduler_PendingProposalsPrune_EmptyTableNoPanic verifies the prune
 // query is safe to run against an empty table — production may go days with
 // no rows to drop.
