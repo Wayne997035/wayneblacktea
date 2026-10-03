@@ -196,41 +196,55 @@ func TestPgStore_InsertAndRecentMutating(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := store.Insert(ctx, tc.params); err != nil {
-				t.Fatalf("Insert: %v", err)
-			}
-
-			// [F184-04] Verify the four new columns landed exactly as
-			// passed. See queryDisciplineOutcome's doc for the mutation
-			// this guards against.
-			got := queryDisciplineOutcome(t, pool, tc.params.SessionID, tc.params.ToolName)
-			if got.Ok != tc.params.Ok {
-				t.Errorf("ok: want %v, got %v", tc.params.Ok, got.Ok)
-			}
-			wantErrClass := string(tc.params.ErrorClass)
-			gotErrClass := ""
-			if got.ErrorClass.Valid {
-				gotErrClass = got.ErrorClass.String
-			}
-			if gotErrClass != wantErrClass {
-				t.Errorf("error_class: want %q, got %q", wantErrClass, gotErrClass)
-			}
-			if tc.params.ResponseBytes == nil {
-				if got.ResponseBytes.Valid {
-					t.Errorf("response_bytes: want NULL, got %d", got.ResponseBytes.Int64)
-				}
-			} else if !got.ResponseBytes.Valid || got.ResponseBytes.Int64 != int64(*tc.params.ResponseBytes) {
-				t.Errorf("response_bytes: want %d, got %+v", *tc.params.ResponseBytes, got.ResponseBytes)
-			}
-			if !got.DurationMs.Valid || got.DurationMs.Int64 != int64(tc.params.DurationMs) {
-				t.Errorf("duration_ms: want %d, got %+v", tc.params.DurationMs, got.DurationMs)
-			}
+			pgStoreInsertAndRecentMutatingCase(t, ctx, store, pool, tc)
 		})
 	}
 
-	// Four rows persisted; mutating+ok filter pulls only the two
-	// successful mutating ones, scoped to the test workspace (the failed
-	// mutating call is excluded).
+	pgStoreInsertAndRecentMutatingCheckRecent(t, ctx, store, wsID)
+}
+
+// pgStoreInsertAndRecentMutatingCase inserts one test-case row and verifies
+// [F184-04] the four new columns landed exactly as passed. See
+// queryDisciplineOutcome's doc for the mutation this guards against.
+func pgStoreInsertAndRecentMutatingCase(t *testing.T, ctx context.Context, store *discipline.PgStore, pool *pgxpool.Pool, tc struct {
+	name   string
+	params discipline.InsertParams
+},
+) {
+	t.Helper()
+	if err := store.Insert(ctx, tc.params); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	got := queryDisciplineOutcome(t, pool, tc.params.SessionID, tc.params.ToolName)
+	if got.Ok != tc.params.Ok {
+		t.Errorf("ok: want %v, got %v", tc.params.Ok, got.Ok)
+	}
+	wantErrClass := string(tc.params.ErrorClass)
+	gotErrClass := ""
+	if got.ErrorClass.Valid {
+		gotErrClass = got.ErrorClass.String
+	}
+	if gotErrClass != wantErrClass {
+		t.Errorf("error_class: want %q, got %q", wantErrClass, gotErrClass)
+	}
+	if tc.params.ResponseBytes == nil {
+		if got.ResponseBytes.Valid {
+			t.Errorf("response_bytes: want NULL, got %d", got.ResponseBytes.Int64)
+		}
+	} else if !got.ResponseBytes.Valid || got.ResponseBytes.Int64 != int64(*tc.params.ResponseBytes) {
+		t.Errorf("response_bytes: want %d, got %+v", *tc.params.ResponseBytes, got.ResponseBytes)
+	}
+	if !got.DurationMs.Valid || got.DurationMs.Int64 != int64(tc.params.DurationMs) {
+		t.Errorf("duration_ms: want %d, got %+v", tc.params.DurationMs, got.DurationMs)
+	}
+}
+
+// pgStoreInsertAndRecentMutatingCheckRecent verifies that four rows persisted;
+// mutating+ok filter pulls only the two successful mutating ones, scoped to
+// the test workspace (the failed mutating call is excluded).
+func pgStoreInsertAndRecentMutatingCheckRecent(t *testing.T, ctx context.Context, store *discipline.PgStore, wsID uuid.UUID) {
+	t.Helper()
 	got, err := store.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
 	if err != nil {
 		t.Fatalf("RecentMutating: %v", err)
@@ -408,80 +422,108 @@ func TestPgStore_StrictWorkspaceScoping(t *testing.T) {
 	}
 
 	t.Run("scoped store reads only its own workspace", func(t *testing.T) {
-		got, err := storeA.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
-		if err != nil {
-			t.Fatalf("storeA RecentMutating: %v", err)
-		}
-		// Filter to the rows we just seeded (the test PG pool may have
-		// other rows from earlier subtests in the same package run).
-		var sessions []string
-		for _, ev := range got {
-			sessions = append(sessions, ev.SessionID)
-		}
-		if !containsExactly(sessions, "ws-scope-A") {
-			t.Errorf("storeA: expected only ws-scope-A in seeded set, got %+v", sessions)
-		}
+		pgStoreStrictWorkspaceScopingScopedReadsOwn(t, ctx, storeA)
 	})
 
 	t.Run("scoped store does NOT see legacy NULL workspace rows", func(t *testing.T) {
-		got, err := storeA.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
-		if err != nil {
-			t.Fatalf("storeA RecentMutating: %v", err)
-		}
-		for _, ev := range got {
-			if ev.SessionID == "ws-scope-NULL" {
-				t.Errorf("storeA leaked NULL row: %+v", ev)
-			}
-			if ev.SessionID == "ws-scope-B" {
-				t.Errorf("storeA leaked B row: %+v", ev)
-			}
-		}
+		pgStoreStrictWorkspaceScopingNoLegacyNullLeak(t, ctx, storeA)
 	})
 
 	t.Run("unscoped store sees only NULL workspace rows", func(t *testing.T) {
-		got, err := storeUnscoped.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
-		if err != nil {
-			t.Fatalf("unscoped RecentMutating: %v", err)
-		}
-		for _, ev := range got {
-			if ev.SessionID == "ws-scope-A" || ev.SessionID == "ws-scope-B" {
-				t.Errorf("unscoped store leaked scoped row: %+v", ev)
-			}
-		}
-		// And the NULL row IS visible.
-		if !containsSession(got, "ws-scope-NULL") {
-			t.Errorf("unscoped store missing NULL row; got %d events", len(got))
-		}
+		pgStoreStrictWorkspaceScopingUnscopedSeesNull(t, ctx, storeUnscoped)
 	})
 
 	t.Run("RecentDecisionTimes also enforces strict scoping", func(t *testing.T) {
-		// Seed log_decision with the same session in both A and B; A's
-		// scoped read should see only one timestamp, not both.
-		if err := storeA.Insert(ctx, discipline.InsertParams{
-			SessionID:  "shared-decisions",
-			ToolName:   "log_decision",
-			IsMutating: true,
-			Ok:         true,
-		}); err != nil {
-			t.Fatalf("insert decision A: %v", err)
-		}
-		if err := storeB.Insert(ctx, discipline.InsertParams{
-			SessionID:  "shared-decisions",
-			ToolName:   "confirm_plan",
-			IsMutating: true,
-			Ok:         true,
-		}); err != nil {
-			t.Fatalf("insert decision B: %v", err)
-		}
-
-		got, err := storeA.RecentDecisionTimes(ctx, "shared-decisions", time.Now().Add(-time.Hour))
-		if err != nil {
-			t.Fatalf("RecentDecisionTimes: %v", err)
-		}
-		if len(got) != 1 {
-			t.Errorf("RecentDecisionTimes: want 1 (workspace A only), got %d", len(got))
-		}
+		pgStoreStrictWorkspaceScopingDecisionTimesScoped(t, ctx, storeA, storeB)
 	})
+}
+
+// pgStoreStrictWorkspaceScopingScopedReadsOwn asserts a workspace-scoped
+// store's RecentMutating returns only the rows seeded in its own workspace.
+// Filter to the rows we just seeded (the test PG pool may have other rows
+// from earlier subtests in the same package run).
+func pgStoreStrictWorkspaceScopingScopedReadsOwn(t *testing.T, ctx context.Context, storeA *discipline.PgStore) {
+	t.Helper()
+	got, err := storeA.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
+	if err != nil {
+		t.Fatalf("storeA RecentMutating: %v", err)
+	}
+	var sessions []string
+	for _, ev := range got {
+		sessions = append(sessions, ev.SessionID)
+	}
+	if !containsExactly(sessions, "ws-scope-A") {
+		t.Errorf("storeA: expected only ws-scope-A in seeded set, got %+v", sessions)
+	}
+}
+
+// pgStoreStrictWorkspaceScopingNoLegacyNullLeak asserts a workspace-scoped
+// store's RecentMutating never leaks legacy NULL-workspace rows or another
+// workspace's rows.
+func pgStoreStrictWorkspaceScopingNoLegacyNullLeak(t *testing.T, ctx context.Context, storeA *discipline.PgStore) {
+	t.Helper()
+	got, err := storeA.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
+	if err != nil {
+		t.Fatalf("storeA RecentMutating: %v", err)
+	}
+	for _, ev := range got {
+		if ev.SessionID == "ws-scope-NULL" {
+			t.Errorf("storeA leaked NULL row: %+v", ev)
+		}
+		if ev.SessionID == "ws-scope-B" {
+			t.Errorf("storeA leaked B row: %+v", ev)
+		}
+	}
+}
+
+// pgStoreStrictWorkspaceScopingUnscopedSeesNull asserts an unscoped store
+// sees only legacy NULL-workspace rows, never any workspace-scoped row.
+func pgStoreStrictWorkspaceScopingUnscopedSeesNull(t *testing.T, ctx context.Context, storeUnscoped *discipline.PgStore) {
+	t.Helper()
+	got, err := storeUnscoped.RecentMutating(ctx, time.Now().Add(-time.Hour), 100)
+	if err != nil {
+		t.Fatalf("unscoped RecentMutating: %v", err)
+	}
+	for _, ev := range got {
+		if ev.SessionID == "ws-scope-A" || ev.SessionID == "ws-scope-B" {
+			t.Errorf("unscoped store leaked scoped row: %+v", ev)
+		}
+	}
+	// And the NULL row IS visible.
+	if !containsSession(got, "ws-scope-NULL") {
+		t.Errorf("unscoped store missing NULL row; got %d events", len(got))
+	}
+}
+
+// pgStoreStrictWorkspaceScopingDecisionTimesScoped seeds log_decision with the
+// same session in both A and B; A's scoped read should see only one
+// timestamp, not both.
+func pgStoreStrictWorkspaceScopingDecisionTimesScoped(t *testing.T, ctx context.Context, storeA, storeB *discipline.PgStore) {
+	t.Helper()
+	if err := storeA.Insert(ctx, discipline.InsertParams{
+		SessionID:  "shared-decisions",
+		ToolName:   "log_decision",
+		IsMutating: true,
+		Ok:         true,
+	}); err != nil {
+		t.Fatalf("insert decision A: %v", err)
+	}
+	if err := storeB.Insert(ctx, discipline.InsertParams{
+		SessionID:  "shared-decisions",
+		ToolName:   "confirm_plan",
+		IsMutating: true,
+		Ok:         true,
+	}); err != nil {
+		t.Fatalf("insert decision B: %v", err)
+	}
+
+	got, err := storeA.RecentDecisionTimes(ctx, "shared-decisions", time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("RecentDecisionTimes: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("RecentDecisionTimes: want 1 (workspace A only), got %d", len(got))
+	}
 }
 
 // containsExactly returns true if the only sessions present in the slice
