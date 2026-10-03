@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import type { PendingProposal } from '../types/api'
+import { invalidateDecisionLists } from './useDecisions'
 
 interface ResolveVars {
   id: string
@@ -32,6 +33,9 @@ export function useResolveProposal() {
       void qc.invalidateQueries({ queryKey: ['goals'] })
       void qc.invalidateQueries({ queryKey: ['projects'] })
       void qc.invalidateQueries({ queryKey: ['context', 'today'] })
+      // [F1003-15] accepting a decision-type proposal creates a Decision row
+      // server-side — keep both decision list caches in sync too.
+      invalidateDecisionLists(qc)
     },
     onError: (error: Error) => {
       // Error state is surfaced via mutation.isError in the calling component.

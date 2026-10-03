@@ -8,11 +8,11 @@
  * actually exercises the unwrap line, not just a canned return value.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { renderHook, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
-import { useDecisions } from './useDecisions'
+import { useDecisions, useLogDecision } from './useDecisions'
 import type { Decision } from '../types/api'
 
 const apiFetchMock = vi.fn()
@@ -27,6 +27,19 @@ function makeWrapper() {
   const Wrapper = ({ children }: { children: React.ReactNode }) =>
     React.createElement(QueryClientProvider, { client: queryClient }, children)
   return Wrapper
+}
+
+function makeWrapperWithClient() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  const Wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(QueryClientProvider, { client: queryClient }, children)
+  return { Wrapper, queryClient }
+}
+
+function calledKeysOf(spy: { mock: { calls: unknown[][] } }) {
+  return spy.mock.calls.map((c: unknown[]) => JSON.stringify((c[0] as { queryKey: unknown[] }).queryKey))
 }
 
 const sampleDecision: Decision = {
@@ -62,5 +75,32 @@ describe('useDecisions unwraps the paginated object response', () => {
     expect(result.current.isError).toBe(false)
     expect(result.current.data).toEqual([sampleDecision])
     expect(apiFetchMock).toHaveBeenCalledWith('/api/decisions?project_id=p1')
+  })
+})
+
+describe('useLogDecision invalidates both decision list caches on success', () => {
+  beforeEach(() => apiFetchMock.mockReset())
+
+  it('[F1003-15] useLogDecision(): invalidated keys include both decisions and decisions-feed', async () => {
+    const { Wrapper, queryClient } = makeWrapperWithClient()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    apiFetchMock.mockResolvedValueOnce(sampleDecision)
+
+    const { result } = renderHook(() => useLogDecision(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({
+        title: sampleDecision.title,
+        context: sampleDecision.context,
+        decision: sampleDecision.decision,
+        rationale: sampleDecision.rationale,
+      })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const calledKeys = calledKeysOf(invalidateSpy)
+    expect(calledKeys).toContain(JSON.stringify(['decisions']))
+    expect(calledKeys).toContain(JSON.stringify(['decisions-feed']))
   })
 })

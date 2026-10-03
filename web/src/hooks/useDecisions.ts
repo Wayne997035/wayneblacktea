@@ -1,6 +1,20 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import type { Decision, DecisionsPageResponse } from '../types/api'
+
+/**
+ * [F1003-15] Any mutation that creates a decision server-side (logging one
+ * directly, or accepting a decision-type proposal) must refresh both decision
+ * list caches: the legacy `['decisions']` key (TaskRow, ProjectDetailPage)
+ * and the paginated `['decisions-feed', ...]` key (DecisionsPage). TanStack
+ * Query v5 invalidation matches by key prefix, so invalidating `['decisions']`
+ * alone never reaches `['decisions-feed', ...]` — callers MUST invalidate
+ * both explicitly.
+ */
+export function invalidateDecisionLists(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: ['decisions'] })
+  void queryClient.invalidateQueries({ queryKey: ['decisions-feed'] })
+}
 
 export function useDecisions(projectId?: string, options?: { enabled?: boolean }) {
   return useQuery<Decision[]>({
@@ -41,7 +55,7 @@ export function useLogDecision() {
         body: JSON.stringify(data),
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['decisions'] })
+      invalidateDecisionLists(queryClient)
     },
   })
 }
