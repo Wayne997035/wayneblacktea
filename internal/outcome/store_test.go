@@ -1480,7 +1480,18 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	ctx := context.Background()
 	entityID := uuid.New()
 
-	// 1. No prior outcome -> ActionCreated.
+	created := recordExecutionResultPGConvergenceCreate(t, ctx, store, wsID, entityID)
+	finalized := recordExecutionResultPGConvergenceFinalize(t, ctx, store, wsID, entityID, created)
+	recordExecutionResultPGConvergenceReplay(t, ctx, store, wsID, entityID, finalized)
+	recordExecutionResultPGConvergenceSupersede(t, ctx, store, wsID, entityID, finalized)
+	recordExecutionResultPGConvergenceAuditTrail(t, ctx, store, wsID, entityID, finalized)
+}
+
+// recordExecutionResultPGConvergenceCreate: 1. No prior outcome -> ActionCreated.
+func recordExecutionResultPGConvergenceCreate(
+	t *testing.T, ctx context.Context, store *outcome.Store, wsID, entityID uuid.UUID,
+) outcome.Outcome {
+	t.Helper()
 	created, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "unknown",
 	})
@@ -1490,8 +1501,15 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	if action != outcome.ActionCreated {
 		t.Fatalf("action = %q, want created", action)
 	}
+	return created
+}
 
-	// 2. Prior outcome is a draft -> ActionFinalizedDraft, same ID.
+// recordExecutionResultPGConvergenceFinalize: 2. Prior outcome is a draft ->
+// ActionFinalizedDraft, same ID.
+func recordExecutionResultPGConvergenceFinalize(
+	t *testing.T, ctx context.Context, store *outcome.Store, wsID, entityID uuid.UUID, created outcome.Outcome,
+) outcome.Outcome {
+	t.Helper()
 	finalized, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success", Notes: "done",
 	})
@@ -1504,8 +1522,15 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	if finalized.ID != created.ID {
 		t.Fatalf("finalize must reuse draft row ID: got %s, want %s", finalized.ID, created.ID)
 	}
+	return finalized
+}
 
-	// 3. Identical replay -> ActionReplayedIdempotent, same ID, no new row.
+// recordExecutionResultPGConvergenceReplay: 3. Identical replay ->
+// ActionReplayedIdempotent, same ID, no new row.
+func recordExecutionResultPGConvergenceReplay(
+	t *testing.T, ctx context.Context, store *outcome.Store, wsID, entityID uuid.UUID, finalized outcome.Outcome,
+) {
+	t.Helper()
 	replayed, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "success", Notes: "done",
 	})
@@ -1518,8 +1543,14 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	if replayed.ID != finalized.ID {
 		t.Fatalf("replay must return the same row ID: got %s, want %s", replayed.ID, finalized.ID)
 	}
+}
 
-	// 4. Different terminal result -> ActionSuperseded, new row, linked back.
+// recordExecutionResultPGConvergenceSupersede: 4. Different terminal result
+// -> ActionSuperseded, new row, linked back.
+func recordExecutionResultPGConvergenceSupersede(
+	t *testing.T, ctx context.Context, store *outcome.Store, wsID, entityID uuid.UUID, finalized outcome.Outcome,
+) outcome.Outcome {
+	t.Helper()
 	superseded, action, _, err := outcome.RecordExecutionResult(ctx, store, outcome.CreateOutcomeParams{
 		WorkspaceID: &wsID, EntityType: "task", EntityID: entityID, Result: "regressed", Notes: "actually broke prod",
 	})
@@ -1535,8 +1566,15 @@ func TestRecordExecutionResult_PG_Convergence(t *testing.T) {
 	if superseded.SupersedesID == nil || *superseded.SupersedesID != finalized.ID {
 		t.Fatalf("SupersedesID = %v, want %s", superseded.SupersedesID, finalized.ID)
 	}
+	return superseded
+}
 
-	// The prior (superseded) row must remain untouched — audit trail intact.
+// recordExecutionResultPGConvergenceAuditTrail: 5. The prior (superseded)
+// row must remain untouched — audit trail intact.
+func recordExecutionResultPGConvergenceAuditTrail(
+	t *testing.T, ctx context.Context, store *outcome.Store, wsID, entityID uuid.UUID, finalized outcome.Outcome,
+) {
+	t.Helper()
 	priorStillIntact, err := store.GetOutcomeByID(ctx, finalized.ID, &wsID)
 	if err != nil {
 		t.Fatalf("GetOutcomeByID(prior): %v", err)
