@@ -363,7 +363,14 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"update_project_status",
 			mcp.WithDescription("Updates the status of a project."),
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
-			mcp.WithString("status", mcp.Description("New status: active, completed, archived, or on_hold"), mcp.Required()),
+			mcp.WithString("status",
+				mcp.Description("New status: active, completed, archived, or on_hold"),
+				mcp.Required(),
+				// [F1003-01] Matches update_project's status Enum (tools_gtd.go:190)
+				// verbatim, so registerToolSpec's pass B now rejects an invalid value
+				// at the seam instead of only at handleUpdateProjectStatus's
+				// switch-default below.
+				mcp.Enum("active", "completed", "archived", "on_hold")),
 		), seam(s, "update_project_status", s.handleUpdateProjectStatus),
 		uuidArgs("project_id"),
 	)
@@ -1695,6 +1702,10 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProje
 	switch status {
 	case gtd.ProjectStatusActive, gtd.ProjectStatusCompleted, gtd.ProjectStatusArchived, gtd.ProjectStatusOnHold:
 	default:
+		// [F1003-01] Defence-in-depth, not dead code: validateConstraints
+		// (toolspec.go pass B) only inspects present, non-empty STRING values,
+		// so a non-string status still reaches here even with the schema's
+		// new Enum declaration.
 		return mcp.NewToolResultError("status must be one of: active, completed, archived, on_hold"), nil
 	}
 

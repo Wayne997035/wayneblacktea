@@ -13,6 +13,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// stdioSessionID matches mcp-go's real stdio transport (vendored
+// server/stdio.go:127-129: `func (s *stdioSession) SessionID() string {
+// return "stdio" }`) — [F1003-03]'s silence proof needs a session shaped
+// like production stdio, not an arbitrary non-empty ID.
+const stdioSessionID = "stdio"
+
 // fakeSession is a minimal server.ClientSession so tests can drive the
 // per-session tool filter without standing up an HTTP transport.
 type fakeSession struct {
@@ -215,6 +221,41 @@ func TestFilterToolsForSession_FailsOpenWithoutSession(t *testing.T) {
 	if got := rpcListedTools(t, ms, ctx); len(got) != len(ms.ListTools()) {
 		t.Errorf("with an empty session ID tools/list returned %d tools, want all %d",
 			len(got), len(ms.ListTools()))
+	}
+}
+
+// TestFilterToolsForSession_WarnsOnlyOnFailOpen is [F1003-03]'s acceptance
+// proof: the fail-open branch (sess == nil or SessionID() == "") must now log
+// a slog.Warn naming filterToolsForSession, while a session shaped like the
+// REAL production stdio transport (SessionID() == "stdio") stays silent —
+// stdio is the normal path, not a rare edge (stdio.go:127-129,526-544: a
+// non-nil, non-empty session is registered before the read loop ever starts),
+// so a Warn firing there would mean this fix regressed into logging on every
+// stdio tools/list call instead of only the real anomaly.
+func TestFilterToolsForSession_WarnsOnlyOnFailOpen(t *testing.T) {
+	// Not parallel: bufferLogger swaps slog.Default() for a capture logger;
+	// a parallel test would write into the captured buffer too.
+	srv, ms := newTestMCPServer(t)
+	tools := []mcpmsg.Tool{{Name: "add_task"}}
+
+	buf := bufferLogger(t)
+	srv.filterToolsForSession(context.Background(), tools)
+	if !strings.Contains(buf.String(), "filterToolsForSession") {
+		t.Errorf("sess == nil must log a Warn naming filterToolsForSession, got: %q", buf.String())
+	}
+
+	buf = bufferLogger(t)
+	ctx := ms.WithContext(context.Background(), newFakeSession(""))
+	srv.filterToolsForSession(ctx, tools)
+	if !strings.Contains(buf.String(), "filterToolsForSession") {
+		t.Errorf("empty SessionID() must log a Warn naming filterToolsForSession, got: %q", buf.String())
+	}
+
+	buf = bufferLogger(t)
+	ctx = ms.WithContext(context.Background(), newFakeSession(stdioSessionID))
+	srv.filterToolsForSession(ctx, tools)
+	if buf.String() != "" {
+		t.Errorf("a stdio-shaped session (SessionID()=%q) must NOT log — got: %q", stdioSessionID, buf.String())
 	}
 }
 

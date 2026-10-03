@@ -475,7 +475,20 @@ func (s *Server) handleProposeProject(ctx context.Context, req mcp.CallToolReque
 // indistinguishable from a complete one.
 func (s *Server) handleListPendingProposals(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	limit, offset := listPageBounds(numberArg(args, "limit"), numberArg(args, "offset"))
+	// [F1003-02] optionalIntArg (tools_context.go), not numberArg: a fractional
+	// or non-numeric limit/offset is now REJECTED instead of silently
+	// truncated (F9/U12 bug class) — matches list_active_repos
+	// (parseRepoPagingArgs), the one sibling that, like this tool, is not
+	// seam-migrated.
+	rawLimit, errResult := optionalIntArg(args, "limit")
+	if errResult != nil {
+		return errResult, nil
+	}
+	rawOffset, errResult := optionalIntArg(args, "offset")
+	if errResult != nil {
+		return errResult, nil
+	}
+	limit, offset := listPageBounds(rawLimit, rawOffset)
 
 	rows, err := s.proposal.ListPendingPage(ctx, limit+1, offset)
 	if err != nil {
