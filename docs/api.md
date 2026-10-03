@@ -25,7 +25,7 @@ All `/api/*` routes require auth. Replace `https://your-host` and `YOUR_API_KEY`
 | GET | `/api/projects/:id/tasks` | Yes | — | Tasks for a project |
 | POST | `/api/tasks` | Yes | — | Create task |
 | PATCH | `/api/tasks/:id/complete` | Yes | — | Complete task + record artifact |
-| GET | `/api/decisions` | Yes | — | List decisions (`repo_name`, `project_id`, `limit`) |
+| GET | `/api/decisions` | Yes | — | List decisions (`repo_name`, `project_id`, `limit`, `offset`); returns `{"decisions":[...],"offset":N,"limit":N,"has_more":bool}` |
 | POST | `/api/decisions` | Yes | — | Log a decision |
 | GET | `/api/knowledge` | Yes | — | List knowledge (`limit`, `offset`) |
 | POST | `/api/knowledge` | Yes | — | Save knowledge item |

@@ -305,6 +305,70 @@ func TestDecisionStore_List_WorkspaceIsolation(t *testing.T) {
 	}
 }
 
+// TestDecisionStore_ByRepo_WorkspaceIsolation is [F1003-12]'s ByRepo
+// counterpart to TestDecisionStore_List_WorkspaceIsolation above — ByRepo/
+// ByProject had no dedicated workspace-isolation test before this task (see
+// dispatch prompt's Threat Surface section). Both workspaces log a decision
+// under the SAME repo name; workspace B's store must see only its own row
+// at offset=0, and nothing (not workspace A's row) at offset=1.
+func TestDecisionStore_ByRepo_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	wsA, wsB := uuid.New().String(), uuid.New().String()
+	dsn := "file:decision-byrepo-ws-" + uuid.New().String() + "?mode=memory&cache=shared"
+	_, storeA := openDecisionDB(t, dsn, wsA)
+	_, storeB := openDecisionDB(t, dsn, wsB)
+	const repo = "shared-repo-ws-isolation"
+
+	logSQLiteDecision(t, storeA, "only in workspace A", decision.SourceManual, func(p *decision.LogParams) { p.RepoName = repo })
+	onlyB := logSQLiteDecision(t, storeB, "only in workspace B", decision.SourceManual, func(p *decision.LogParams) { p.RepoName = repo })
+
+	rows, err := storeB.ByRepo(context.Background(), repo, 10, 0)
+	if err != nil {
+		t.Fatalf("ByRepo offset=0: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != onlyB.ID {
+		t.Fatalf("workspace B ByRepo(offset=0) = %+v, want exactly [%s]", rows, onlyB.ID)
+	}
+
+	rows, err = storeB.ByRepo(context.Background(), repo, 10, 1)
+	if err != nil {
+		t.Fatalf("ByRepo offset=1: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("workspace B ByRepo(offset=1) = %+v, want empty (must not leak workspace A's row)", rows)
+	}
+}
+
+// TestDecisionStore_ByProject_WorkspaceIsolation is ByProject's counterpart
+// to TestDecisionStore_ByRepo_WorkspaceIsolation above.
+func TestDecisionStore_ByProject_WorkspaceIsolation(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	wsA, wsB := uuid.New().String(), uuid.New().String()
+	dsn := "file:decision-byproject-ws-" + uuid.New().String() + "?mode=memory&cache=shared"
+	_, storeA := openDecisionDB(t, dsn, wsA)
+	_, storeB := openDecisionDB(t, dsn, wsB)
+	sharedProj := uuid.New()
+
+	logSQLiteDecision(t, storeA, "only in workspace A", decision.SourceManual, func(p *decision.LogParams) { p.ProjectID = &sharedProj })
+	onlyB := logSQLiteDecision(t, storeB, "only in workspace B", decision.SourceManual, func(p *decision.LogParams) { p.ProjectID = &sharedProj })
+
+	rows, err := storeB.ByProject(context.Background(), sharedProj, 10, 0)
+	if err != nil {
+		t.Fatalf("ByProject offset=0: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != onlyB.ID {
+		t.Fatalf("workspace B ByProject(offset=0) = %+v, want exactly [%s]", rows, onlyB.ID)
+	}
+
+	rows, err = storeB.ByProject(context.Background(), sharedProj, 10, 1)
+	if err != nil {
+		t.Fatalf("ByProject offset=1: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("workspace B ByProject(offset=1) = %+v, want empty (must not leak workspace A's row)", rows)
+	}
+}
+
 // TestDecisionStore_LegacyReaders_UnfilteredBySource is the P3.0a Stage B
 // Step 5 regression: All/ByRepo/ByProject/ByTask must keep returning both
 // manual and auto decisions — Stage B only changes the NEW List path.
