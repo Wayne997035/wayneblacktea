@@ -179,50 +179,9 @@ func TestMigration000087_PendingProposalsSortKeyIndexUsedByQuery(t *testing.T) {
 	defer pool.Close()
 
 	wsID := uuid.New()
-	for i := 0; i < 5; i++ {
-		if _, err := pool.Exec(
-			ctx,
-			`INSERT INTO pending_proposals (id, workspace_id, type, payload, status, created_at)
-			 VALUES ($1, $2, 'task', '{}'::jsonb, 'pending', NOW())`,
-			uuid.New(), wsID,
-		); err != nil {
-			t.Fatalf("seed pending_proposals row %d: %v", i, err)
-		}
-	}
+	migration000087PendingProposalsSortKeyIndexUsedByQuerySeed(t, ctx, pool, wsID)
 
-	explain := func() string {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin tx: %v", err)
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
-			t.Fatalf("SET LOCAL enable_seqscan = off: %v", err)
-		}
-		rows, err := tx.Query(ctx, `EXPLAIN SELECT id FROM pending_proposals
-			WHERE status = 'pending'
-			ORDER BY created_at DESC, id DESC
-			LIMIT 20`)
-		if err != nil {
-			t.Fatalf("EXPLAIN query: %v", err)
-		}
-		var lines []string
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				rows.Close()
-				t.Fatalf("scan EXPLAIN line: %v", err)
-			}
-			lines = append(lines, line)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			t.Fatalf("iterate EXPLAIN rows: %v", err)
-		}
-		return strings.Join(lines, "\n")
-	}
-
-	prePlan := explain()
+	prePlan := migration000087PendingProposalsSortKeyIndexUsedByQueryExplain(t, ctx, pool)
 	t.Logf("pre-087 EXPLAIN:\n%s", prePlan)
 	if !strings.Contains(prePlan, "Sort") {
 		t.Fatalf("expected a Sort node pre-087 (old index has no id tiebreaker), got:\n%s", prePlan)
@@ -232,7 +191,7 @@ func TestMigration000087_PendingProposalsSortKeyIndexUsedByQuery(t *testing.T) {
 	if err := RunMigrations(ctx, dsn); err != nil {
 		t.Fatalf("RunMigrations to 87: %v", err)
 	}
-	postPlan := explain()
+	postPlan := migration000087PendingProposalsSortKeyIndexUsedByQueryExplain(t, ctx, pool)
 	t.Logf("post-087 EXPLAIN:\n%s", postPlan)
 	// "Index Only Scan" (observed, verified against a real instance) rather
 	// than "Index Scan": the SELECT list (id only) is fully covered by the
@@ -249,4 +208,58 @@ func TestMigration000087_PendingProposalsSortKeyIndexUsedByQuery(t *testing.T) {
 	if strings.Contains(postPlan, "Sort") {
 		t.Fatalf("post-087 plan still has a Sort node — the id DESC tiebreaker should have removed it:\n%s", postPlan)
 	}
+}
+
+// migration000087PendingProposalsSortKeyIndexUsedByQuerySeed seeds five
+// pending_proposals rows so ORDER BY created_at DESC, id DESC has enough
+// rows to need a real plan decision.
+func migration000087PendingProposalsSortKeyIndexUsedByQuerySeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, wsID uuid.UUID) {
+	t.Helper()
+	for i := 0; i < 5; i++ {
+		if _, err := pool.Exec(
+			ctx,
+			`INSERT INTO pending_proposals (id, workspace_id, type, payload, status, created_at)
+			 VALUES ($1, $2, 'task', '{}'::jsonb, 'pending', NOW())`,
+			uuid.New(), wsID,
+		); err != nil {
+			t.Fatalf("seed pending_proposals row %d: %v", i, err)
+		}
+	}
+}
+
+// migration000087PendingProposalsSortKeyIndexUsedByQueryExplain runs the
+// target query's EXPLAIN plan under SET LOCAL enable_seqscan = off (same
+// technique as migration_000085_index_integration_test.go) and returns the
+// joined plan text.
+func migration000087PendingProposalsSortKeyIndexUsedByQueryExplain(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("SET LOCAL enable_seqscan = off: %v", err)
+	}
+	rows, err := tx.Query(ctx, `EXPLAIN SELECT id FROM pending_proposals
+		WHERE status = 'pending'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 20`)
+	if err != nil {
+		t.Fatalf("EXPLAIN query: %v", err)
+	}
+	var lines []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			rows.Close()
+			t.Fatalf("scan EXPLAIN line: %v", err)
+		}
+		lines = append(lines, line)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate EXPLAIN rows: %v", err)
+	}
+	return strings.Join(lines, "\n")
 }
