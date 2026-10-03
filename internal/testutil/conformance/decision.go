@@ -30,138 +30,165 @@ type Backdate func(t *testing.T, id uuid.UUID, at time.Time)
 // assertions against both postgres and sqlite (TestDecisionConformance_*,
 // parity_smoke_test.go) is this suite's cross-backend parity guarantee: both
 // backends are held to the identical "exact ID sequence" assertion computed
-// from their own real generated IDs, not a looser approximate check.
+// from their own real generated IDs, not a looser approximate check. Each
+// subtest's body is its own named function below (gocyclo) — this function
+// itself is just a sequence of t.Run calls, no branching.
 func RunDecisionSmoke(t *testing.T, store decision.StoreIface, backend string, backdate Backdate) {
 	ctx := context.Background()
 
 	t.Run(backend+"/Log_HappyPath_ThenByRepo", func(t *testing.T) {
-		if _, err := store.Log(ctx, decision.LogParams{
-			RepoName: "smoke-repo",
-			Title:    "t",
-			Decision: "d",
-			Source:   decision.SourceManual,
-		}); err != nil {
-			t.Fatalf("Log: %v", err)
-		}
-		rows, err := store.ByRepo(ctx, "smoke-repo", 10, 0)
-		if err != nil {
-			t.Fatalf("ByRepo: %v", err)
-		}
-		if len(rows) != 1 {
-			t.Fatalf("ByRepo returned %d rows, want exactly 1", len(rows))
-		}
-		if rows[0].Title != "t" {
-			t.Errorf("Title = %q, want %q", rows[0].Title, "t")
-		}
+		runLogHappyPathThenByRepo(t, ctx, store)
 	})
-
 	t.Run(backend+"/Log_InvalidSource_Rejected", func(t *testing.T) {
-		if _, err := store.Log(ctx, decision.LogParams{
-			RepoName: "smoke-repo-invalid-source",
-			Title:    "t",
-			Decision: "d",
-			// Source left at its zero value — neither SourceManual nor
-			// SourceAuto — must be rejected, not silently accepted.
-		}); !errors.Is(err, decision.ErrInvalidSource) {
-			t.Fatalf("Log with zero-value Source: err = %v, want errors.Is(err, decision.ErrInvalidSource)", err)
-		}
+		runLogInvalidSourceRejected(t, ctx, store)
 	})
-
 	t.Run(backend+"/SearchByCosine_CapabilityDivergence", func(t *testing.T) {
-		rows, err := store.SearchByCosine(ctx, []float32{0.1, 0.2, 0.3}, 5)
-		switch backend {
-		case "postgres":
-			if err != nil {
-				t.Fatalf("SearchByCosine (postgres, no embedded decisions): err = %v, want nil", err)
-			}
-			if len(rows) != 0 {
-				t.Errorf("SearchByCosine (postgres, no embedded decisions) = %v, want empty", rows)
-			}
-		case "sqlite":
-			if !errors.Is(err, decision.ErrCosineUnsupported) {
-				t.Fatalf("SearchByCosine (sqlite): err = %v, want errors.Is(err, decision.ErrCosineUnsupported)", err)
-			}
-		default:
-			t.Fatalf("unknown backend %q — conformance.RunDecisionSmoke only knows postgres/sqlite", backend)
-		}
+		runSearchByCosineCapabilityDivergence(t, ctx, store, backend)
 	})
-
 	// [F1003-12] ByRepo/ByProject offset pagination, mirroring the existing
 	// List offset tests (internal/decision/list_test.go,
 	// internal/storage/sqlite/decision_list_test.go) but against the newly
 	// offset-aware ByRepo/ByProject.
 	t.Run(backend+"/ByRepo_OffsetPaginatesResults", func(t *testing.T) {
-		seeded := seedStaggered(t, ctx, store, backdate, "smoke-offset-repo", "", 5)
-		fetch := func(limit, offset int32) ([]db.Decision, error) {
-			return store.ByRepo(ctx, "smoke-offset-repo", limit, offset)
-		}
-		assertDecisionOffsetPage(t, fetch, 2, 0, seeded[4], seeded[3])
-		assertDecisionOffsetPage(t, fetch, 2, 2, seeded[2], seeded[1])
-		assertDecisionOffsetPage(t, fetch, 2, 4, seeded[0])
+		runByRepoOffsetPaginatesResults(t, ctx, store, backdate)
 	})
-
 	t.Run(backend+"/ByProject_OffsetPaginatesResults", func(t *testing.T) {
-		projectID := uuid.New()
-		seeded := seedStaggered(t, ctx, store, backdate, "", projectID.String(), 5)
-		fetch := func(limit, offset int32) ([]db.Decision, error) {
-			return store.ByProject(ctx, projectID, limit, offset)
-		}
-		assertDecisionOffsetPage(t, fetch, 2, 0, seeded[4], seeded[3])
-		assertDecisionOffsetPage(t, fetch, 2, 2, seeded[2], seeded[1])
-		assertDecisionOffsetPage(t, fetch, 2, 4, seeded[0])
+		runByProjectOffsetPaginatesResults(t, ctx, store, backdate)
 	})
-
 	// [F1003-12] id DESC tiebreaker: ≥3 rows sharing the exact same
 	// created_at must come back in id-descending order, computed from the
 	// real generated IDs (not a guessed arrangement) — see store.go's
 	// ByRepo/ByProject doc comments for the ordering contract this pins.
 	t.Run(backend+"/ByRepo_TiebreaksOnIdDescForEqualCreatedAt", func(t *testing.T) {
-		ids := seedSameTimestamp(t, ctx, store, backdate, "smoke-tiebreak-repo", "", 4)
-		rows, err := store.ByRepo(ctx, "smoke-tiebreak-repo", 10, 0)
-		if err != nil {
-			t.Fatalf("ByRepo: %v", err)
-		}
-		assertIDDescOrder(t, rows, ids)
+		runByRepoTiebreaksOnIdDescForEqualCreatedAt(t, ctx, store, backdate)
 	})
-
 	t.Run(backend+"/ByProject_TiebreaksOnIdDescForEqualCreatedAt", func(t *testing.T) {
-		projectID := uuid.New()
-		ids := seedSameTimestamp(t, ctx, store, backdate, "", projectID.String(), 4)
-		rows, err := store.ByProject(ctx, projectID, 10, 0)
-		if err != nil {
-			t.Fatalf("ByProject: %v", err)
-		}
-		assertIDDescOrder(t, rows, ids)
+		runByProjectTiebreaksOnIdDescForEqualCreatedAt(t, ctx, store, backdate)
 	})
-
 	// [F1003-12] repo-filtered offset must never leak rows from another
 	// repo — the WHERE repo_name filter has to apply before OFFSET/LIMIT,
 	// not after.
 	t.Run(backend+"/ByRepo_FilteredOffsetDoesNotLeakOtherRepos", func(t *testing.T) {
-		const targetRepo = "smoke-filtered-target-repo"
-		const noiseRepo = "smoke-filtered-noise-repo"
-		target := seedStaggered(t, ctx, store, backdate, targetRepo, "", 3)
-		for i := range 2 {
-			if _, err := store.Log(ctx, decision.LogParams{
-				RepoName: noiseRepo, Title: fmt.Sprintf("noise-%d", i), Decision: "d", Source: decision.SourceManual,
-			}); err != nil {
-				t.Fatalf("Log noise %d: %v", i, err)
-			}
-		}
-		// target[2] is newest, target[0] oldest; offset=1 limit=2 -> [1, 0].
-		rows, err := store.ByRepo(ctx, targetRepo, 2, 1)
-		if err != nil {
-			t.Fatalf("ByRepo: %v", err)
-		}
-		if len(rows) != 2 || rows[0].ID != target[1] || rows[1].ID != target[0] {
-			t.Fatalf("ByRepo(targetRepo, limit=2, offset=1) = %+v, want [%s, %s]", rows, target[1], target[0])
-		}
-		for _, r := range rows {
-			if !r.RepoName.Valid || r.RepoName.String != targetRepo {
-				t.Errorf("leaked a decision from repo %+v, want only %q", r.RepoName, targetRepo)
-			}
-		}
+		runByRepoFilteredOffsetDoesNotLeakOtherRepos(t, ctx, store, backdate)
 	})
+}
+
+func runLogHappyPathThenByRepo(t *testing.T, ctx context.Context, store decision.StoreIface) {
+	if _, err := store.Log(ctx, decision.LogParams{
+		RepoName: "smoke-repo",
+		Title:    "t",
+		Decision: "d",
+		Source:   decision.SourceManual,
+	}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	rows, err := store.ByRepo(ctx, "smoke-repo", 10, 0)
+	if err != nil {
+		t.Fatalf("ByRepo: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ByRepo returned %d rows, want exactly 1", len(rows))
+	}
+	if rows[0].Title != "t" {
+		t.Errorf("Title = %q, want %q", rows[0].Title, "t")
+	}
+}
+
+func runLogInvalidSourceRejected(t *testing.T, ctx context.Context, store decision.StoreIface) {
+	if _, err := store.Log(ctx, decision.LogParams{
+		RepoName: "smoke-repo-invalid-source",
+		Title:    "t",
+		Decision: "d",
+		// Source left at its zero value — neither SourceManual nor
+		// SourceAuto — must be rejected, not silently accepted.
+	}); !errors.Is(err, decision.ErrInvalidSource) {
+		t.Fatalf("Log with zero-value Source: err = %v, want errors.Is(err, decision.ErrInvalidSource)", err)
+	}
+}
+
+func runSearchByCosineCapabilityDivergence(t *testing.T, ctx context.Context, store decision.StoreIface, backend string) {
+	rows, err := store.SearchByCosine(ctx, []float32{0.1, 0.2, 0.3}, 5)
+	switch backend {
+	case "postgres":
+		if err != nil {
+			t.Fatalf("SearchByCosine (postgres, no embedded decisions): err = %v, want nil", err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("SearchByCosine (postgres, no embedded decisions) = %v, want empty", rows)
+		}
+	case "sqlite":
+		if !errors.Is(err, decision.ErrCosineUnsupported) {
+			t.Fatalf("SearchByCosine (sqlite): err = %v, want errors.Is(err, decision.ErrCosineUnsupported)", err)
+		}
+	default:
+		t.Fatalf("unknown backend %q — conformance.RunDecisionSmoke only knows postgres/sqlite", backend)
+	}
+}
+
+func runByRepoOffsetPaginatesResults(t *testing.T, ctx context.Context, store decision.StoreIface, backdate Backdate) {
+	seeded := seedStaggered(t, ctx, store, backdate, "smoke-offset-repo", "", 5)
+	fetch := func(limit, offset int32) ([]db.Decision, error) {
+		return store.ByRepo(ctx, "smoke-offset-repo", limit, offset)
+	}
+	assertDecisionOffsetPage(t, fetch, 2, 0, seeded[4], seeded[3])
+	assertDecisionOffsetPage(t, fetch, 2, 2, seeded[2], seeded[1])
+	assertDecisionOffsetPage(t, fetch, 2, 4, seeded[0])
+}
+
+func runByProjectOffsetPaginatesResults(t *testing.T, ctx context.Context, store decision.StoreIface, backdate Backdate) {
+	projectID := uuid.New()
+	seeded := seedStaggered(t, ctx, store, backdate, "", projectID.String(), 5)
+	fetch := func(limit, offset int32) ([]db.Decision, error) {
+		return store.ByProject(ctx, projectID, limit, offset)
+	}
+	assertDecisionOffsetPage(t, fetch, 2, 0, seeded[4], seeded[3])
+	assertDecisionOffsetPage(t, fetch, 2, 2, seeded[2], seeded[1])
+	assertDecisionOffsetPage(t, fetch, 2, 4, seeded[0])
+}
+
+func runByRepoTiebreaksOnIdDescForEqualCreatedAt(t *testing.T, ctx context.Context, store decision.StoreIface, backdate Backdate) {
+	ids := seedSameTimestamp(t, ctx, store, backdate, "smoke-tiebreak-repo", "", 4)
+	rows, err := store.ByRepo(ctx, "smoke-tiebreak-repo", 10, 0)
+	if err != nil {
+		t.Fatalf("ByRepo: %v", err)
+	}
+	assertIDDescOrder(t, rows, ids)
+}
+
+func runByProjectTiebreaksOnIdDescForEqualCreatedAt(t *testing.T, ctx context.Context, store decision.StoreIface, backdate Backdate) {
+	projectID := uuid.New()
+	ids := seedSameTimestamp(t, ctx, store, backdate, "", projectID.String(), 4)
+	rows, err := store.ByProject(ctx, projectID, 10, 0)
+	if err != nil {
+		t.Fatalf("ByProject: %v", err)
+	}
+	assertIDDescOrder(t, rows, ids)
+}
+
+func runByRepoFilteredOffsetDoesNotLeakOtherRepos(t *testing.T, ctx context.Context, store decision.StoreIface, backdate Backdate) {
+	const targetRepo = "smoke-filtered-target-repo"
+	const noiseRepo = "smoke-filtered-noise-repo"
+	target := seedStaggered(t, ctx, store, backdate, targetRepo, "", 3)
+	for i := range 2 {
+		if _, err := store.Log(ctx, decision.LogParams{
+			RepoName: noiseRepo, Title: fmt.Sprintf("noise-%d", i), Decision: "d", Source: decision.SourceManual,
+		}); err != nil {
+			t.Fatalf("Log noise %d: %v", i, err)
+		}
+	}
+	// target[2] is newest, target[0] oldest; offset=1 limit=2 -> [1, 0].
+	rows, err := store.ByRepo(ctx, targetRepo, 2, 1)
+	if err != nil {
+		t.Fatalf("ByRepo: %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != target[1] || rows[1].ID != target[0] {
+		t.Fatalf("ByRepo(targetRepo, limit=2, offset=1) = %+v, want [%s, %s]", rows, target[1], target[0])
+	}
+	for _, r := range rows {
+		if !r.RepoName.Valid || r.RepoName.String != targetRepo {
+			t.Errorf("leaked a decision from repo %+v, want only %q", r.RepoName, targetRepo)
+		}
+	}
 }
 
 // seedStaggered logs n decisions (either scoped to repoName or projectID —

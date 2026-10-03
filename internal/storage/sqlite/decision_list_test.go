@@ -350,7 +350,9 @@ func TestDecisionStore_ByProject_WorkspaceIsolation(t *testing.T) {
 	sharedProj := uuid.New()
 
 	logSQLiteDecision(t, storeA, "only in workspace A", decision.SourceManual, func(p *decision.LogParams) { p.ProjectID = &sharedProj })
-	onlyB := logSQLiteDecision(t, storeB, "only in workspace B", decision.SourceManual, func(p *decision.LogParams) { p.ProjectID = &sharedProj })
+	onlyB := logSQLiteDecision(t, storeB, "only in workspace B", decision.SourceManual, func(p *decision.LogParams) {
+		p.ProjectID = &sharedProj
+	})
 
 	rows, err := storeB.ByProject(context.Background(), sharedProj, 10, 0)
 	if err != nil {

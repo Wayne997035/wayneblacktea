@@ -177,26 +177,28 @@ func decodeDecisionsPage(t *testing.T, rawBody string) decisionsPageBody {
 	return body
 }
 
-// TestListDecisions_OffsetAndHasMore covers [F1003-11]'s offset/has_more
-// contract across all three filter branches: the handler must forward
-// limit+1 and offset to the store, echo offset/limit in the response, trim
-// the extra probe row before returning it, and normalize a negative offset
-// to 0 — same invalid-input fallback convention as limit.
-func TestListDecisions_OffsetAndHasMore(t *testing.T) {
+// decisionOffsetCase is one table row for TestListDecisions_OffsetAndHasMore.
+type decisionOffsetCase struct {
+	name          string
+	query         string
+	wire          func(store *fakeDecisionHandlerStore)
+	wantOffset    int32
+	wantLimit     int32
+	wantHasMore   bool
+	wantRows      int
+	checkForwards func(t *testing.T, store *fakeDecisionHandlerStore)
+}
+
+// decisionOffsetCases builds TestListDecisions_OffsetAndHasMore's table.
+// Extracted to its own named function (gocyclo) — the table's embedded
+// checkForwards closures carry branches that would otherwise count toward
+// the test function's own cyclomatic complexity.
+func decisionOffsetCases() []decisionOffsetCase {
 	someRow := func() db.Decision { return db.Decision{ID: uuid.New(), Title: "t"} }
 	threeRows := []db.Decision{someRow(), someRow(), someRow()}
 	twoRows := []db.Decision{someRow(), someRow()}
 
-	cases := []struct {
-		name          string
-		query         string
-		wire          func(store *fakeDecisionHandlerStore)
-		wantOffset    int32
-		wantLimit     int32
-		wantHasMore   bool
-		wantRows      int
-		checkForwards func(t *testing.T, store *fakeDecisionHandlerStore)
-	}{
+	return []decisionOffsetCase{
 		{
 			name:        "no filter, offset omitted defaults to 0",
 			query:       "?limit=2",
@@ -273,26 +275,40 @@ func TestListDecisions_OffsetAndHasMore(t *testing.T) {
 			},
 		},
 	}
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &fakeDecisionHandlerStore{}
-			tc.wire(store)
-			e := newEcho()
-			h := handler.NewDecisionHandler(store)
-			e.GET("/api/decisions", h.ListDecisions)
-			rec := performRequest(e, http.MethodGet, "/api/decisions"+tc.query, "")
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
-			}
-			body := decodeDecisionsPage(t, rec.Body.String())
-			if body.Offset != tc.wantOffset || body.Limit != tc.wantLimit || body.HasMore != tc.wantHasMore || len(body.Decisions) != tc.wantRows {
-				t.Errorf("got {offset:%d limit:%d has_more:%v rows:%d}, want {offset:%d limit:%d has_more:%v rows:%d}",
-					body.Offset, body.Limit, body.HasMore, len(body.Decisions),
-					tc.wantOffset, tc.wantLimit, tc.wantHasMore, tc.wantRows)
-			}
-			tc.checkForwards(t, store)
-		})
+// runDecisionOffsetCase executes one decisionOffsetCase end to end: fires
+// the HTTP request, asserts the decoded response shape, then runs the
+// case's own store-forwarding assertion. Extracted to its own named
+// function (gocyclo) alongside decisionOffsetCases above.
+func runDecisionOffsetCase(t *testing.T, tc decisionOffsetCase) {
+	t.Helper()
+	store := &fakeDecisionHandlerStore{}
+	tc.wire(store)
+	e := newEcho()
+	h := handler.NewDecisionHandler(store)
+	e.GET("/api/decisions", h.ListDecisions)
+	rec := performRequest(e, http.MethodGet, "/api/decisions"+tc.query, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeDecisionsPage(t, rec.Body.String())
+	if body.Offset != tc.wantOffset || body.Limit != tc.wantLimit || body.HasMore != tc.wantHasMore || len(body.Decisions) != tc.wantRows {
+		t.Errorf("got {offset:%d limit:%d has_more:%v rows:%d}, want {offset:%d limit:%d has_more:%v rows:%d}",
+			body.Offset, body.Limit, body.HasMore, len(body.Decisions),
+			tc.wantOffset, tc.wantLimit, tc.wantHasMore, tc.wantRows)
+	}
+	tc.checkForwards(t, store)
+}
+
+// TestListDecisions_OffsetAndHasMore covers [F1003-11]'s offset/has_more
+// contract across all three filter branches: the handler must forward
+// limit+1 and offset to the store, echo offset/limit in the response, trim
+// the extra probe row before returning it, and normalize a negative offset
+// to 0 — same invalid-input fallback convention as limit.
+func TestListDecisions_OffsetAndHasMore(t *testing.T) {
+	for _, tc := range decisionOffsetCases() {
+		t.Run(tc.name, func(t *testing.T) { runDecisionOffsetCase(t, tc) })
 	}
 }
 

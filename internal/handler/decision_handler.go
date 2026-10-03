@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -47,7 +48,10 @@ func newDecisionsPage(decisions []db.Decision, offset, limit int32, hasMore bool
 // with limit+1 rows requested, so having more than limit rows means there's
 // a next page.
 func trimHasMore(rows []db.Decision, limit int32) ([]db.Decision, bool) {
-	hasMore := int32(len(rows)) > limit
+	// Compare in int space (len(rows) is already int; int32(limit) only ever
+	// widens, which is always safe) instead of narrowing len(rows) down to
+	// int32 — the latter is gosec G115's unchecked-overflow conversion.
+	hasMore := len(rows) > int(limit)
 	if hasMore {
 		rows = rows[:limit]
 	}
@@ -64,18 +68,18 @@ func (h *DecisionHandler) listAllWithHasMore(ctx context.Context, limit, offset,
 	if limit < maxLimit {
 		rows, err := h.store.List(ctx, decision.ListParams{Limit: limit + 1, Offset: offset, IncludeAuto: true})
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("listing decisions: %w", err)
 		}
 		decisions, hasMore := trimHasMore(rows, limit)
 		return decisions, hasMore, nil
 	}
 	decisions, err := h.store.List(ctx, decision.ListParams{Limit: limit, Offset: offset, IncludeAuto: true})
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("listing decisions: %w", err)
 	}
 	probe, err := h.store.List(ctx, decision.ListParams{Limit: 1, Offset: offset + limit, IncludeAuto: true})
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("probing for next decisions page: %w", err)
 	}
 	return decisions, len(probe) > 0, nil
 }
