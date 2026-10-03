@@ -90,7 +90,7 @@ func newIsolatedTestDB(t *testing.T, adminDSN string) string {
 	defer adminPool.Close()
 
 	name := fmt.Sprintf("mig084_%d", atomic.AddInt64(&isolatedDBCounter, 1))
-	if _, err := adminPool.Exec(ctx, `CREATE DATABASE `+name); err != nil { //nolint:gosec // name is program-generated (counter-based), never caller input
+	if _, err := adminPool.Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatalf("create database %s: %v", name, err)
 	}
 	t.Cleanup(func() {
@@ -101,7 +101,7 @@ func newIsolatedTestDB(t *testing.T, adminDSN string) string {
 			return
 		}
 		defer dropPool.Close()
-		if _, dropErr := dropPool.Exec(cleanupCtx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`); dropErr != nil { //nolint:gosec // name is program-generated
+		if _, dropErr := dropPool.Exec(cleanupCtx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`); dropErr != nil {
 			t.Logf("cleanup: drop database %s: %v", name, dropErr)
 		}
 	})
