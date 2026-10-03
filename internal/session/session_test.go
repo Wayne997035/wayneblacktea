@@ -105,7 +105,7 @@ func TestLatestHandoff_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// First, resolve all existing handoffs so the table is effectively empty of unresolved ones.
-	rows, _ := pool.Query(ctx, "SELECT id FROM session_handoffs WHERE resolved_at IS NULL") //nolint:errcheck // best-effort
+	rows, _ := pool.Query(ctx, "SELECT id FROM session_handoffs WHERE resolved_at IS NULL")
 	defer rows.Close()
 
 	var ids []interface{}

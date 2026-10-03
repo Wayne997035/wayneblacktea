@@ -215,6 +215,12 @@ func progressiveDisclosureEnabled() bool {
 func (s *Server) filterToolsForSession(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
 	sess := server.ClientSessionFromContext(ctx)
 	if sess == nil || sess.SessionID() == "" {
+		// [F1003-03] This branch does not fire on production stdio (a
+		// non-empty, static "stdio" session is registered before the read
+		// loop starts, stdio.go:127-129,526-544) — so a Warn here is the real
+		// anomaly, not log-flood risk. return tools stays unchanged: this
+		// branch is fail-open, deliberately (see doc comment above).
+		slog.Warn("filterToolsForSession: no client session in context, serving unfiltered tool list")
 		return tools
 	}
 	expanded := s.toolExpansions().groupsFor(sess.SessionID())

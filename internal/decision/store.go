@@ -89,12 +89,16 @@ func (s *Store) Log(ctx context.Context, p LogParams) (*db.Decision, error) {
 	return &row, nil
 }
 
-// ByRepo returns the most recent decisions for a given repo name.
-func (s *Store) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error) {
+// ByRepo returns the most recent decisions for a given repo name, paging
+// past the first offset rows. [F1003-10] offset added; ordering is
+// created_at DESC, id DESC (sql/queries/decision.sql) so paging is
+// deterministic even when created_at ties.
+func (s *Store) ByRepo(ctx context.Context, repoName string, limit, offset int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByRepo(ctx, db.ListDecisionsByRepoParams{
 		RepoName:    pgconv.ToText(repoName),
 		WorkspaceID: s.workspaceID,
 		LimitN:      limit,
+		OffsetN:     offset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing decisions for repo %q: %w", repoName, err)
@@ -221,12 +225,15 @@ func (s *Store) List(ctx context.Context, p ListParams) ([]db.Decision, error) {
 	return rows, nil
 }
 
-// ByProject returns the most recent decisions for a given project ID.
-func (s *Store) ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error) {
+// ByProject returns the most recent decisions for a given project ID, paging
+// past the first offset rows. [F1003-10] offset added; same ordering
+// contract as ByRepo above.
+func (s *Store) ByProject(ctx context.Context, projectID uuid.UUID, limit, offset int32) ([]db.Decision, error) {
 	rows, err := s.q.ListDecisionsByProject(ctx, db.ListDecisionsByProjectParams{
 		ProjectID:   pgconv.ToUUID(&projectID),
 		WorkspaceID: s.workspaceID,
 		LimitN:      limit,
+		OffsetN:     offset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing decisions for project %s: %w", projectID, err)

@@ -49,7 +49,7 @@ index|idx_outcomes_entity_id|CREATE INDEX idx_outcomes_entity_id ON outcomes(ent
 index|idx_outcomes_result|CREATE INDEX idx_outcomes_result ON outcomes(result)
 index|idx_outcomes_work_session_id|CREATE INDEX idx_outcomes_work_session_id ON outcomes(work_session_id) WHERE work_session_id IS NOT NULL
 index|idx_outcomes_workspace_entity|CREATE INDEX idx_outcomes_workspace_entity ON outcomes(workspace_id, entity_type, entity_id) WHERE workspace_id IS NOT NULL
-index|idx_pending_proposals_status_pending|CREATE INDEX idx_pending_proposals_status_pending ON pending_proposals(created_at DESC) WHERE status = 'pending'
+index|idx_pending_proposals_status_pending|CREATE INDEX idx_pending_proposals_status_pending ON pending_proposals(created_at DESC, id DESC) WHERE status = 'pending'
 index|idx_pending_proposals_type|CREATE INDEX idx_pending_proposals_type ON pending_proposals(type)
 index|idx_pending_proposals_workspace_id|CREATE INDEX idx_pending_proposals_workspace_id ON pending_proposals(workspace_id) WHERE workspace_id IS NOT NULL
 index|idx_playbooks_confidence|CREATE INDEX idx_playbooks_confidence ON playbooks (confidence DESC)

@@ -35,11 +35,11 @@ func (d *trackingDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, 
 	return nil, nil
 }
 
-func (d *trackingDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+func (d *trackingDecisionStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 
-func (d *trackingDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (d *trackingDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 

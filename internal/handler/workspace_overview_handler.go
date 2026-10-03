@@ -215,7 +215,7 @@ func (h *WorkspaceOverviewHandler) GetRepoOverview(c echo.Context) error {
 		resp.RecentActivity = appendActivityCapped(resp.RecentActivity, activity, int(repoOverviewListLimit))
 	}
 
-	decisions, derr := h.decision.ByRepo(ctx, repo.Name, repoOverviewListLimit)
+	decisions, derr := h.decision.ByRepo(ctx, repo.Name, repoOverviewListLimit, 0) // [F1003-10] repo overview always wants the newest page
 	if derr != nil {
 		c.Logger().Errorf("GetRepoOverview decision.ByRepo: %v", derr)
 		return c.JSON(http.StatusInternalServerError, errResp("internal server error"))

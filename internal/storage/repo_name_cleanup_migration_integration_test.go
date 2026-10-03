@@ -90,7 +90,7 @@ func newIsolatedTestDB(t *testing.T, adminDSN string) string {
 	defer adminPool.Close()
 
 	name := fmt.Sprintf("mig084_%d", atomic.AddInt64(&isolatedDBCounter, 1))
-	if _, err := adminPool.Exec(ctx, `CREATE DATABASE `+name); err != nil { //nolint:gosec // name is program-generated (counter-based), never caller input
+	if _, err := adminPool.Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatalf("create database %s: %v", name, err)
 	}
 	t.Cleanup(func() {
@@ -101,7 +101,7 @@ func newIsolatedTestDB(t *testing.T, adminDSN string) string {
 			return
 		}
 		defer dropPool.Close()
-		if _, dropErr := dropPool.Exec(cleanupCtx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`); dropErr != nil { //nolint:gosec // name is program-generated
+		if _, dropErr := dropPool.Exec(cleanupCtx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`); dropErr != nil {
 			t.Logf("cleanup: drop database %s: %v", name, dropErr)
 		}
 	})
@@ -246,37 +246,7 @@ func TestMigration000084_PG_Consistency(t *testing.T) {
 	}
 	defer pool.Close()
 
-	type seeded struct {
-		spec        pgCleanupSpec
-		marker      string
-		input       string
-		isNullInput bool
-	}
-	var rows []seeded
-
-	for _, spec := range pgCleanupSpecs {
-		for _, sample := range repoNameCleanupSamples {
-			marker := uuid.New().String()
-			if _, execErr := pool.Exec(ctx, spec.insert, sample, marker); execErr != nil {
-				t.Fatalf("seed %s marker=%s sample=%q: %v", spec.name, marker, sample, execErr)
-			}
-			rows = append(rows, seeded{spec: spec, marker: marker, input: sample})
-		}
-
-		emptyMarker := uuid.New().String()
-		if _, execErr := pool.Exec(ctx, spec.insert, "", emptyMarker); execErr != nil {
-			t.Fatalf("seed %s empty string: %v", spec.name, execErr)
-		}
-		rows = append(rows, seeded{spec: spec, marker: emptyMarker, input: ""})
-
-		if !spec.notNull {
-			nullMarker := uuid.New().String()
-			if _, execErr := pool.Exec(ctx, spec.insert, nil, nullMarker); execErr != nil {
-				t.Fatalf("seed %s NULL: %v", spec.name, execErr)
-			}
-			rows = append(rows, seeded{spec: spec, marker: nullMarker, isNullInput: true})
-		}
-	}
+	rows := migration000084PGConsistencySeed(t, ctx, pool)
 
 	// "遷到 84" MUST go through the production entrypoint itself, not a
 	// second self-built *migrate.Migrate on the same driver (dispatch record
@@ -288,34 +258,85 @@ func TestMigration000084_PG_Consistency(t *testing.T) {
 	}
 
 	for _, r := range rows {
-		var got *string
-		query := fmt.Sprintf(`SELECT repo_name FROM %s WHERE %s = $1`, r.spec.name, r.spec.markerCol) //nolint:gosec // table/column are hardcoded literals from pgCleanupSpecs, never caller input
-		if err := pool.QueryRow(ctx, query, r.marker).Scan(&got); err != nil {
-			t.Fatalf("read back %s marker=%s: %v", r.spec.name, r.marker, err)
+		migration000084PGConsistencyAssertRow(t, ctx, pool, r)
+	}
+}
+
+// pgCleanupSeededRow is one seeded row's expectations for
+// migration000084PGConsistencyAssertRow to check after RunMigrations.
+type pgCleanupSeededRow struct {
+	spec        pgCleanupSpec
+	marker      string
+	input       string
+	isNullInput bool
+}
+
+// migration000084PGConsistencySeed seeds every sample in repoNameCleanupSamples
+// — plus an empty string and, for nullable columns, NULL — into all nine
+// Postgres tables at schema version 83.
+func migration000084PGConsistencySeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []pgCleanupSeededRow {
+	t.Helper()
+	var rows []pgCleanupSeededRow
+
+	for _, spec := range pgCleanupSpecs {
+		for _, sample := range repoNameCleanupSamples {
+			marker := uuid.New().String()
+			if _, execErr := pool.Exec(ctx, spec.insert, sample, marker); execErr != nil {
+				t.Fatalf("seed %s marker=%s sample=%q: %v", spec.name, marker, sample, execErr)
+			}
+			rows = append(rows, pgCleanupSeededRow{spec: spec, marker: marker, input: sample})
 		}
 
-		if r.isNullInput {
-			if got != nil {
-				t.Errorf("%s marker=%s: NULL input became %q, want still NULL", r.spec.name, r.marker, *got)
-			}
-			continue
+		emptyMarker := uuid.New().String()
+		if _, execErr := pool.Exec(ctx, spec.insert, "", emptyMarker); execErr != nil {
+			t.Fatalf("seed %s empty string: %v", spec.name, execErr)
 		}
+		rows = append(rows, pgCleanupSeededRow{spec: spec, marker: emptyMarker, input: ""})
 
-		if validator.IsValidRepoName(r.input) {
-			if got == nil || *got != r.input {
-				t.Errorf("%s marker=%s: valid input %q was altered, got %v", r.spec.name, r.marker, r.input, got)
+		if !spec.notNull {
+			nullMarker := uuid.New().String()
+			if _, execErr := pool.Exec(ctx, spec.insert, nil, nullMarker); execErr != nil {
+				t.Fatalf("seed %s NULL: %v", spec.name, execErr)
 			}
-			continue
+			rows = append(rows, pgCleanupSeededRow{spec: spec, marker: nullMarker, isNullInput: true})
 		}
+	}
+	return rows
+}
 
-		// invalid and non-empty -> must be cleared.
-		if r.spec.notNull {
-			if got == nil || *got != "" {
-				t.Errorf("%s marker=%s: invalid input %q not cleared to '', got %v", r.spec.name, r.marker, r.input, got)
-			}
-		} else if got != nil {
-			t.Errorf("%s marker=%s: invalid input %q not cleared to NULL, got %q", r.spec.name, r.marker, r.input, *got)
+// migration000084PGConsistencyAssertRow asserts one seeded row's post-84
+// repo_name against validator.IsValidRepoName: NULL input stays NULL, valid
+// input is unchanged, and invalid non-empty input is cleared to the empty
+// string for NOT NULL columns, NULL otherwise.
+func migration000084PGConsistencyAssertRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, r pgCleanupSeededRow) {
+	t.Helper()
+	var got *string
+	query := fmt.Sprintf(`SELECT repo_name FROM %s WHERE %s = $1`, r.spec.name, r.spec.markerCol)
+	if err := pool.QueryRow(ctx, query, r.marker).Scan(&got); err != nil {
+		t.Fatalf("read back %s marker=%s: %v", r.spec.name, r.marker, err)
+	}
+
+	if r.isNullInput {
+		if got != nil {
+			t.Errorf("%s marker=%s: NULL input became %q, want still NULL", r.spec.name, r.marker, *got)
 		}
+		return
+	}
+
+	if validator.IsValidRepoName(r.input) {
+		if got == nil || *got != r.input {
+			t.Errorf("%s marker=%s: valid input %q was altered, got %v", r.spec.name, r.marker, r.input, got)
+		}
+		return
+	}
+
+	// invalid and non-empty -> must be cleared.
+	if r.spec.notNull {
+		if got == nil || *got != "" {
+			t.Errorf("%s marker=%s: invalid input %q not cleared to '', got %v", r.spec.name, r.marker, r.input, got)
+		}
+	} else if got != nil {
+		t.Errorf("%s marker=%s: invalid input %q not cleared to NULL, got %q", r.spec.name, r.marker, r.input, *got)
 	}
 }
 

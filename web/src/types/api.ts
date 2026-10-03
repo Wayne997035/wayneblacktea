@@ -77,6 +77,14 @@ export interface Decision {
   created_at: string;
 }
 
+/** GET /api/decisions response envelope (offset pagination, migration-free). */
+export interface DecisionsPageResponse {
+  decisions: Decision[];
+  offset: number;
+  limit: number;
+  has_more: boolean;
+}
+
 export interface NextAction {
   step: number;
   title: string;

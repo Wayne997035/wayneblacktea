@@ -234,15 +234,17 @@ type fakeDecisionStore struct {
 	err  error
 }
 
-func (f *fakeDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, error) {
+// [F1003-11] All dropped in favor of List — mirrors handler.decisionStore's
+// interface change (decision_handler.go's doc comment).
+func (f *fakeDecisionStore) List(_ context.Context, _ decision.ListParams) ([]db.Decision, error) {
 	return f.list, f.err
 }
 
-func (f *fakeDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+func (f *fakeDecisionStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return f.list, f.err
 }
 
-func (f *fakeDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (f *fakeDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return f.list, f.err
 }
 

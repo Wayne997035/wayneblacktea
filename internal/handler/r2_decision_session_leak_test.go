@@ -47,7 +47,7 @@ func TestListDecisions_HTTP_DoesNotLeakActorSessionID(t *testing.T) {
 		{
 			name:  "All (no filter)",
 			query: "",
-			wire:  func(store *fakeDecisionHandlerStore) { store.all = []db.Decision{rowWithSecrets} },
+			wire:  func(store *fakeDecisionHandlerStore) { store.list = []db.Decision{rowWithSecrets} },
 		},
 		{
 			name:  "ByRepo",
@@ -89,7 +89,7 @@ func TestListDecisions_HTTP_DoesNotLeakActorSessionID(t *testing.T) {
 			var stored []db.Decision
 			switch tc.name {
 			case "All (no filter)":
-				stored = store.all
+				stored = store.list
 			case "ByRepo":
 				stored = store.byRepo
 			case "ByProject":

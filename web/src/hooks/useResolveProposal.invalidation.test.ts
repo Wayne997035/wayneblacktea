@@ -59,6 +59,25 @@ describe('useResolveProposal invalidations', () => {
     expect(calledKeys).toContain(JSON.stringify(['dashboard', 'stats']))
     expect(calledKeys).toContain(JSON.stringify(['dashboard', 'automation-feed']))
   })
+
+  it('[F1003-15] invalidates both decisions and decisions-feed on success', async () => {
+    const { Wrapper, queryClient } = makeWrapper()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    apiFetchMock.mockResolvedValueOnce({ proposal: { id: 'p-1', type: 'decision' } })
+
+    const { result } = renderHook(() => useResolveProposal(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ id: 'p-1', action: 'accept' })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const calledKeys = calledKeysOf(invalidateSpy)
+    expect(calledKeys).toContain(JSON.stringify(['decisions']))
+    expect(calledKeys).toContain(JSON.stringify(['decisions-feed']))
+  })
 })
 
 describe('useConfirmBatchProposals invalidations', () => {
@@ -88,5 +107,24 @@ describe('useConfirmBatchProposals invalidations', () => {
     expect(calledKeys).toContain(JSON.stringify(['knowledge']))
     expect(calledKeys).toContain(JSON.stringify(['dashboard', 'stats']))
     expect(calledKeys).toContain(JSON.stringify(['dashboard', 'automation-feed']))
+  })
+
+  it('[F1003-15] invalidates both decisions and decisions-feed on success', async () => {
+    const { Wrapper, queryClient } = makeWrapper()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    apiFetchMock.mockResolvedValueOnce({ results: [{ id: 'p-1', ok: true }] })
+
+    const { result } = renderHook(() => useConfirmBatchProposals(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ ids: ['p-1'], action: 'accept' })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const calledKeys = calledKeysOf(invalidateSpy)
+    expect(calledKeys).toContain(JSON.stringify(['decisions']))
+    expect(calledKeys).toContain(JSON.stringify(['decisions-feed']))
   })
 })

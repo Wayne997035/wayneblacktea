@@ -117,11 +117,11 @@ func (m *mockDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, erro
 	return nil, nil
 }
 
-func (m *mockDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+func (m *mockDecisionStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 
-func (m *mockDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (m *mockDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 
@@ -968,11 +968,11 @@ func (m *mockDecisionStoreWithAll) All(_ context.Context, _ int32) ([]db.Decisio
 	return m.existing, nil
 }
 
-func (m *mockDecisionStoreWithAll) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+func (m *mockDecisionStoreWithAll) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 
-func (m *mockDecisionStoreWithAll) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (m *mockDecisionStoreWithAll) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 

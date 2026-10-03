@@ -364,6 +364,71 @@ func TestStore_List_WorkspaceIsolation(t *testing.T) {
 	}
 }
 
+// TestStore_ByRepo_WorkspaceIsolation is [F1003-12]'s ByRepo counterpart to
+// TestStore_List_WorkspaceIsolation above — ByRepo/ByProject had no
+// dedicated workspace-isolation test before this task (List's test does not
+// cover them; see dispatch prompt's Threat Surface section). Both
+// workspaces log a decision under the SAME repo name; workspace B's store
+// must see only its own row at offset=0, and nothing (not workspace A's
+// row) at offset=1.
+func TestStore_ByRepo_WorkspaceIsolation(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	storeA, _ := newIsolatedListStore(t, pool)
+	storeB, _ := newIsolatedListStore(t, pool)
+	const repo = "shared-repo-ws-isolation"
+
+	logTestDecision(t, storeA, "only in workspace A", decision.SourceManual, func(p *decision.LogParams) { p.RepoName = repo })
+	onlyB := logTestDecision(t, storeB, "only in workspace B", decision.SourceManual, func(p *decision.LogParams) { p.RepoName = repo })
+
+	rows, err := storeB.ByRepo(ctx, repo, 10, 0)
+	if err != nil {
+		t.Fatalf("ByRepo offset=0: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != onlyB.ID {
+		t.Fatalf("workspace B ByRepo(offset=0) = %+v, want exactly [%s]", rows, onlyB.ID)
+	}
+
+	rows, err = storeB.ByRepo(ctx, repo, 10, 1)
+	if err != nil {
+		t.Fatalf("ByRepo offset=1: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("workspace B ByRepo(offset=1) = %+v, want empty (must not leak workspace A's row)", rows)
+	}
+}
+
+// TestStore_ByProject_WorkspaceIsolation is ByProject's counterpart to
+// TestStore_ByRepo_WorkspaceIsolation above.
+func TestStore_ByProject_WorkspaceIsolation(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	storeA, _ := newIsolatedListStore(t, pool)
+	storeB, _ := newIsolatedListStore(t, pool)
+	sharedProj := uuid.New()
+
+	logTestDecision(t, storeA, "only in workspace A", decision.SourceManual, func(p *decision.LogParams) { p.ProjectID = &sharedProj })
+	onlyB := logTestDecision(t, storeB, "only in workspace B", decision.SourceManual, func(p *decision.LogParams) {
+		p.ProjectID = &sharedProj
+	})
+
+	rows, err := storeB.ByProject(ctx, sharedProj, 10, 0)
+	if err != nil {
+		t.Fatalf("ByProject offset=0: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != onlyB.ID {
+		t.Fatalf("workspace B ByProject(offset=0) = %+v, want exactly [%s]", rows, onlyB.ID)
+	}
+
+	rows, err = storeB.ByProject(ctx, sharedProj, 10, 1)
+	if err != nil {
+		t.Fatalf("ByProject offset=1: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("workspace B ByProject(offset=1) = %+v, want empty (must not leak workspace A's row)", rows)
+	}
+}
+
 // TestStore_LegacyReaders_UnfilteredBySource is the P3.0a Stage B Step 5
 // regression: All/ByRepo/ByProject/ByTask must keep returning both manual
 // and auto decisions — Stage B only changes the NEW List path, not these
@@ -406,10 +471,10 @@ func TestStore_LegacyReaders_UnfilteredBySource(t *testing.T) {
 	all, err := store.All(ctx, 20)
 	assertContainsBoth(t, all, err, "All")
 
-	byRepo, err := store.ByRepo(ctx, repo, 20)
+	byRepo, err := store.ByRepo(ctx, repo, 20, 0)
 	assertContainsBoth(t, byRepo, err, "ByRepo")
 
-	byProject, err := store.ByProject(ctx, proj, 20)
+	byProject, err := store.ByProject(ctx, proj, 20, 0)
 	assertContainsBoth(t, byProject, err, "ByProject")
 
 	byTask, err := store.ByTask(ctx, taskID, 20)

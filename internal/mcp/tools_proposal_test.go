@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/google/uuid"
 	mcpmsg "github.com/mark3labs/mcp-go/mcp"
@@ -383,5 +384,84 @@ func TestAcceptProposal_SQLiteTagNoiseRollsBackWholeAcceptance(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected 0 decisions rows after rollback, got %d", count)
+	}
+}
+
+// countingProposalStore counts how many times ListPendingPage is invoked, so
+// a rejected limit/offset can be proven to short-circuit BEFORE the store is
+// ever reached — [F1003-02].
+type countingProposalStore struct {
+	*stubProposalStore
+	listPendingPageCalls int
+}
+
+func (s *countingProposalStore) ListPendingPage(_ context.Context, _, _ int32) ([]db.PendingProposal, error) {
+	s.listPendingPageCalls++
+	return nil, nil
+}
+
+// TestHandleListPendingProposals_RejectsFractionalOrNonNumericPaging is
+// [F1003-02]'s acceptance proof: limit/offset now go through optionalIntArg
+// (tools_context.go), not numberArg (server.go), so a fractional or
+// non-numeric value is REJECTED with an exact error string instead of being
+// silently truncated and reaching the store (the F9/U12 bug class). The error
+// text matches optionalIntArg's own existing output — the same text
+// list_active_repos' sibling (parseRepoPagingArgs) already produces — NOT
+// decodeIntField's "got %v" format, which belongs to the seam-migrated
+// siblings (list_projects/list_goals) outside this ticket's scope.
+func TestHandleListPendingProposals_RejectsFractionalOrNonNumericPaging(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"fractional limit", map[string]any{"limit": 2.5}, "limit must be a whole number"},
+		{"fractional offset", map[string]any{"offset": 1.5}, "offset must be a whole number"},
+		{"non-numeric limit", map[string]any{"limit": "abc"}, "limit must be a number"},
+		{"non-numeric offset", map[string]any{"offset": "abc"}, "offset must be a number"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &countingProposalStore{stubProposalStore: &stubProposalStore{}}
+			s := &Server{proposal: spy}
+			req := mcpmsg.CallToolRequest{}
+			req.Params.Arguments = tc.args
+			r, err := s.handleListPendingProposals(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handleListPendingProposals error: %v", err)
+			}
+			if !r.IsError {
+				t.Fatalf("expected error result, got: %s", resultText(r))
+			}
+			if resultText(r) != tc.want {
+				t.Errorf("message = %q, want %q", resultText(r), tc.want)
+			}
+			if spy.listPendingPageCalls != 0 {
+				t.Errorf("ListPendingPage called %d times, want 0 — a rejected paging arg must "+
+					"never reach s.proposal.ListPendingPage", spy.listPendingPageCalls)
+			}
+		})
+	}
+}
+
+// TestHandleListPendingProposals_OmittedPagingArgsStillSucceed pins
+// optionalIntArg's absent-key branch returning (0, nil) for both limit and
+// offset — [F1003-02]'s negative case: an implementation that made these
+// required (requireIntArg instead of optionalIntArg) would break every
+// existing caller that omits them.
+func TestHandleListPendingProposals_OmittedPagingArgsStillSucceed(t *testing.T) {
+	t.Parallel()
+	spy := &countingProposalStore{stubProposalStore: &stubProposalStore{}}
+	s := &Server{proposal: spy}
+	r, err := s.handleListPendingProposals(context.Background(), mcpmsg.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handleListPendingProposals error: %v", err)
+	}
+	if r.IsError {
+		t.Fatalf("omitted limit/offset must still succeed, got: %s", resultText(r))
+	}
+	if spy.listPendingPageCalls != 1 {
+		t.Errorf("ListPendingPage called %d times, want 1", spy.listPendingPageCalls)
 	}
 }

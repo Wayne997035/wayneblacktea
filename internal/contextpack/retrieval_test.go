@@ -91,11 +91,11 @@ type fakeDecisionStore struct {
 
 var _ DecisionReadPort = (*fakeDecisionStore)(nil)
 
-func (f *fakeDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+func (f *fakeDecisionStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return f.byRepo, f.byRepoErr
 }
 
-func (f *fakeDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (f *fakeDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return f.byProject, f.byProjectErr
 }
 

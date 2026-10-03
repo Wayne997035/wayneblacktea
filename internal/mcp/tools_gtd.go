@@ -363,7 +363,14 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			"update_project_status",
 			mcp.WithDescription("Updates the status of a project."),
 			mcp.WithString("project_id", mcp.Description("Project UUID"), mcp.Required()),
-			mcp.WithString("status", mcp.Description("New status: active, completed, archived, or on_hold"), mcp.Required()),
+			mcp.WithString("status",
+				mcp.Description("New status: active, completed, archived, or on_hold"),
+				mcp.Required(),
+				// [F1003-01] Matches update_project's status Enum (tools_gtd.go:190)
+				// verbatim, so registerToolSpec's pass B now rejects an invalid value
+				// at the seam instead of only at handleUpdateProjectStatus's
+				// switch-default below.
+				mcp.Enum("active", "completed", "archived", "on_hold")),
 		), seam(s, "update_project_status", s.handleUpdateProjectStatus),
 		uuidArgs("project_id"),
 	)
@@ -1690,12 +1697,22 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	return jsonText(ackTask(wrapUntrustedTask(task))) // U13 Phase B (tools_gtd.go:1178)
 }
 
+// errMsgInvalidProjectStatus is handleUpdateProjectStatus's rejection text
+// for a status outside the gtd.ProjectStatus enum — byte-identical to the
+// seam's default enum message (toolspec.go's checkArgConstraints) by
+// construction, since [F1003-01] gave this field the same mcp.Enum().
+const errMsgInvalidProjectStatus = "status must be one of: active, completed, archived, on_hold"
+
 func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProjectStatusArgs) (*mcp.CallToolResult, error) {
 	status := gtd.ProjectStatus(args.Status)
 	switch status {
 	case gtd.ProjectStatusActive, gtd.ProjectStatusCompleted, gtd.ProjectStatusArchived, gtd.ProjectStatusOnHold:
 	default:
-		return mcp.NewToolResultError("status must be one of: active, completed, archived, on_hold"), nil
+		// [F1003-01] Defence-in-depth, not dead code: validateConstraints
+		// (toolspec.go pass B) only inspects present, non-empty STRING values,
+		// so a non-string status still reaches here even with the schema's
+		// new Enum declaration.
+		return mcp.NewToolResultError(errMsgInvalidProjectStatus), nil
 	}
 
 	project, err := s.gtd.UpdateProjectStatus(ctx, args.ProjectID, status)
@@ -1722,7 +1739,7 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 		return storeErrorResult("loading project", err), nil
 	}
 
-	decisions, err := s.decision.ByProject(ctx, project.ID, 5)
+	decisions, err := s.decision.ByProject(ctx, project.ID, 5, 0) // [F1003-10] get_project has no pagination concept
 	if err != nil {
 		return storeErrorResult("loading decisions", err), nil
 	}

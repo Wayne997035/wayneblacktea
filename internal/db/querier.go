@@ -81,7 +81,14 @@ type Querier interface {
 	ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error)
 	ListConcepts(ctx context.Context, arg ListConceptsParams) ([]Concept, error)
 	ListConceptsForAIReview(ctx context.Context, arg ListConceptsForAIReviewParams) ([]ListConceptsForAIReviewRow, error)
+	// [F1003-10] Same , id DESC tiebreaker + OFFSET rationale as
+	// ListDecisionsByRepo above.
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
+	// [F1003-10] , id DESC tiebreaker + OFFSET added: without a tiebreaker, rows
+	// sharing an identical created_at sort non-deterministically between calls,
+	// so offset-based paging over them can skip or duplicate across page
+	// boundaries. Matches ListDecisionsFiltered's existing convention below and
+	// SQLite's ByRepo, which already orders this way.
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
 	ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsByTaskIDParams) ([]Decision, error)
 	// P3.0a Stage B: source-filtered read path for MCP list_decisions.
@@ -148,8 +155,17 @@ type Querier interface {
 	// caller omitted the field (preserve stored value); a non-NULL value
 	// (including "") means an explicit set. Without this, every sync_repo call
 	// that didn't re-specify a field silently wiped it. known_issues already had
-	// this protection. github_slug ($10, [F0925-31]) follows the same
+	// this protection. github_slug ($9, [F0925-31]) follows the same
 	// presence-aware rule.
+	//
+	// [F1003-06] last_activity is server-stamped via NOW() on both the INSERT
+	// VALUES clause and the ON CONFLICT UPDATE SET, unconditionally — matching
+	// the adjacent updated_at = NOW() and SQLite's sqliteNowMillis() stamp
+	// (internal/storage/sqlite/workspace.go). It is NOT presence-aware and NOT
+	// bound to any caller-supplied parameter: every UpsertRepo call (every
+	// sync_repo MCP call included) marks the row as "just synced", so
+	// ListActiveRepos' ORDER BY last_activity DESC NULLS LAST reflects real
+	// recency instead of every row going permanently NULL.
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error)
 }
 

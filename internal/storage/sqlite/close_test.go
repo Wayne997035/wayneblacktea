@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -127,5 +128,54 @@ func TestDB_Close_IsIdempotent(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("second Close: %v, want nil (idempotent)", err)
+	}
+}
+
+// TestDB_Close_ConcurrentCallsAreRaceFree is the positive-control regression
+// test for [F1003-07]: N goroutines call Close() on the same *DB at the same
+// time (parked on a start channel, released together — same idiom as
+// TestCompleteTask_ConcurrentArtifactAppend_SQLite,
+// gtd_commitshas_concurrent_test.go:44-61). Before the fix, Close()'s
+// unsynchronized read of d.modeReference (passed into closeModeReference)
+// followed by the write d.modeReference = nil let two concurrent calls both
+// observe the pre-nil value — go test -race reports a DATA RACE on that
+// exact field on unfixed code (verified manually: reverting the
+// d.closeMu.Lock()/Unlock() pair in Close() and re-running this test with
+// -race fails red; restoring the lock passes green — see the PR description
+// for both outputs). This test only proves no data race and every call
+// returns nil; it intentionally does not assert anything about descriptor
+// double-close behavior, which TestCloseAbandonedOpen_ReleasesConnAndModeReference
+// already covers.
+func TestDB_Close_ConcurrentCallsAreRaceFree(t *testing.T) {
+	t.Parallel() // [F0925-10]
+	dsn := "file:" + filepath.Join(t.TempDir(), "concurrent-close.db")
+	db, err := Open(context.Background(), dsn, "")
+	if err != nil {
+		t.Fatalf("Open(%q): %v", dsn, err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, n)
+	wg.Add(n)
+	ready.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			ready.Done()
+			<-start
+			defer wg.Done()
+			if closeErr := db.Close(); closeErr != nil {
+				errs <- closeErr
+			}
+		}()
+	}
+	ready.Wait() // every goroutine parked at <-start before any can begin its call
+	close(start) // release all as close to simultaneously as the scheduler allows
+	wg.Wait()
+	close(errs)
+	for closeErr := range errs {
+		t.Errorf("concurrent Close() returned non-nil error: %v, want nil on every call", closeErr)
 	}
 }

@@ -7,18 +7,27 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: ListDecisionsByRepo :many
+-- [F1003-10] , id DESC tiebreaker + OFFSET added: without a tiebreaker, rows
+-- sharing an identical created_at sort non-deterministically between calls,
+-- so offset-based paging over them can skip or duplicate across page
+-- boundaries. Matches ListDecisionsFiltered's existing convention below and
+-- SQLite's ByRepo, which already orders this way.
 SELECT * FROM decisions
 WHERE repo_name = sqlc.arg('repo_name')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
-ORDER BY created_at DESC
-LIMIT sqlc.arg('limit_n');
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit_n')
+OFFSET sqlc.arg('offset_n');
 
 -- name: ListDecisionsByProject :many
+-- [F1003-10] Same , id DESC tiebreaker + OFFSET rationale as
+-- ListDecisionsByRepo above.
 SELECT * FROM decisions
 WHERE project_id = sqlc.arg('project_id')
   AND (sqlc.narg('workspace_id')::uuid IS NULL OR workspace_id = sqlc.narg('workspace_id'))
-ORDER BY created_at DESC
-LIMIT sqlc.arg('limit_n');
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit_n')
+OFFSET sqlc.arg('offset_n');
 
 -- name: ListAllDecisions :many
 SELECT * FROM decisions

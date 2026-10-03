@@ -355,6 +355,13 @@ func TestUpdateProject_NotFound(t *testing.T) {
 	}
 }
 
+// wantProjectStatusEnumMsg is the spec's required rejection text for an
+// invalid update_project / update_project_status status value — a literal
+// the test owns independently of production's errMsgInvalidProjectStatus, so
+// a typo in that production constant still fails these tests instead of the
+// assertion validating itself against whatever the handler happens to emit.
+const wantProjectStatusEnumMsg = "status must be one of: active, completed, archived, on_hold"
+
 func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
@@ -363,7 +370,7 @@ func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid status must error, got: %s", resultText(r))
 	}
-	want := "status must be one of: active, completed, archived, on_hold"
+	want := wantProjectStatusEnumMsg
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
@@ -617,7 +624,7 @@ func TestUpdateProjectStatus_InvalidEnum(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid status must error, got: %s", resultText(r))
 	}
-	want := "status must be one of: active, completed, archived, on_hold"
+	want := wantProjectStatusEnumMsg
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
@@ -629,6 +636,64 @@ func TestUpdateProjectStatus_NotFound(t *testing.T) {
 	r := callUpdateProjectStatus(t, s, map[string]any{"project_id": uuid.New().String(), "status": "completed"})
 	if !r.IsError || resultText(r) != "project not found" {
 		t.Errorf("got %q, want %q", resultText(r), "project not found")
+	}
+}
+
+// TestUpdateProjectStatus_SchemaDeclaresEnum is [F1003-01]'s schema-level
+// proof: update_project_status's registered InputSchema must now advertise
+// the same enum update_project's status field already carries
+// (tools_gtd.go:190). Before the fix, "enum" was absent from this field's
+// schema entirely — this failed red on main.
+func TestUpdateProjectStatus_SchemaDeclaresEnum(t *testing.T) {
+	t.Parallel()
+	_, ms := newTestMCPServer(t)
+	tool := ms.GetTool("update_project_status")
+	if tool == nil {
+		t.Fatal("update_project_status not registered on MCPServer()")
+	}
+	prop, ok := tool.Tool.InputSchema.Properties["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("status property = %#v, want map[string]any", tool.Tool.InputSchema.Properties["status"])
+	}
+	got, ok := prop["enum"].([]string)
+	if !ok {
+		t.Fatalf("status enum = %#v, want []string", prop["enum"])
+	}
+	want := []string{"active", "completed", "archived", "on_hold"}
+	if len(got) != len(want) {
+		t.Fatalf("status enum = %v, want %v", got, want)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Errorf("status enum[%d] = %q, want %q", i, got[i], v)
+		}
+	}
+}
+
+// TestUpdateProjectStatus_HandlerRejectsInvalidStatusDirectly is [F1003-01]'s
+// defence-in-depth proof: handleUpdateProjectStatus's own switch-default must
+// still reject an invalid status when called directly, bypassing the seam's
+// new Enum check entirely (unlike TestUpdateProjectStatus_InvalidEnum above,
+// which now gets intercepted one layer earlier by validateConstraints). The
+// error text is byte-identical to the seam's, matching the spec's
+// no-caller-visible-change requirement.
+func TestUpdateProjectStatus_HandlerRejectsInvalidStatusDirectly(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
+	r, err := s.handleUpdateProjectStatus(context.Background(), UpdateProjectStatusArgs{
+		ProjectID: id,
+		Status:    "bogus",
+	})
+	if err != nil {
+		t.Fatalf("handleUpdateProjectStatus error: %v", err)
+	}
+	if !r.IsError {
+		t.Fatalf("handler's own switch-default must still reject an invalid status, got: %s", resultText(r))
+	}
+	want := wantProjectStatusEnumMsg
+	if resultText(r) != want {
+		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
 }
 

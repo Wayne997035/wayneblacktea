@@ -156,10 +156,12 @@ type UpdateTaskArgs struct {
 	Area        string    `mcp:"area"`
 }
 
-// UpdateProjectStatusArgs — update_project_status. Status is required at the
-// schema level but NOT declared with mcp.Enum() there (unlike
-// update_project's status field) — the seam only derives what's declared, so
-// enum-membership stays hand-checked in handleUpdateProjectStatus.
+// UpdateProjectStatusArgs — update_project_status. Status is required and
+// declared with mcp.Enum() (tools_gtd.go:366), matching update_project's
+// status field — [F1003-01]. The seam's validateConstraints rejects a
+// non-matching value before handleUpdateProjectStatus runs; its own
+// switch-default guard stays as defence-in-depth for a non-string status
+// value, which validateConstraints does not inspect.
 type UpdateProjectStatusArgs struct {
 	ProjectID uuid.UUID `mcp:"project_id"`
 	Status    string    `mcp:"status"`

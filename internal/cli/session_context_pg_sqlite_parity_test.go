@@ -263,12 +263,14 @@ func TestRenderSessionContext_PostgresSQLiteGoldenParity(t *testing.T) {
 	// doc comment) — the two calls above legitimately get different
 	// crypto-random tokens by design, that is not a backend divergence.
 	if normalizeBoundaryToken(pgRendered) != normalizeBoundaryToken(sqliteRendered) {
-		t.Fatalf("rendered systemMessage differs between backends (after normalizing per-call boundary tokens):\n--- postgres ---\n%s\n--- sqlite ---\n%s", pgRendered, sqliteRendered)
+		t.Fatalf("rendered systemMessage differs between backends (after normalizing per-call boundary tokens):\n"+
+			"--- postgres ---\n%s\n--- sqlite ---\n%s", pgRendered, sqliteRendered)
 	}
 
 	betaIdx := strings.Index(pgRendered, "beta decision")
 	alphaIdx := strings.Index(pgRendered, "alpha decision")
 	if betaIdx < 0 || alphaIdx < 0 || betaIdx > alphaIdx {
-		t.Errorf("expected \"beta decision\" (higher score via keyword match) to render before \"alpha decision\" on both backends; postgres output:\n%s", pgRendered)
+		t.Errorf("expected \"beta decision\" (higher score via keyword match) to render before \"alpha decision\" on both "+
+			"backends; postgres output:\n%s", pgRendered)
 	}
 }

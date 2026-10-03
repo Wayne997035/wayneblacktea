@@ -106,7 +106,9 @@ type repoOverviewGTDStore interface {
 // repoOverviewDecisionStore covers the decision.StoreIface methods needed by
 // the repo-overview endpoint.
 type repoOverviewDecisionStore interface {
-	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
+	// ByRepo gained an offset parameter [F1003-10]; repo-overview always
+	// wants the newest page, so its call site passes 0.
+	ByRepo(ctx context.Context, repoName string, limit, offset int32) ([]db.Decision, error)
 }
 
 // repoOverviewSessionStore covers the session.StoreIface methods needed by
@@ -116,10 +118,14 @@ type repoOverviewSessionStore interface {
 }
 
 // decisionStore covers the subset of decision.Store used by handlers.
+// [F1003-11] All was dropped in favor of List(..., IncludeAuto: true) — the
+// no-filter branch of ListDecisions needs offset/has_more paging, which All
+// (frozen at a 20+ caller 2-arg signature, see decision.Store.All's doc
+// comment) cannot grow to support.
 type decisionStore interface {
-	All(ctx context.Context, limit int32) ([]db.Decision, error)
-	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
-	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
+	ByRepo(ctx context.Context, repoName string, limit, offset int32) ([]db.Decision, error)
+	ByProject(ctx context.Context, projectID uuid.UUID, limit, offset int32) ([]db.Decision, error)
+	List(ctx context.Context, p decision.ListParams) ([]db.Decision, error)
 	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
 }
 

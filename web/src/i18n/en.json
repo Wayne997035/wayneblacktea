@@ -148,6 +148,8 @@
     "allRepos": "All Repos",
     "searchPlaceholder": "Search decisions...",
     "noDecisions": "No decisions recorded",
+    "loadMore": "Load more",
+    "loadMoreFailed": "Failed to load more decisions",
     "showFull": "▸ Show full",
     "collapse": "▾ Collapse",
     "context": "Context",

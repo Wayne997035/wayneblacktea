@@ -6,8 +6,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestSyncRepo_OmittedKnownIssuesPreserved is the PG bad-case regression
@@ -28,7 +30,18 @@ func TestSyncRepo_OmittedKnownIssuesPreserved(t *testing.T) {
 
 	repoName := "wbt-omission-preserve-pg"
 
-	// seed: full repo row, including known_issues=["x"].
+	seeded := syncRepoOmittedKnownIssuesPreservedSeed(t, ctx, pool, store, repoName)
+	updated := syncRepoOmittedKnownIssuesPreservedSyncUpdate(t, ctx, store, repoName, seeded)
+	syncRepoOmittedKnownIssuesPreservedAssertUpdated(t, seeded, updated)
+	syncRepoOmittedKnownIssuesPreservedAssertReloaded(t, ctx, store, repoName)
+}
+
+// syncRepoOmittedKnownIssuesPreservedSeed seeds a full repo row, including
+// known_issues=["x"], and registers its cleanup.
+func syncRepoOmittedKnownIssuesPreservedSeed(
+	t *testing.T, ctx context.Context, pool *pgxpool.Pool, store *workspace.Store, repoName string,
+) *db.Repo {
+	t.Helper()
 	seeded, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:            repoName,
 		Path:            strPtr("/repos/wbt"),
@@ -46,9 +59,16 @@ func TestSyncRepo_OmittedKnownIssuesPreserved(t *testing.T) {
 			t.Logf("cleanup repo: %v", delErr)
 		}
 	})
+	return seeded
+}
 
-	// bad case: sync_repo(name, current_branch="feature/y") only — every
-	// other field, including known_issues, omitted.
+// syncRepoOmittedKnownIssuesPreservedSyncUpdate applies the bad case:
+// sync_repo(name, current_branch="feature/y") only — every other field,
+// including known_issues, omitted.
+func syncRepoOmittedKnownIssuesPreservedSyncUpdate(
+	t *testing.T, ctx context.Context, store *workspace.Store, repoName string, seeded *db.Repo,
+) *db.Repo {
+	t.Helper()
 	updated, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{
 		Name:          repoName,
 		CurrentBranch: strPtr("feature/y"),
@@ -59,6 +79,13 @@ func TestSyncRepo_OmittedKnownIssuesPreserved(t *testing.T) {
 	if updated.ID != seeded.ID {
 		t.Fatalf("expected same repo row (upsert, not new insert): seeded=%s updated=%s", seeded.ID, updated.ID)
 	}
+	return updated
+}
+
+// syncRepoOmittedKnownIssuesPreservedAssertUpdated asserts the updated row's
+// returned fields: current_branch changed, everything else preserved.
+func syncRepoOmittedKnownIssuesPreservedAssertUpdated(t *testing.T, seeded, updated *db.Repo) {
+	t.Helper()
 	if len(updated.KnownIssues) != 1 || updated.KnownIssues[0] != "x" {
 		t.Errorf("known_issues = %v, want preserved [\"x\"] (not wiped to [])", updated.KnownIssues)
 	}
@@ -77,9 +104,13 @@ func TestSyncRepo_OmittedKnownIssuesPreserved(t *testing.T) {
 	if !updated.NextPlannedStep.Valid || updated.NextPlannedStep.String != "original next step" {
 		t.Errorf("next_planned_step = %+v, want preserved \"original next step\"", updated.NextPlannedStep)
 	}
+}
 
-	// reload independently — defence-in-depth in case UpsertRepo's own
-	// returned row ever drifted from what's actually persisted.
+// syncRepoOmittedKnownIssuesPreservedAssertReloaded reloads independently —
+// defence-in-depth in case UpsertRepo's own returned row ever drifted from
+// what's actually persisted.
+func syncRepoOmittedKnownIssuesPreservedAssertReloaded(t *testing.T, ctx context.Context, store *workspace.Store, repoName string) {
+	t.Helper()
 	reloaded, err := store.RepoByName(ctx, repoName)
 	if err != nil {
 		t.Fatalf("RepoByName: %v", err)

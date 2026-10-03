@@ -9,6 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// statusAutoAppliedLiteral names the candidate status value asserted after
+// WriteAutoApplied (goconst flags 3+ bare repeats of the literal).
+const statusAutoAppliedLiteral = "auto_applied"
+
 // TestSQLiteWriteAutoApplied covers the happy path: a fresh INSERT produces a
 // row with status='auto_applied' reason='artifact_evidence', the evidence_refs
 // list contains the PR URL, and suggested_artifact == PR URL.
@@ -26,7 +30,7 @@ func TestSQLiteWriteAutoApplied(t *testing.T) {
 	}
 
 	got := readCandidate(t, db, taskID)
-	if got.status != "auto_applied" {
+	if got.status != statusAutoAppliedLiteral {
 		t.Errorf("status = %q, want auto_applied", got.status)
 	}
 	if got.reason != "artifact_evidence" {
@@ -72,7 +76,7 @@ func TestSQLiteWriteAutoApplied_OnConflictForcesAutoApplied(t *testing.T) {
 		t.Errorf("expected 1 row after re-call, got %d", rows)
 	}
 	got := readCandidate(t, db, taskID)
-	if got.status != "auto_applied" {
+	if got.status != statusAutoAppliedLiteral {
 		t.Errorf("status = %q, want auto_applied", got.status)
 	}
 }
@@ -128,7 +132,8 @@ func readCandidate(t *testing.T, db *sql.DB, taskID uuid.UUID) candidateRow {
 func countCandidatesForTask(t *testing.T, db *sql.DB, taskID uuid.UUID) int {
 	t.Helper()
 	var n int
-	if err := db.QueryRowContext(context.Background(),
+	if err := db.QueryRowContext(
+		context.Background(),
 		`SELECT COUNT(*) FROM completion_candidates WHERE task_id = ?`,
 		taskID.String(),
 	).Scan(&n); err != nil {

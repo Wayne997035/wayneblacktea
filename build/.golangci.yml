@@ -125,6 +125,10 @@ linters:
       - path: "internal/gtd/store\\.go"
         linters:
           - unqueryvet # queryFilteredTasks concatenates compile-time const selectCols only; all dynamic values use bound params ($1..$5); no user input reaches the query structure
+      - path: "internal/storage/repo_name_cleanup_migration_integration_test.go"
+        linters:
+          - unqueryvet # name is a program-generated counter (newIsolatedTestDB); Postgres CREATE/DROP DATABASE cannot bind the database identifier as a query parameter
+        source: "CREATE DATABASE `\\+name|DROP DATABASE IF EXISTS `\\+name\\+` WITH \\(FORCE\\)"
 
 issues:
   max-issues-per-linter: 0

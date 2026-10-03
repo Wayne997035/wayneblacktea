@@ -38,7 +38,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -665,60 +666,85 @@ func TestStore_ListByDigestStatus(t *testing.T) {
 	}
 
 	t.Run("happy path: returns consolidated atoms scoped to workspace", func(t *testing.T) {
-		results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 10)
-		if err != nil {
-			t.Fatalf("ListByDigestStatus: %v", err)
-		}
-		if len(results) != 3 {
-			t.Errorf("expected 3 consolidated atoms for wsID, got %d", len(results))
-		}
-		for _, a := range results {
-			if a.DigestStatus == nil || *a.DigestStatus != "consolidated" {
-				t.Errorf("expected digest_status='consolidated', got %v", a.DigestStatus)
-			}
-		}
+		storeListByDigestStatusHappyPath(t, ctx, store, wsID)
 	})
 
 	t.Run("limit is respected", func(t *testing.T) {
-		results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 1)
-		if err != nil {
-			t.Fatalf("ListByDigestStatus limit: %v", err)
-		}
-		if len(results) != 1 {
-			t.Errorf("expected 1 result with limit=1, got %d", len(results))
-		}
+		storeListByDigestStatusLimitRespected(t, ctx, store, wsID)
 	})
 
 	t.Run("workspace isolation: other workspace not included", func(t *testing.T) {
-		results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 100)
-		if err != nil {
-			t.Fatalf("ListByDigestStatus isolation: %v", err)
-		}
-		for _, a := range results {
-			if a.WorkspaceID != nil && *a.WorkspaceID == otherWsID {
-				t.Errorf("other workspace atom leaked into wsID result: %s", a.ID)
-			}
-		}
+		storeListByDigestStatusWorkspaceIsolation(t, ctx, store, wsID, otherWsID)
 	})
 
 	t.Run("unknown status returns empty slice without error", func(t *testing.T) {
-		results, err := store.ListByDigestStatus(ctx, &wsID, "nosuchstatus", 10)
-		if err != nil {
-			t.Fatalf("ListByDigestStatus unknown status: %v", err)
-		}
-		if len(results) != 0 {
-			t.Errorf("expected 0 results for unknown status, got %d", len(results))
-		}
+		storeListByDigestStatusUnknownStatus(t, ctx, store, wsID)
 	})
 
 	t.Run("nil workspace returns atoms across all workspaces", func(t *testing.T) {
-		results, err := store.ListByDigestStatus(ctx, nil, "consolidated", 100)
-		if err != nil {
-			t.Fatalf("ListByDigestStatus nil ws: %v", err)
-		}
-		// Must include both wsID and otherWsID consolidated atoms.
-		if len(results) < 4 {
-			t.Errorf("expected at least 4 consolidated atoms globally, got %d", len(results))
-		}
+		storeListByDigestStatusNilWorkspace(t, ctx, store)
 	})
+}
+
+func storeListByDigestStatusHappyPath(t *testing.T, ctx context.Context, store *atom.Store, wsID uuid.UUID) {
+	t.Helper()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 10)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 consolidated atoms for wsID, got %d", len(results))
+	}
+	for _, a := range results {
+		if a.DigestStatus == nil || *a.DigestStatus != "consolidated" {
+			t.Errorf("expected digest_status='consolidated', got %v", a.DigestStatus)
+		}
+	}
+}
+
+func storeListByDigestStatusLimitRespected(t *testing.T, ctx context.Context, store *atom.Store, wsID uuid.UUID) {
+	t.Helper()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 1)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus limit: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result with limit=1, got %d", len(results))
+	}
+}
+
+func storeListByDigestStatusWorkspaceIsolation(t *testing.T, ctx context.Context, store *atom.Store, wsID, otherWsID uuid.UUID) {
+	t.Helper()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "consolidated", 100)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus isolation: %v", err)
+	}
+	for _, a := range results {
+		if a.WorkspaceID != nil && *a.WorkspaceID == otherWsID {
+			t.Errorf("other workspace atom leaked into wsID result: %s", a.ID)
+		}
+	}
+}
+
+func storeListByDigestStatusUnknownStatus(t *testing.T, ctx context.Context, store *atom.Store, wsID uuid.UUID) {
+	t.Helper()
+	results, err := store.ListByDigestStatus(ctx, &wsID, "nosuchstatus", 10)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus unknown status: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for unknown status, got %d", len(results))
+	}
+}
+
+func storeListByDigestStatusNilWorkspace(t *testing.T, ctx context.Context, store *atom.Store) {
+	t.Helper()
+	results, err := store.ListByDigestStatus(ctx, nil, "consolidated", 100)
+	if err != nil {
+		t.Fatalf("ListByDigestStatus nil ws: %v", err)
+	}
+	// Must include both wsID and otherWsID consolidated atoms.
+	if len(results) < 4 {
+		t.Errorf("expected at least 4 consolidated atoms globally, got %d", len(results))
+	}
 }

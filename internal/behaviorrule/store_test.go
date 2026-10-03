@@ -27,6 +27,10 @@ var skipMigrations = map[string]bool{
 
 var testPgPool *pgxpool.Pool
 
+// statusActiveLiteral names the "active" rule status value asserted in
+// several ApplyOutcome tests (goconst flags 3+ bare repeats of the literal).
+const statusActiveLiteral = "active"
+
 func TestMain(m *testing.M) {
 	flag.Parse()
 	os.Exit(run(m))
@@ -165,7 +169,7 @@ func TestStore_ApplyOutcome_SuccessOnProposed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyOutcome success: %v", err)
 	}
-	if updated.Status != "active" {
+	if updated.Status != statusActiveLiteral {
 		t.Errorf("expected status 'active' after success on proposed, got %q", updated.Status)
 	}
 	// 0.50 + 0.05 = 0.55
@@ -197,7 +201,7 @@ func TestStore_ApplyOutcome_SuccessOnActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyOutcome first success: %v", err)
 	}
-	if active.Status != "active" {
+	if active.Status != statusActiveLiteral {
 		t.Fatalf("expected active status, got %q", active.Status)
 	}
 
@@ -206,7 +210,7 @@ func TestStore_ApplyOutcome_SuccessOnActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyOutcome second success: %v", err)
 	}
-	if updated.Status != "active" {
+	if updated.Status != statusActiveLiteral {
 		t.Errorf("status changed unexpectedly: got %q", updated.Status)
 	}
 	// 0.60 + 0.05 + 0.05 = 0.70

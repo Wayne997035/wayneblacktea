@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
+import { invalidateDecisionLists } from './useDecisions'
 
 interface BatchConfirmRequest {
   ids: string[]
@@ -30,6 +31,9 @@ export function useConfirmBatchProposals() {
       void qc.invalidateQueries({ queryKey: ['goals'] })
       void qc.invalidateQueries({ queryKey: ['projects'] })
       void qc.invalidateQueries({ queryKey: ['context', 'today'] })
+      // [F1003-15] batch-accepting decision-type proposals creates Decision
+      // rows server-side — keep both decision list caches in sync too.
+      invalidateDecisionLists(qc)
     },
   })
 }

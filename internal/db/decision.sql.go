@@ -129,18 +129,27 @@ const listDecisionsByProject = `-- name: ListDecisionsByProject :many
 SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE project_id = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
-ORDER BY created_at DESC
-LIMIT $3
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+OFFSET $3
 `
 
 type ListDecisionsByProjectParams struct {
 	ProjectID   pgtype.UUID `json:"project_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OffsetN     int32       `json:"offset_n"`
 	LimitN      int32       `json:"limit_n"`
 }
 
+// [F1003-10] Same , id DESC tiebreaker + OFFSET rationale as
+// ListDecisionsByRepo above.
 func (q *Queries) ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error) {
-	rows, err := q.db.Query(ctx, listDecisionsByProject, arg.ProjectID, arg.WorkspaceID, arg.LimitN)
+	rows, err := q.db.Query(ctx, listDecisionsByProject,
+		arg.ProjectID,
+		arg.WorkspaceID,
+		arg.OffsetN,
+		arg.LimitN,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -182,18 +191,30 @@ const listDecisionsByRepo = `-- name: ListDecisionsByRepo :many
 SELECT id, project_id, repo_name, title, context, decision, rationale, alternatives, created_at, workspace_id, embedding, task_id, embedding_provider, embedding_model, embedding_dim, source, actor_session_id, confirmed_by_human FROM decisions
 WHERE repo_name = $1
   AND ($2::uuid IS NULL OR workspace_id = $2)
-ORDER BY created_at DESC
-LIMIT $3
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+OFFSET $3
 `
 
 type ListDecisionsByRepoParams struct {
 	RepoName    pgtype.Text `json:"repo_name"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OffsetN     int32       `json:"offset_n"`
 	LimitN      int32       `json:"limit_n"`
 }
 
+// [F1003-10] , id DESC tiebreaker + OFFSET added: without a tiebreaker, rows
+// sharing an identical created_at sort non-deterministically between calls,
+// so offset-based paging over them can skip or duplicate across page
+// boundaries. Matches ListDecisionsFiltered's existing convention below and
+// SQLite's ByRepo, which already orders this way.
 func (q *Queries) ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error) {
-	rows, err := q.db.Query(ctx, listDecisionsByRepo, arg.RepoName, arg.WorkspaceID, arg.LimitN)
+	rows, err := q.db.Query(ctx, listDecisionsByRepo,
+		arg.RepoName,
+		arg.WorkspaceID,
+		arg.OffsetN,
+		arg.LimitN,
+	)
 	if err != nil {
 		return nil, err
 	}
