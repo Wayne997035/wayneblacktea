@@ -365,3 +365,31 @@ func TestListDecisions_NoFilterLimitBoundary(t *testing.T) {
 		})
 	}
 }
+
+// TestListDecisions_NoFilterHugeOffsetDoesNotOverflow covers the no-filter
+// existence probe's offset+limit arithmetic (decision_handler.go's
+// listAllWithHasMore) at an offset large enough that offset+limit overflows
+// int32. The fake store does not call Validate itself, so the HTTP status
+// code alone cannot distinguish a fixed handler from a broken one --
+// asserting every ListParams the handler actually sends against
+// decision.ListParams.Validate is what catches the overflow: a real store's
+// Validate rejects the resulting negative Offset and the request would 500.
+func TestListDecisions_NoFilterHugeOffsetDoesNotOverflow(t *testing.T) {
+	store := &fakeDecisionHandlerStore{}
+	e := newEcho()
+	h := handler.NewDecisionHandler(store)
+	e.GET("/api/decisions", h.ListDecisions)
+	rec := performRequest(e, http.MethodGet, "/api/decisions?limit=100&offset=2147483600", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeDecisionsPage(t, rec.Body.String())
+	if body.Offset != 2147483600 || body.HasMore {
+		t.Errorf("got {offset:%d has_more:%v}, want {offset:2147483600 has_more:false}", body.Offset, body.HasMore)
+	}
+	for _, p := range store.gotListParams {
+		if err := p.Validate(); err != nil {
+			t.Errorf("ListParams %+v failed Validate: %v (a server-side overflow must never reach the store)", p, err)
+		}
+	}
+}

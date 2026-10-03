@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -76,6 +77,21 @@ func (h *DecisionHandler) listAllWithHasMore(ctx context.Context, limit, offset,
 	decisions, err := h.store.List(ctx, decision.ListParams{Limit: limit, Offset: offset, IncludeAuto: true})
 	if err != nil {
 		return nil, false, fmt.Errorf("listing decisions: %w", err)
+	}
+	// offset and limit are both int32; at this probe's scale
+	// (offset near math.MaxInt32) offset+limit can overflow int32 and wrap
+	// negative, which decision.ListParams.Validate then rejects, turning a
+	// legal huge offset into a 500. Check the sum in int64 first: once it
+	// exceeds what int32 can represent, there is no int32 offset beyond
+	// this page that could return a row anyway, so skip the probe and
+	// report no next page directly instead of calling the store. Below the
+	// threshold, the plain int32 addition offset+limit is proven safe by
+	// this same check and is used as-is — gosec G115 flags narrowing
+	// conversions like int32(next), not in-range int32 arithmetic, so this
+	// avoids the finding instead of suppressing it.
+	next := int64(offset) + int64(limit)
+	if next > math.MaxInt32 {
+		return decisions, false, nil
 	}
 	probe, err := h.store.List(ctx, decision.ListParams{Limit: 1, Offset: offset + limit, IncludeAuto: true})
 	if err != nil {
