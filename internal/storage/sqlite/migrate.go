@@ -29,7 +29,9 @@ import (
 // [F0925-33] 83 -> 84 for migrations/sqlite/000084_repo_name_cleanup (data
 // cleanup only, no schema object added).
 // [F0930-06] 84 -> 85 for migrations/sqlite/000085_pending_proposals_source_entity_idx.
-const latestSQLiteSchemaVersion = 85
+// [F1003-08] 85 -> 86 for migrations/sqlite/000086_goals_active_due_date_idx.
+// [F1003-09] 86 -> 87 for migrations/sqlite/000087_pending_proposals_status_pending_sort_key.
+const latestSQLiteSchemaVersion = 87
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

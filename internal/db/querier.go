@@ -155,8 +155,17 @@ type Querier interface {
 	// caller omitted the field (preserve stored value); a non-NULL value
 	// (including "") means an explicit set. Without this, every sync_repo call
 	// that didn't re-specify a field silently wiped it. known_issues already had
-	// this protection. github_slug ($10, [F0925-31]) follows the same
+	// this protection. github_slug ($9, [F0925-31]) follows the same
 	// presence-aware rule.
+	//
+	// [F1003-06] last_activity is server-stamped via NOW() on both the INSERT
+	// VALUES clause and the ON CONFLICT UPDATE SET, unconditionally — matching
+	// the adjacent updated_at = NOW() and SQLite's sqliteNowMillis() stamp
+	// (internal/storage/sqlite/workspace.go). It is NOT presence-aware and NOT
+	// bound to any caller-supplied parameter: every UpsertRepo call (every
+	// sync_repo MCP call included) marks the row as "just synced", so
+	// ListActiveRepos' ORDER BY last_activity DESC NULLS LAST reflects real
+	// recency instead of every row going permanently NULL.
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) (Repo, error)
 }
 

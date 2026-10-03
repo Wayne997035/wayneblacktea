@@ -423,6 +423,13 @@ var expectedNewEntries = map[string]bool{
 	// baseline — see the migration file's own header comment for the full
 	// rationale.
 	"index|idx_pending_proposals_type_proposer_source": true,
+
+	// migrations/sqlite/000086_goals_active_due_date_idx.up.sql [F1003-08]:
+	// supports ListActiveGoals'/ActiveGoalsPage's
+	// WHERE status = 'active' ... ORDER BY due_date, id shape, which had no
+	// supporting index before. Net-new versus the frozen golden baseline —
+	// see the migration file's own header comment for the full rationale.
+	"index|idx_goals_active_due_date": true,
 }
 
 // migrations/sqlite/000082_index_parity.up.sql (F0925-15) realigns 3

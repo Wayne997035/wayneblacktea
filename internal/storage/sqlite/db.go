@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers "sqlite"
 )
@@ -34,6 +35,16 @@ type DB struct {
 	// Close(). nil for :memory: / non-file DSNs (see secureCreationDSNWith).
 	modeReference *os.File
 	workspaceID   string // empty = legacy unscoped mode
+	// closeMu [F1003-07] serializes Close()'s entire body (the read of
+	// modeReference through the write that nils it out) so concurrent
+	// Close() calls can't interleave their read/write on modeReference —
+	// see Close()'s doc comment for why an unsynchronized version data-races
+	// even though the underlying *os.File/*sql.DB closes are themselves
+	// safe to call twice. Never copy *DB by value after Open() hands one
+	// out (sync.Mutex must not be copied after first use) — every existing
+	// caller already holds/passes *DB by pointer (confirmed: no `sqlite.DB{`
+	// literal anywhere in internal/).
+	closeMu sync.Mutex
 }
 
 // Open creates a new DB by opening dsn (e.g. "file:wbt.db" or ":memory:") and
@@ -514,10 +525,24 @@ func chmodOwnerOnlyWith(path string, skipMissing bool, chmod func(string, os.Fil
 // closeModeReference(nil) short-circuits to nil, matching *sql.DB's own
 // idempotent contract instead of surfacing a spurious error on a resource
 // that's already gone.
+//
+// [F1003-07] Concurrency-safe: the nil-receiver/nil-conn guard runs before
+// ever touching d.closeMu (locking through a possibly-nil *DB would panic),
+// but everything from the modeReference read through the `= nil` write runs
+// under the lock. Before this fix, two goroutines calling Close()
+// concurrently could both read the pre-nil modeReference before either's
+// write landed — an unsynchronized concurrent read/write on the same
+// struct field, which go test -race flags regardless of *os.File.Close()
+// itself tolerating a concurrent double-close via its own fdMutex (it does
+// — there's no resource-safety bug, only a Go-level data race on this
+// field). The lock does not wrap any callback into DB's own methods, so
+// there is no reentrancy/deadlock risk from this change.
 func (d *DB) Close() error {
 	if d == nil || d.conn == nil {
 		return nil
 	}
+	d.closeMu.Lock()
+	defer d.closeMu.Unlock()
 	err := errors.Join(d.conn.Close(), closeModeReference(d.modeReference))
 	d.modeReference = nil
 	return err
