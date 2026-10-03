@@ -355,6 +355,13 @@ func TestUpdateProject_NotFound(t *testing.T) {
 	}
 }
 
+// wantProjectStatusEnumMsg is the spec's required rejection text for an
+// invalid update_project / update_project_status status value — a literal
+// the test owns independently of production's errMsgInvalidProjectStatus, so
+// a typo in that production constant still fails these tests instead of the
+// assertion validating itself against whatever the handler happens to emit.
+const wantProjectStatusEnumMsg = "status must be one of: active, completed, archived, on_hold"
+
 func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
@@ -363,7 +370,7 @@ func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid status must error, got: %s", resultText(r))
 	}
-	want := errMsgInvalidProjectStatus
+	want := wantProjectStatusEnumMsg
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
@@ -617,7 +624,7 @@ func TestUpdateProjectStatus_InvalidEnum(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid status must error, got: %s", resultText(r))
 	}
-	want := errMsgInvalidProjectStatus
+	want := wantProjectStatusEnumMsg
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
@@ -684,7 +691,7 @@ func TestUpdateProjectStatus_HandlerRejectsInvalidStatusDirectly(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("handler's own switch-default must still reject an invalid status, got: %s", resultText(r))
 	}
-	want := errMsgInvalidProjectStatus
+	want := wantProjectStatusEnumMsg
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
