@@ -363,7 +363,7 @@ func TestUpdateProject_InvalidStatusEnum(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid status must error, got: %s", resultText(r))
 	}
-	want := "status must be one of: active, completed, archived, on_hold"
+	want := errMsgInvalidProjectStatus
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
@@ -617,7 +617,7 @@ func TestUpdateProjectStatus_InvalidEnum(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("invalid status must error, got: %s", resultText(r))
 	}
-	want := "status must be one of: active, completed, archived, on_hold"
+	want := errMsgInvalidProjectStatus
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}
@@ -684,7 +684,7 @@ func TestUpdateProjectStatus_HandlerRejectsInvalidStatusDirectly(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("handler's own switch-default must still reject an invalid status, got: %s", resultText(r))
 	}
-	want := "status must be one of: active, completed, archived, on_hold"
+	want := errMsgInvalidProjectStatus
 	if resultText(r) != want {
 		t.Errorf("message = %q, want %q", resultText(r), want)
 	}

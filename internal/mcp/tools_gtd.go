@@ -1697,6 +1697,18 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	return jsonText(ackTask(wrapUntrustedTask(task))) // U13 Phase B (tools_gtd.go:1178)
 }
 
+// errMsgInvalidProjectStatus is handleUpdateProjectStatus's own rejection
+// text for a status outside the gtd.ProjectStatus enum. It is byte-identical
+// to the seam's default enum message for update_project's "status" field
+// (toolspec.go's checkArgConstraints: name + " must be one of: " +
+// strings.Join(enum, ", ")), by construction — [F1003-01]'s mcp.Enum() on
+// update_project_status's own "status" field now also derives this same text
+// at the seam. Declared as a package-level constant (goconst, 3+ sites: this
+// handler plus tests in tools_gtd_untested_test.go for both update_project
+// and update_project_status) so a future change to the enum values cannot
+// desync the string in one site while the others still assert the old text.
+const errMsgInvalidProjectStatus = "status must be one of: active, completed, archived, on_hold"
+
 func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProjectStatusArgs) (*mcp.CallToolResult, error) {
 	status := gtd.ProjectStatus(args.Status)
 	switch status {
@@ -1706,7 +1718,7 @@ func (s *Server) handleUpdateProjectStatus(ctx context.Context, args UpdateProje
 		// (toolspec.go pass B) only inspects present, non-empty STRING values,
 		// so a non-string status still reaches here even with the schema's
 		// new Enum declaration.
-		return mcp.NewToolResultError("status must be one of: active, completed, archived, on_hold"), nil
+		return mcp.NewToolResultError(errMsgInvalidProjectStatus), nil
 	}
 
 	project, err := s.gtd.UpdateProjectStatus(ctx, args.ProjectID, status)
