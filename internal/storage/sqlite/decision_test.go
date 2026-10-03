@@ -92,11 +92,11 @@ func TestDecisionStore_EmptyQueriesReturnEmpty(t *testing.T) {
 			return len(rows), err
 		},
 		"ByRepo": func() (int, error) {
-			rows, err := s.ByRepo(ctx, "none", 5)
+			rows, err := s.ByRepo(ctx, "none", 5, 0)
 			return len(rows), err
 		},
 		"ByProject": func() (int, error) {
-			rows, err := s.ByProject(ctx, uuid.New(), 5)
+			rows, err := s.ByProject(ctx, uuid.New(), 5, 0)
 			return len(rows), err
 		},
 	} {
@@ -127,14 +127,14 @@ func TestDecisionStore_ByRepoByProjectAndLimit(t *testing.T) {
 		t.Fatalf("Log b1: %v", err)
 	}
 
-	byRepo, err := s.ByRepo(context.Background(), "repo-a", 1)
+	byRepo, err := s.ByRepo(context.Background(), "repo-a", 1, 0)
 	if err != nil {
 		t.Fatalf("ByRepo: %v", err)
 	}
 	if len(byRepo) != 1 || byRepo[0].Title != "a1" {
 		t.Fatalf("unexpected ByRepo result: %+v", byRepo)
 	}
-	byProject, err := s.ByProject(context.Background(), projectID, 5)
+	byProject, err := s.ByProject(context.Background(), projectID, 5, 0)
 	if err != nil {
 		t.Fatalf("ByProject: %v", err)
 	}

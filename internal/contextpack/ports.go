@@ -40,8 +40,10 @@ type TaskProjectReadPort interface {
 // DecisionReadPort is the subset of decision.StoreIface that
 // retrieveDecisions (retrieval.go) calls.
 type DecisionReadPort interface {
-	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
-	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
+	// ByRepo/ByProject gained an offset parameter [F1003-10]; retrieval.go's
+	// callers always pass 0 (assemble_context has no pagination concept).
+	ByRepo(ctx context.Context, repoName string, limit, offset int32) ([]db.Decision, error)
+	ByProject(ctx context.Context, projectID uuid.UUID, limit, offset int32) ([]db.Decision, error)
 	ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error)
 	// All returns the most recent decisions across every repo/project/task —
 	// used only when req has no scope signal at all (RepoName == "" &&

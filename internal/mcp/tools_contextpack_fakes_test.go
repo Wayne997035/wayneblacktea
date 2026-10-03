@@ -250,11 +250,11 @@ func (noopDecisionStore) Log(context.Context, decision.LogParams) (*db.Decision,
 	return nil, nil
 }
 
-func (noopDecisionStore) ByRepo(context.Context, string, int32) ([]db.Decision, error) {
+func (noopDecisionStore) ByRepo(context.Context, string, int32, int32) ([]db.Decision, error) {
 	return nil, nil
 }
 func (noopDecisionStore) All(context.Context, int32) ([]db.Decision, error) { return nil, nil }
-func (noopDecisionStore) ByProject(context.Context, uuid.UUID, int32) ([]db.Decision, error) {
+func (noopDecisionStore) ByProject(context.Context, uuid.UUID, int32, int32) ([]db.Decision, error) {
 	return nil, nil
 }
 

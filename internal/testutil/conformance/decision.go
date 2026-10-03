@@ -23,7 +23,7 @@ func RunDecisionSmoke(t *testing.T, store decision.StoreIface, backend string) {
 		}); err != nil {
 			t.Fatalf("Log: %v", err)
 		}
-		rows, err := store.ByRepo(ctx, "smoke-repo", 10)
+		rows, err := store.ByRepo(ctx, "smoke-repo", 10, 0)
 		if err != nil {
 			t.Fatalf("ByRepo: %v", err)
 		}

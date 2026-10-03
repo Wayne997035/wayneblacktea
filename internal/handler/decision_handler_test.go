@@ -13,26 +13,29 @@ import (
 )
 
 // fakeDecisionHandlerStore records the LogParams passed to Log so tests can
-// assert provenance binding without a real DB.
+// assert provenance binding without a real DB. [F1003-11] All dropped in
+// favor of List — mirrors handler.decisionStore's interface change
+// (decision_handler.go's doc comment: the no-filter branch now needs
+// offset/has_more paging, which All's frozen 2-arg signature cannot grow to
+// support).
 type fakeDecisionHandlerStore struct {
 	logged  []decision.LogParams
 	logErr  error
-	all     []db.Decision
-	allErr  error
+	list    []db.Decision
+	listErr error
 	byRepo  []db.Decision
 	byProj  []db.Decision
-	listErr error
 }
 
-func (f *fakeDecisionHandlerStore) All(_ context.Context, _ int32) ([]db.Decision, error) {
-	return f.all, f.allErr
+func (f *fakeDecisionHandlerStore) List(_ context.Context, _ decision.ListParams) ([]db.Decision, error) {
+	return f.list, f.listErr
 }
 
-func (f *fakeDecisionHandlerStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+func (f *fakeDecisionHandlerStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return f.byRepo, f.listErr
 }
 
-func (f *fakeDecisionHandlerStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (f *fakeDecisionHandlerStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return f.byProj, f.listErr
 }
 
@@ -46,16 +49,18 @@ func (f *fakeDecisionHandlerStore) Log(_ context.Context, p decision.LogParams) 
 
 // TestListDecisions_NilStoreResultReturnsEmptyArrayNotNull verifies the
 // nil-slice-vs-JSON-null gap across all three ListDecisions return points
-// (All / ByRepo / ByProject). json.Unmarshal([]byte("null"), &slice) leaves
+// (List / ByRepo / ByProject). json.Unmarshal([]byte("null"), &slice) leaves
 // slice nil with len==0 — the exact same shape as unmarshaling "[]" — so a
 // test that unmarshals the response and checks len() cannot distinguish the
-// two. This asserts the raw response body string instead.
+// two. This asserts the raw response body string instead. [F1003-11] the
+// response became an object envelope, so this now asserts the `"decisions":
+// []` substring rather than the old bare `"[]"` body.
 func TestListDecisions_NilStoreResultReturnsEmptyArrayNotNull(t *testing.T) {
 	cases := []struct {
 		name  string
 		query string
 	}{
-		{name: "All (no filter)", query: ""},
+		{name: "no filter (List)", query: ""},
 		{name: "ByRepo", query: "?repo_name=wayneblacktea"},
 		{name: "ByProject", query: "?project_id=" + uuid.New().String()},
 	}
@@ -71,8 +76,8 @@ func TestListDecisions_NilStoreResultReturnsEmptyArrayNotNull(t *testing.T) {
 				t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 			}
 			got := strings.TrimSpace(rec.Body.String())
-			if got != "[]" {
-				t.Errorf("body = %q, want exactly %q (nil slice must not serialize to JSON null)", got, "[]")
+			if !strings.Contains(got, `"decisions":[]`) {
+				t.Errorf("body = %q, want substring %q (nil slice must not serialize to JSON null)", got, `"decisions":[]`)
 			}
 		})
 	}

@@ -924,7 +924,7 @@ func TestHandleFinishWork_FailedFinishCreatesNoOrphanDecision(t *testing.T) {
 		t.Fatal("expected second finish_work on an already-completed session to fail")
 	}
 
-	rows, err := s.decision.ByRepo(context.Background(), "orphan-decision-repo", 50)
+	rows, err := s.decision.ByRepo(context.Background(), "orphan-decision-repo", 50, 0)
 	if err != nil {
 		t.Fatalf("decision.ByRepo: %v", err)
 	}

@@ -60,7 +60,7 @@ func TestLogAndListDecision(t *testing.T) {
 		}
 	})
 
-	list, err := store.ByRepo(ctx, "chat-gateway", 10)
+	list, err := store.ByRepo(ctx, "chat-gateway", 10, 0)
 	if err != nil {
 		t.Fatalf("ByRepo: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestByRepo_Empty(t *testing.T) {
 	ctx := context.Background()
 
 	// Repo name that has no decisions — should return empty slice without error.
-	list, err := store.ByRepo(ctx, "nonexistent-repo-xyz-abc", 10)
+	list, err := store.ByRepo(ctx, "nonexistent-repo-xyz-abc", 10, 0)
 	if err != nil {
 		t.Fatalf("ByRepo for unknown repo: %v", err)
 	}

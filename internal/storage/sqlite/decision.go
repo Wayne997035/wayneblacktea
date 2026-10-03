@@ -212,14 +212,18 @@ func (s *DecisionStore) ImportDecision(ctx context.Context, d db.Decision) error
 	return nil
 }
 
-// ByRepo returns the most recent decisions for a given repo name.
-func (s *DecisionStore) ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error) {
+// ByRepo returns the most recent decisions for a given repo name, paging
+// past the first offset rows. [F1003-10] offset added; ordering (created_at
+// DESC, id DESC) was already in place here, mirroring the PG twin's tiebreak
+// fix.
+func (s *DecisionStore) ByRepo(ctx context.Context, repoName string, limit, offset int32) ([]db.Decision, error) {
 	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions
 		WHERE repo_name = ?1
 		  AND (?2 IS NULL OR workspace_id = ?2)
 		ORDER BY created_at DESC, id DESC
-		LIMIT ?3`
-	return s.list(ctx, "ByRepo", q, repoName, s.db.workspaceArg(), limit)
+		LIMIT ?3
+		OFFSET ?4`
+	return s.list(ctx, "ByRepo", q, repoName, s.db.workspaceArg(), limit, offset)
 }
 
 // All returns the most recent decisions across all repos and projects.
@@ -255,14 +259,17 @@ func (s *DecisionStore) List(ctx context.Context, p decision.ListParams) ([]db.D
 		p.IncludeAuto, p.Limit, p.Offset)
 }
 
-// ByProject returns the most recent decisions for a given project ID.
-func (s *DecisionStore) ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error) {
+// ByProject returns the most recent decisions for a given project ID,
+// paging past the first offset rows. [F1003-10] offset added; same ordering
+// contract as ByRepo above.
+func (s *DecisionStore) ByProject(ctx context.Context, projectID uuid.UUID, limit, offset int32) ([]db.Decision, error) {
 	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions
 		WHERE project_id = ?1
 		  AND (?2 IS NULL OR workspace_id = ?2)
 		ORDER BY created_at DESC, id DESC
-		LIMIT ?3`
-	return s.list(ctx, "ByProject", q, projectID.String(), s.db.workspaceArg(), limit)
+		LIMIT ?3
+		OFFSET ?4`
+	return s.list(ctx, "ByProject", q, projectID.String(), s.db.workspaceArg(), limit, offset)
 }
 
 // ByTask returns the most recent decisions for a given task ID.

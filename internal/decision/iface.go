@@ -11,9 +11,13 @@ import (
 // context.
 type StoreIface interface {
 	Log(ctx context.Context, p LogParams) (*db.Decision, error)
-	ByRepo(ctx context.Context, repoName string, limit int32) ([]db.Decision, error)
+	// ByRepo returns the most recent decisions for repoName, paging past the
+	// first offset rows [F1003-10].
+	ByRepo(ctx context.Context, repoName string, limit, offset int32) ([]db.Decision, error)
 	All(ctx context.Context, limit int32) ([]db.Decision, error)
-	ByProject(ctx context.Context, projectID uuid.UUID, limit int32) ([]db.Decision, error)
+	// ByProject returns the most recent decisions for projectID, paging past
+	// the first offset rows [F1003-10].
+	ByProject(ctx context.Context, projectID uuid.UUID, limit, offset int32) ([]db.Decision, error)
 	// ByTask returns the most recent decisions linked to a specific task UUID.
 	// SECURITY: scoped to workspace_id.
 	ByTask(ctx context.Context, taskID uuid.UUID, limit int32) ([]db.Decision, error)

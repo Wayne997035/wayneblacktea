@@ -214,7 +214,9 @@ func (s *stubDecisionStore) Log(_ context.Context, _ decision.LogParams) (*db.De
 	return nil, nil
 }
 
-func (s *stubDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+// ByRepo/ByProject gained an offset parameter [F1003-10]; this stub has no
+// paging behavior to exercise (scheduler consumes only All).
+func (s *stubDecisionStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 
@@ -222,7 +224,7 @@ func (s *stubDecisionStore) All(_ context.Context, _ int32) ([]db.Decision, erro
 	return s.decisions, s.decErr
 }
 
-func (s *stubDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (s *stubDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 

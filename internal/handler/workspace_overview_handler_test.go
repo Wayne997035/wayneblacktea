@@ -75,7 +75,7 @@ type fakeOverviewDecisionStore struct {
 	gotLimit    int32
 }
 
-func (f *fakeOverviewDecisionStore) ByRepo(_ context.Context, name string, limit int32) ([]db.Decision, error) {
+func (f *fakeOverviewDecisionStore) ByRepo(_ context.Context, name string, limit, _ int32) ([]db.Decision, error) {
 	f.gotRepoName = name
 	f.gotLimit = limit
 	return f.list, f.err

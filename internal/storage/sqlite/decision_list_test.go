@@ -346,10 +346,10 @@ func TestDecisionStore_LegacyReaders_UnfilteredBySource(t *testing.T) {
 	all, err := s.All(ctx, 20)
 	assertContainsBoth(t, all, err, "All")
 
-	byRepo, err := s.ByRepo(ctx, repo, 20)
+	byRepo, err := s.ByRepo(ctx, repo, 20, 0)
 	assertContainsBoth(t, byRepo, err, "ByRepo")
 
-	byProject, err := s.ByProject(ctx, proj, 20)
+	byProject, err := s.ByProject(ctx, proj, 20, 0)
 	assertContainsBoth(t, byProject, err, "ByProject")
 
 	byTask, err := s.ByTask(ctx, taskID, 20)

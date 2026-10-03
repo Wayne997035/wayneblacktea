@@ -1722,7 +1722,7 @@ func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mc
 		return storeErrorResult("loading project", err), nil
 	}
 
-	decisions, err := s.decision.ByProject(ctx, project.ID, 5)
+	decisions, err := s.decision.ByProject(ctx, project.ID, 5, 0) // [F1003-10] get_project has no pagination concept
 	if err != nil {
 		return storeErrorResult("loading decisions", err), nil
 	}

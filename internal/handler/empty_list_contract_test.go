@@ -56,6 +56,11 @@ type httpEmptyListContractCase struct {
 func TestEmptyListContract_HTTP(t *testing.T) {
 	cases := []httpEmptyListContractCase{
 		{
+			// [F1003-11] ListDecisions' response became an object envelope
+			// ({"decisions":[...],"offset":N,"limit":N,"has_more":bool}) —
+			// no longer a bare array, so this moved from wantBareArray to
+			// wantFields (same object-response pattern as GetSuggestions
+			// below).
 			name: "ListDecisions",
 			run: func(t *testing.T) *httptest.ResponseRecorder {
 				e := newEcho()
@@ -63,7 +68,7 @@ func TestEmptyListContract_HTTP(t *testing.T) {
 				e.GET("/api/decisions", h.ListDecisions)
 				return performRequest(e, http.MethodGet, "/api/decisions", "")
 			},
-			wantBareArray: true,
+			wantFields: []string{"decisions"},
 		},
 		{
 			name: "ListGoals",

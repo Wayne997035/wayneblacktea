@@ -139,11 +139,15 @@ type stubDecisionStore struct {
 
 var _ contextpack.DecisionReadPort = (*stubDecisionStore)(nil)
 
-func (s *stubDecisionStore) ByRepo(_ context.Context, _ string, _ int32) ([]db.Decision, error) {
+// ByRepo/ByProject gained an offset parameter [F1003-10]; this fixture
+// ignores it — contextpack's assemble_context path always passes 0 (see
+// contextpack.DecisionReadPort's doc comment), and this stub has no paging
+// behavior to exercise.
+func (s *stubDecisionStore) ByRepo(_ context.Context, _ string, _, _ int32) ([]db.Decision, error) {
 	return s.byRepo, nil
 }
 
-func (s *stubDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _ int32) ([]db.Decision, error) {
+func (s *stubDecisionStore) ByProject(_ context.Context, _ uuid.UUID, _, _ int32) ([]db.Decision, error) {
 	return nil, nil
 }
 

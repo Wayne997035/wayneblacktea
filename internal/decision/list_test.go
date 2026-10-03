@@ -406,10 +406,10 @@ func TestStore_LegacyReaders_UnfilteredBySource(t *testing.T) {
 	all, err := store.All(ctx, 20)
 	assertContainsBoth(t, all, err, "All")
 
-	byRepo, err := store.ByRepo(ctx, repo, 20)
+	byRepo, err := store.ByRepo(ctx, repo, 20, 0)
 	assertContainsBoth(t, byRepo, err, "ByRepo")
 
-	byProject, err := store.ByProject(ctx, proj, 20)
+	byProject, err := store.ByProject(ctx, proj, 20, 0)
 	assertContainsBoth(t, byProject, err, "ByProject")
 
 	byTask, err := store.ByTask(ctx, taskID, 20)

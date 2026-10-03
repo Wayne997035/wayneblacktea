@@ -81,7 +81,14 @@ type Querier interface {
 	ListAllDecisions(ctx context.Context, arg ListAllDecisionsParams) ([]Decision, error)
 	ListConcepts(ctx context.Context, arg ListConceptsParams) ([]Concept, error)
 	ListConceptsForAIReview(ctx context.Context, arg ListConceptsForAIReviewParams) ([]ListConceptsForAIReviewRow, error)
+	// [F1003-10] Same , id DESC tiebreaker + OFFSET rationale as
+	// ListDecisionsByRepo above.
 	ListDecisionsByProject(ctx context.Context, arg ListDecisionsByProjectParams) ([]Decision, error)
+	// [F1003-10] , id DESC tiebreaker + OFFSET added: without a tiebreaker, rows
+	// sharing an identical created_at sort non-deterministically between calls,
+	// so offset-based paging over them can skip or duplicate across page
+	// boundaries. Matches ListDecisionsFiltered's existing convention below and
+	// SQLite's ByRepo, which already orders this way.
 	ListDecisionsByRepo(ctx context.Context, arg ListDecisionsByRepoParams) ([]Decision, error)
 	ListDecisionsByTaskID(ctx context.Context, arg ListDecisionsByTaskIDParams) ([]Decision, error)
 	// P3.0a Stage B: source-filtered read path for MCP list_decisions.

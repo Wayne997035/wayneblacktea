@@ -221,7 +221,7 @@ func (a *Assembler) retrieveDecisions(ctx context.Context, req Request, warnings
 	}
 
 	if req.RepoName != "" {
-		ds, err := a.decision.ByRepo(ctx, req.RepoName, searchLimit)
+		ds, err := a.decision.ByRepo(ctx, req.RepoName, searchLimit, 0) // [F1003-10] assemble_context has no pagination concept
 		if err != nil {
 			warnStoreErr(warnings, "decision.ByRepo", err)
 		} else {
@@ -231,7 +231,7 @@ func (a *Assembler) retrieveDecisions(ctx context.Context, req Request, warnings
 		}
 	}
 	if req.ProjectID != nil {
-		ds, err := a.decision.ByProject(ctx, *req.ProjectID, searchLimit)
+		ds, err := a.decision.ByProject(ctx, *req.ProjectID, searchLimit, 0) // [F1003-10] assemble_context has no pagination concept
 		if err != nil {
 			warnStoreErr(warnings, "decision.ByProject", err)
 		} else {

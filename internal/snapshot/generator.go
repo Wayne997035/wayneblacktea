@@ -113,7 +113,7 @@ func (g *Generator) Generate(
 	decStore decision.StoreIface,
 	gtdStore gtd.StoreIface,
 ) (*StatusResult, error) {
-	decisions, err := decStore.ByRepo(ctx, slug, snapshotMaxDecisions)
+	decisions, err := decStore.ByRepo(ctx, slug, snapshotMaxDecisions, 0) // [F1003-10] snapshot always wants the newest page
 	if err != nil {
 		return nil, fmt.Errorf("snapshot generator: loading decisions for %q: %w", slug, err)
 	}
