@@ -138,6 +138,22 @@ func TestMigration000085_ProposalDedupIndexUsedByQuery(t *testing.T) {
 	defer pool.Close()
 
 	wsID := uuid.New()
+	migration000085ProposalDedupIndexUsedByQuerySeed(t, ctx, pool, wsID)
+
+	plan, planLines := migration000085ProposalDedupIndexUsedByQueryExplainPlan(t, ctx, pool)
+
+	if !strings.Contains(plan, "Index Scan using idx_pending_proposals_type_proposer_source") {
+		t.Fatalf("expected an Index Scan using idx_pending_proposals_type_proposer_source, got:\n%s", plan)
+	}
+
+	migration000085ProposalDedupIndexUsedByQueryAssertIndexCond(t, plan, planLines)
+	migration000085ProposalDedupIndexUsedByQueryAssertNoResidualFilter(t, planLines)
+}
+
+// migration000085ProposalDedupIndexUsedByQuerySeed seeds one pending_proposals
+// row shaped like the scheduler's dedup probe.
+func migration000085ProposalDedupIndexUsedByQuerySeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, wsID uuid.UUID) {
+	t.Helper()
 	if _, err := pool.Exec(
 		ctx, `INSERT INTO pending_proposals
 		(id, workspace_id, type, payload, status, proposed_by, created_at)
@@ -146,7 +162,16 @@ func TestMigration000085_ProposalDedupIndexUsedByQuery(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed pending_proposals row: %v", err)
 	}
+}
 
+// migration000085ProposalDedupIndexUsedByQueryExplainPlan runs the isolated
+// single-table form of pgDecisionsPendingOutcomeReview's dedup NOT EXISTS
+// predicate (internal/scheduler/cognitive_jobs.go): same three
+// equality/expression conditions, with d.id::text replaced by a literal so
+// the plan can be inspected directly. Returns the joined plan text and its
+// individual lines.
+func migration000085ProposalDedupIndexUsedByQueryExplainPlan(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (string, []string) {
+	t.Helper()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -157,10 +182,6 @@ func TestMigration000085_ProposalDedupIndexUsedByQuery(t *testing.T) {
 		t.Fatalf("SET LOCAL enable_seqscan = off: %v", err)
 	}
 
-	// Isolated single-table form of pgDecisionsPendingOutcomeReview's dedup
-	// NOT EXISTS predicate (internal/scheduler/cognitive_jobs.go): same
-	// three equality/expression conditions, with d.id::text replaced by a
-	// literal so the plan can be inspected directly.
 	rows, err := tx.Query(
 		ctx, `EXPLAIN SELECT 1 FROM pending_proposals p
 		WHERE p.type = 'task'
@@ -186,11 +207,14 @@ func TestMigration000085_ProposalDedupIndexUsedByQuery(t *testing.T) {
 	}
 	plan := strings.Join(planLines, "\n")
 	t.Logf("EXPLAIN plan:\n%s", plan)
+	return plan, planLines
+}
 
-	if !strings.Contains(plan, "Index Scan using idx_pending_proposals_type_proposer_source") {
-		t.Fatalf("expected an Index Scan using idx_pending_proposals_type_proposer_source, got:\n%s", plan)
-	}
-
+// migration000085ProposalDedupIndexUsedByQueryAssertIndexCond asserts all
+// three predicates landed in the Index Cond line rather than falling back
+// to a Filter.
+func migration000085ProposalDedupIndexUsedByQueryAssertIndexCond(t *testing.T, plan string, planLines []string) {
+	t.Helper()
 	var indexCondLine string
 	for _, line := range planLines {
 		if strings.Contains(line, "Index Cond:") {
@@ -210,9 +234,13 @@ func TestMigration000085_ProposalDedupIndexUsedByQuery(t *testing.T) {
 			t.Errorf("Index Cond line missing %q — predicate fell back to a Filter instead of the index seek.\nIndex Cond: %s", want, indexCondLine)
 		}
 	}
+}
 
-	// None of the three predicates should need a residual Filter — if any
-	// of them does, the index isn't covering the full predicate shape.
+// migration000085ProposalDedupIndexUsedByQueryAssertNoResidualFilter asserts
+// none of the three predicates needed a residual Filter — if any of them
+// does, the index isn't covering the full predicate shape.
+func migration000085ProposalDedupIndexUsedByQueryAssertNoResidualFilter(t *testing.T, planLines []string) {
+	t.Helper()
 	for _, line := range planLines {
 		if strings.Contains(line, "Filter:") {
 			t.Errorf("unexpected residual Filter line (all 3 predicates should be in Index Cond): %s", line)
