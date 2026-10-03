@@ -94,16 +94,15 @@ func TestMigration000087_PendingProposalsSortKeyIndexExists(t *testing.T) {
 }
 
 // wantIdxWorkspacePendingSortDef is the exact expected pg_indexes.indexdef
-// text for the net-new workspace-leading composite (decision 7a064608,
-// post-STOP follow-up) — verified against a real Postgres 16 instance, not
-// assumed.
+// text for the net-new workspace-leading composite — verified against a
+// real Postgres 16 instance, not assumed.
 const wantIdxWorkspacePendingSortDef = "CREATE INDEX idx_pending_proposals_workspace_pending_sort " +
 	"ON public.pending_proposals USING btree (workspace_id, created_at DESC, id DESC) WHERE (status = 'pending'::text)"
 
-// TestMigration000087_WorkspacePendingSortIndexExists is the decision
-// 7a064608 follow-up: proves idx_pending_proposals_workspace_pending_sort
-// is absent pre-087, exists with the exact expected shape post-087, and is
-// fully reversible (down drops it entirely — net-new, unlike the realigned
+// TestMigration000087_WorkspacePendingSortIndexExists proves
+// idx_pending_proposals_workspace_pending_sort is absent pre-087, exists
+// with the exact expected shape post-087, and is fully reversible (down
+// drops it entirely — net-new, unlike the realigned
 // idx_pending_proposals_status_pending).
 func TestMigration000087_WorkspacePendingSortIndexExists(t *testing.T) {
 	if testing.Short() {

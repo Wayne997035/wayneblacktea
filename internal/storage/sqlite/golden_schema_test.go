@@ -432,11 +432,10 @@ var expectedNewEntries = map[string]bool{
 	"index|idx_goals_active_due_date": true,
 
 	// migrations/sqlite/000087_pending_proposals_status_pending_sort_key.up.sql
-	// [F1003-09], decision 7a064608 (post-STOP follow-up): the
-	// workspace_id-leading composite added alongside the id-DESC
-	// tiebreaker realignment in the same migration. Net-new versus the
-	// frozen golden baseline — see the migration file's own header comment
-	// for the full rationale.
+	// [F1003-09]: the workspace_id-leading composite added alongside the
+	// id-DESC tiebreaker realignment in the same migration. Net-new versus
+	// the frozen golden baseline — see the migration file's own header
+	// comment for the full rationale.
 	"index|idx_pending_proposals_workspace_pending_sort": true,
 }
 

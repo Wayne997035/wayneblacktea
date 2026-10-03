@@ -12,15 +12,16 @@ import (
 
 // [F1003-09] Lead's supplement 1 methodology applied to migration 000087.
 //
-// Decision 7a064608 (post-STOP follow-up): the first round of this test
-// found that idx_pending_proposals_status_pending alone (no workspace_id
-// column) loses to idx_pending_proposals_workspace_id + an explicit Sort
-// at LIMIT 500 — the original STOP this file now re-validates against.
-// Migration 000087 was extended with a net-new workspace_id-leading
-// composite, idx_pending_proposals_workspace_pending_sort, specifically to
-// serve this production path; this file's hard requirement is now that
-// the custom plan uses THAT index (Index Cond containing workspace_id),
-// not idx_pending_proposals_status_pending.
+// idx_pending_proposals_status_pending alone (no workspace_id column)
+// loses to idx_pending_proposals_workspace_id + an explicit Sort at LIMIT
+// 500, because production is not assumed single-workspace: the planner
+// has to scan deep enough into the created_at-ordered index to collect
+// LIMIT matching rows for one workspace out of however many share it.
+// Migration 000087 therefore also creates a net-new workspace_id-leading
+// composite, idx_pending_proposals_workspace_pending_sort, giving the
+// per-workspace path an Index Cond on workspace_id plus the exact
+// (created_at, id) trailing order; this file's hard requirement is that
+// the custom plan uses THAT index, not idx_pending_proposals_status_pending.
 //
 // Query text source: the unexported sqlc-generated listPendingProposals
 // constant (internal/db/proposal.sql.go), never hand-transcribed.
@@ -40,14 +41,12 @@ func seedPendingProposalsForCostThreshold(t *testing.T, ctx context.Context, wsI
 	}
 }
 
-// TestMigration000087_CustomPlanUsesIndexNoSort is the hard-judgment half,
-// re-pointed at the decision 7a064608 follow-up index: the production-
-// shaped call must use idx_pending_proposals_workspace_pending_sort, with
-// workspace_id in the Index Cond and no Sort node, at both LIMIT 50 and
-// LIMIT 500. (The first round of this test, against
-// idx_pending_proposals_status_pending alone, is what originally
-// discovered the STOP this follow-up index fixes — see this file's
-// header comment.)
+// TestMigration000087_CustomPlanUsesIndexNoSort is the hard-judgment half:
+// the production-shaped call must use
+// idx_pending_proposals_workspace_pending_sort, with workspace_id in the
+// Index Cond and no Sort node, at both LIMIT 50 and LIMIT 500 — see this
+// file's header comment for why idx_pending_proposals_status_pending
+// alone cannot satisfy this at LIMIT 500.
 func TestMigration000087_CustomPlanUsesIndexNoSort(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Docker")

@@ -54,8 +54,7 @@ const (
 	wantIdx000087SQLiteNew = "CREATE INDEX idx_pending_proposals_status_pending " +
 		"ON pending_proposals(created_at DESC,id DESC) WHERE status = 'pending'"
 	// wantIdxWorkspacePendingSort is the net-new workspace-leading
-	// composite added by decision 7a064608 (post-STOP follow-up to the
-	// original F1003-09 round) — see the migration file's header comment.
+	// composite — see the migration file's header comment for why.
 	wantIdxWorkspacePendingSort = "CREATE INDEX idx_pending_proposals_workspace_pending_sort " +
 		"ON pending_proposals(workspace_id,created_at DESC,id DESC) WHERE status = 'pending'"
 )
@@ -100,11 +99,11 @@ func TestMigration000087_PendingProposalsSortKeyIndexExists(t *testing.T) {
 	}
 }
 
-// TestMigration000087_WorkspacePendingSortIndexExists is the decision
-// 7a064608 follow-up: proves the net-new workspace-leading composite is
-// absent pre-087, exists with the exact expected shape post-087, and is
-// fully reversible (down drops it entirely — it is net-new, unlike the
-// realigned idx_pending_proposals_status_pending above).
+// TestMigration000087_WorkspacePendingSortIndexExists proves the net-new
+// workspace-leading composite is absent pre-087, exists with the exact
+// expected shape post-087, and is fully reversible (down drops it
+// entirely — it is net-new, unlike the realigned
+// idx_pending_proposals_status_pending above).
 func TestMigration000087_WorkspacePendingSortIndexExists(t *testing.T) {
 	t.Parallel() // [F1003-09]
 	conn, m := openMigratorAt86(t)

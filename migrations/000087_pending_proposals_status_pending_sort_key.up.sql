@@ -18,11 +18,10 @@ CREATE INDEX IF NOT EXISTS idx_pending_proposals_status_pending
     ON pending_proposals(created_at DESC, id DESC)
     WHERE status = 'pending';
 
--- [F1003-09] Decision 7a064608 (post-STOP follow-up): the above index
--- keeps serving the workspace_id-NULL global path and SQLite's
--- single-tenant mode, but production is NOT assumed single-workspace —
--- measured (internal/db/migration_000087_explain_test.go, 2000+2000-row
--- scale) that at LIMIT 500 the planner abandons it for
+-- [F1003-09] The above index keeps serving the workspace_id-NULL global
+-- path and SQLite's single-tenant mode, but production is not assumed
+-- single-workspace: measured (internal/db/migration_000087_explain_test.go,
+-- 2000+2000-row scale) that at LIMIT 500 the planner abandons it for
 -- idx_pending_proposals_workspace_id + an explicit Sort, because
 -- workspace_id isn't in the index at all. This net-new, workspace_id-
 -- leading composite gives the per-workspace production path (every real
