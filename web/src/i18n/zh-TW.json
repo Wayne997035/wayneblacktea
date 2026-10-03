@@ -148,6 +148,8 @@
     "allRepos": "所有 Repo",
     "searchPlaceholder": "搜尋決策...",
     "noDecisions": "沒有決策紀錄",
+    "loadMore": "載入更多",
+    "loadMoreFailed": "載入更多決策失敗",
     "showFull": "▸ 展開",
     "collapse": "▾ 收起",
     "context": "背景",

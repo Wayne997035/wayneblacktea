@@ -1,15 +1,20 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
-import type { Decision } from '../types/api'
+import type { Decision, DecisionsPageResponse } from '../types/api'
 
 export function useDecisions(projectId?: string, options?: { enabled?: boolean }) {
   return useQuery<Decision[]>({
     queryKey: ['decisions', projectId ?? 'all'],
-    queryFn: () => {
+    queryFn: async () => {
       const url = projectId
         ? `/api/decisions?${new URLSearchParams({ project_id: projectId }).toString()}`
         : '/api/decisions'
-      return apiFetch<Decision[]>(url)
+      // [F1003-15] /api/decisions now returns {decisions, offset, limit,
+      // has_more} on all three filter branches (none / repo_name /
+      // project_id). Unwrap here so this hook's existing callers (TaskRow,
+      // ProjectDetailPage) keep getting a plain Decision[] untouched.
+      const r = await apiFetch<DecisionsPageResponse | null>(url)
+      return r?.decisions ?? []
     },
     enabled: options?.enabled ?? true,
     // Defence: backend may return JSON null for an empty list; never let a null reach .length.

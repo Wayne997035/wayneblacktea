@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Plus, Search } from 'lucide-react'
-import { useDecisions } from '../hooks/useDecisions'
+import { useDecisionsFeed } from '../hooks/useDecisionsFeed'
 import { useProjects } from '../hooks/useProjects'
 import { useRepos } from '../hooks/useRepos'
 import { DecisionTimeline } from '../components/decisions/DecisionTimeline'
@@ -21,7 +21,6 @@ function today(): string {
 
 export function DecisionsPage() {
   const { t } = useTranslation()
-  const { data: decisions, isLoading, isError } = useDecisions()
   const { data: projects } = useProjects()
   const { data: repos } = useRepos()
 
@@ -32,20 +31,36 @@ export function DecisionsPage() {
   const [dateTo, setDateTo] = useState<string>(today())
   const [modalOpen, setModalOpen] = useState(false)
 
+  // [F1003-13][F1003-14] project/repo filters are forwarded to the backend
+  // and are part of useDecisionsFeed's query key — switching either starts a
+  // fresh paginated query at offset 0. Search and date-range stay client-side.
+  const {
+    data,
+    isLoading,
+    isError,
+    hasNextPage,
+    isFetchingNextPage,
+    isFetchNextPageError,
+    fetchNextPage,
+  } = useDecisionsFeed({
+    projectId: projectFilter === 'all' ? undefined : projectFilter,
+    repoName: repoFilter === 'all' ? undefined : repoFilter,
+  })
+
+  const decisions = useMemo(() => data?.pages.flatMap((p) => p.decisions) ?? [], [data])
+
   const filtered = useMemo(() => {
     const from = dateFrom ? new Date(dateFrom).getTime() : -Infinity
     const to = dateTo ? new Date(dateTo + 'T23:59:59').getTime() : Infinity
 
-    return (decisions ?? []).filter((d) => {
-      const matchProject = projectFilter === 'all' || d.project_id === projectFilter
-      const matchRepo = repoFilter === 'all' || d.repo_name === repoFilter
+    return decisions.filter((d) => {
       const ts = new Date(d.created_at).getTime()
       const matchDate = ts >= from && ts <= to
       const q = search.toLowerCase()
       const matchSearch = !q || d.title.toLowerCase().includes(q) || d.rationale.toLowerCase().includes(q) || d.context.toLowerCase().includes(q)
-      return matchProject && matchRepo && matchDate && matchSearch
+      return matchDate && matchSearch
     })
-  }, [decisions, projectFilter, repoFilter, dateFrom, dateTo, search])
+  }, [decisions, dateFrom, dateTo, search])
 
   const inputStyle: React.CSSProperties = {
     background: 'var(--color-bg-input)',
@@ -187,10 +202,62 @@ export function DecisionsPage() {
             <LoadingSkeleton key={i} className="h-20 w-full" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
-        <EmptyState messageKey="decisions.noDecisions" />
       ) : (
-        <DecisionTimeline decisions={filtered} />
+        <>
+          {filtered.length === 0 ? (
+            <EmptyState messageKey="decisions.noDecisions" />
+          ) : (
+            <DecisionTimeline decisions={filtered} />
+          )}
+
+          {/* [F1003-13] next-page failure keeps the loaded rows above and
+              shows a distinct, page-scoped error — never conflated with the
+              first-page isError banner above. */}
+          {isFetchNextPageError ? (
+            <div
+              className="rounded-md p-3 mt-4 text-body-sm flex items-center justify-between"
+              style={{
+                background: 'var(--color-error-bg)', // [F0925-25]
+                border: '1px solid var(--color-error)',
+                color: 'var(--color-error)',
+              }}
+              role="alert"
+            >
+              <span>{t('decisions.loadMoreFailed')}</span>
+              <button
+                type="button"
+                onClick={() => void fetchNextPage()}
+                className="rounded px-2 py-1 text-body-sm transition-opacity hover:opacity-80"
+                style={{
+                  background: 'var(--color-error)',
+                  color: 'var(--color-white)', // [F0925-25]
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                {t('common.retry')}
+              </button>
+            </div>
+          ) : hasNextPage ? (
+            <div className="flex justify-center mt-4">
+              <button
+                type="button"
+                onClick={() => void fetchNextPage()}
+                disabled={isFetchingNextPage}
+                aria-busy={isFetchingNextPage}
+                className="rounded-md px-4 py-2 text-body-sm transition-colors"
+                style={{
+                  background: 'var(--color-bg-input)',
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text-primary)',
+                  cursor: isFetchingNextPage ? 'default' : 'pointer',
+                }}
+              >
+                {t('decisions.loadMore')}
+              </button>
+            </div>
+          ) : null}
+        </>
       )}
 
       {modalOpen && (
