@@ -52,7 +52,8 @@ func TestUpsertRepo_GitHubSlug_Postgres(t *testing.T) {
 		t.Errorf("explicit empty github_slug must clear, got %+v (err %v)", repo.GithubSlug, err)
 	}
 	for _, bad := range []string{"evil;x/y", "../x", "noslash"} {
-		if _, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{Name: "wayneblacktea", GitHubSlug: strPtr(bad)}); !errors.Is(err, validator.ErrInvalidGitHubSlug) {
+		_, err := store.UpsertRepo(ctx, workspace.UpsertRepoParams{Name: "wayneblacktea", GitHubSlug: strPtr(bad)})
+		if !errors.Is(err, validator.ErrInvalidGitHubSlug) {
 			t.Errorf("UpsertRepo github_slug %q: want ErrInvalidGitHubSlug, got %v", bad, err)
 		}
 	}

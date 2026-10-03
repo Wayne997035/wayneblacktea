@@ -42,7 +42,8 @@ func runEmbeddingTests(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_embedding_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -158,7 +159,10 @@ func TestSameProviderCosineRecall(t *testing.T) {
 	}
 	defer rows.Close()
 
-	type row struct{ intent string; sim float64 }
+	type row struct {
+		intent string
+		sim    float64
+	}
 	var results []row
 	for rows.Next() {
 		var intent string
@@ -306,7 +310,8 @@ func TestProviderMigration000064(t *testing.T) {
 	const insert = `INSERT INTO session_handoffs
 		(id, intent, embedding_provider, embedding_model, embedding_dim, created_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())`
-	if _, err := embeddingTestPool.Exec(context.Background(), insert,
+	if _, err := embeddingTestPool.Exec(
+		context.Background(), insert,
 		id, "migration-test", "gemini", "gemini-embedding-001", 768,
 	); err != nil {
 		t.Fatalf("insert: %v (columns may be missing — migration 000064 not applied?)", err)

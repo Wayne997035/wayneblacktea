@@ -96,7 +96,8 @@ func TestMigration000086_GenericPlanCostThreshold(t *testing.T) {
 		// literally — proof it's a genuine generic plan, not accidentally
 		// a custom one.
 		if !strings.Contains(genericPlan, "$1") {
-			t.Fatalf("STOP: generic-plan EXPLAIN (limit=%d) does not contain \"$1\" — measurement method is broken, not a real generic plan:\n%s", limit, genericPlan)
+			t.Fatalf("STOP: generic-plan EXPLAIN (limit=%d) does not contain \"$1\" — measurement method is broken, "+
+				"not a real generic plan:\n%s", limit, genericPlan)
 		}
 		genericY := explainTopCost(t, genericPlan)
 		genericUsesIndex := strings.Contains(genericPlan, "idx_goals_active_due_date")

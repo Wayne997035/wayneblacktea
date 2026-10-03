@@ -27,6 +27,10 @@ var archSkipMigrations = map[string]bool{
 
 var testPgPool *pgxpool.Pool
 
+// newValueLiteral names the replacement "new" value asserted after an
+// UpsertSnapshot overwrite (goconst flags 3+ bare repeats of the literal).
+const newValueLiteral = "new"
+
 func TestMain(m *testing.M) {
 	flag.Parse()
 	os.Exit(run(m))
@@ -187,7 +191,7 @@ func TestStorePostgres_UpsertReplacesExisting(t *testing.T) {
 	if second.ID != first.ID {
 		t.Fatalf("upsert changed ID: got %s, want %s", second.ID, first.ID)
 	}
-	if second.Summary != "new" || second.FileMap["new.go"] != "new" || second.LastCommitSHA != "newsha" {
+	if second.Summary != newValueLiteral || second.FileMap["new.go"] != newValueLiteral || second.LastCommitSHA != "newsha" {
 		t.Fatalf("snapshot was not replaced: %+v", second)
 	}
 }

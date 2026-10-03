@@ -34,6 +34,11 @@ var skipMigrations = map[string]bool{
 
 var testPgPool *pgxpool.Pool
 
+// resultSuccessLiteral names the "success" outcome.Result value used in
+// several bare comparisons/arguments below (goconst flags 3+ raw repeats of
+// the same literal outside composite literal fields).
+const resultSuccessLiteral = "success"
+
 func TestMain(m *testing.M) {
 	flag.Parse()
 	os.Exit(run(m))
@@ -726,7 +731,7 @@ func TestStore_GetLatestForEntity_CreatedAtTieBreak(t *testing.T) {
 	// Mirrors the actual repro shape (one terminal row, one draft) — but the
 	// tie-break must hold regardless of which result value lands on which id,
 	// which is why idLesser/idGreater are picked independently of role.
-	insertOutcomeWithIDAndCreatedAt(ctx, t, pool, idLesser, wsID, "task", entityID, "success", sameCreatedAt)
+	insertOutcomeWithIDAndCreatedAt(ctx, t, pool, idLesser, wsID, "task", entityID, resultSuccessLiteral, sameCreatedAt)
 	insertOutcomeWithIDAndCreatedAt(ctx, t, pool, idGreater, wsID, "task", entityID, "unknown", sameCreatedAt)
 
 	store := outcome.NewStore(pool, &wsID)
@@ -767,7 +772,7 @@ func TestStore_FinalizeDraft_HappyPath(t *testing.T) {
 	if finalized.ID != draft.ID {
 		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
 	}
-	if finalized.Result != "success" {
+	if finalized.Result != resultSuccessLiteral {
 		t.Errorf("Result = %q, want success", finalized.Result)
 	}
 
@@ -815,7 +820,7 @@ func TestStore_FinalizeDraft_AlreadyFinalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOutcomeByID: %v", err)
 	}
-	if got.Result != "success" {
+	if got.Result != resultSuccessLiteral {
 		t.Errorf("result must remain 'success' (first finalize), got %q — second call must not silently overwrite", got.Result)
 	}
 }
@@ -861,7 +866,7 @@ func TestStore_FinalizeDraft_MergeSemantics_PreservesExistingFieldsWhenEmpty(t *
 	if finalized.ID != draft.ID {
 		t.Errorf("FinalizeDraft must reuse the same row ID: got %s, want %s", finalized.ID, draft.ID)
 	}
-	if finalized.Result != "success" {
+	if finalized.Result != resultSuccessLiteral {
 		t.Errorf("Result = %q, want success", finalized.Result)
 	}
 	if finalized.Notes != "real postmortem content the attacker wants gone" {
@@ -1121,7 +1126,8 @@ func TestStore_FinalizeDraftTruncated_ConcurrentEnrich_DetectsPerCallTruncationC
 	for i, id := range newIDs {
 		survived := slices.Contains(final.RelatedRuleIDs, id)
 		if truncated[i] == survived {
-			t.Errorf("goroutine %d: RelatedRuleIDsTruncated reported %v but id %s's survival in the final row is %v — verdict disagrees with ground truth",
+			t.Errorf("goroutine %d: RelatedRuleIDsTruncated reported %v but id %s's survival "+
+				"in the final row is %v — verdict disagrees with ground truth",
 				i, truncated[i], id, survived)
 		}
 		if truncated[i] {

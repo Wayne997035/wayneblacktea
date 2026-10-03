@@ -20,6 +20,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// intentShipP1Literal names the sample handoff Intent value reused across
+// TestObjectiveFromHandoff's cases (goconst flags 3+ bare repeats).
+const intentShipP1Literal = "ship P1"
+
 // captureSlogWarn redirects slog default output to a buffer for the duration
 // of the test. The buffer is returned for substring assertions. Restores the
 // previous default handler on cleanup. Mirrors internal/guard/config_test.go's
@@ -223,13 +227,13 @@ func TestObjectiveFromHandoff(t *testing.T) {
 		t.Errorf("objectiveFromHandoff(nil) = %q, want empty", got)
 	}
 
-	h := &db.SessionHandoff{Intent: "ship P1", ContextSummary: pgtype.Text{String: "9 issues found", Valid: true}}
+	h := &db.SessionHandoff{Intent: intentShipP1Literal, ContextSummary: pgtype.Text{String: "9 issues found", Valid: true}}
 	if got, want := objectiveFromHandoff(h), "ship P1 9 issues found"; got != want {
 		t.Errorf("objectiveFromHandoff() = %q, want %q", got, want)
 	}
 
-	noSummary := &db.SessionHandoff{Intent: "ship P1"}
-	if got, want := objectiveFromHandoff(noSummary), "ship P1"; got != want {
+	noSummary := &db.SessionHandoff{Intent: intentShipP1Literal}
+	if got, want := objectiveFromHandoff(noSummary), intentShipP1Literal; got != want {
 		t.Errorf("objectiveFromHandoff(no ContextSummary) = %q, want %q", got, want)
 	}
 }

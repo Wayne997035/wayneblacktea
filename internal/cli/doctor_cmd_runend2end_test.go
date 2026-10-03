@@ -92,16 +92,22 @@ func TestRunDoctor_WiresAllFourCollectors(t *testing.T) {
 	}
 
 	// collectProposalCount: one pending proposal.
-	if _, err := pool.Exec(ctx, `INSERT INTO pending_proposals (workspace_id, type, payload) VALUES ($1, 'task', '{}'::jsonb)`, ws); err != nil {
+	_, err = pool.Exec(ctx,
+		`INSERT INTO pending_proposals (workspace_id, type, payload) VALUES ($1, 'task', '{}'::jsonb)`, ws)
+	if err != nil {
 		t.Fatalf("seed pending_proposals: %v", err)
 	}
 
 	// collectDueReviewCount: one concept due for review (due_date in the past).
 	var conceptID uuid.UUID
-	if err := pool.QueryRow(ctx, `INSERT INTO concepts (title, content, workspace_id) VALUES ('c', 'body', $1) RETURNING id`, ws).Scan(&conceptID); err != nil {
+	err = pool.QueryRow(ctx,
+		`INSERT INTO concepts (title, content, workspace_id) VALUES ('c', 'body', $1) RETURNING id`, ws).Scan(&conceptID)
+	if err != nil {
 		t.Fatalf("seed concepts: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO review_schedule (concept_id, due_date, workspace_id) VALUES ($1, NOW() - INTERVAL '1 hour', $2)`, conceptID, ws); err != nil {
+	_, err = pool.Exec(ctx,
+		`INSERT INTO review_schedule (concept_id, due_date, workspace_id) VALUES ($1, NOW() - INTERVAL '1 hour', $2)`, conceptID, ws)
+	if err != nil {
 		t.Fatalf("seed review_schedule: %v", err)
 	}
 

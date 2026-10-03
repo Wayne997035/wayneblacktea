@@ -36,7 +36,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_playbook_test"),
 		tcpostgres.WithUsername("wbt"),
@@ -160,7 +161,8 @@ func TestStorePostgres_ListKeywordsORCombineAndCaseInsensitive(t *testing.T) {
 	ws := uuid.New()
 	store := playbook.NewStore(openPlaybookTestPgPool(t), &ws)
 	ctx := context.Background()
-	if _, err := store.Create(ctx, playbook.CreateParams{TriggerPattern: "Before Complex Task", ActionTemplate: "query playbooks"}); err != nil {
+	_, err := store.Create(ctx, playbook.CreateParams{TriggerPattern: "Before Complex Task", ActionTemplate: "query playbooks"})
+	if err != nil {
 		t.Fatalf("create complex: %v", err)
 	}
 	if _, err := store.Create(ctx, playbook.CreateParams{TriggerPattern: "release", ActionTemplate: "RUN task check"}); err != nil {

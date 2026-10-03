@@ -289,7 +289,7 @@ func TestMigration000084_PG_Consistency(t *testing.T) {
 
 	for _, r := range rows {
 		var got *string
-		query := fmt.Sprintf(`SELECT repo_name FROM %s WHERE %s = $1`, r.spec.name, r.spec.markerCol) //nolint:gosec // table/column are hardcoded literals from pgCleanupSpecs, never caller input
+		query := fmt.Sprintf(`SELECT repo_name FROM %s WHERE %s = $1`, r.spec.name, r.spec.markerCol)
 		if err := pool.QueryRow(ctx, query, r.marker).Scan(&got); err != nil {
 			t.Fatalf("read back %s marker=%s: %v", r.spec.name, r.marker, err)
 		}
