@@ -7,3 +7,12 @@ DROP INDEX IF EXISTS idx_pending_proposals_status_pending;
 CREATE INDEX IF NOT EXISTS idx_pending_proposals_status_pending
     ON pending_proposals(created_at DESC, id DESC)
     WHERE status = 'pending';
+
+-- [F1003-09] Decision 7a064608 (post-STOP follow-up): SQLite twin of the
+-- workspace-leading composite added to migrations/000087_*.up.sql. Not
+-- required for SQLite's own single-tenant-by-default usage, but kept
+-- parity (decision cbbbf686) — same column list and predicate as PG, no
+-- NULLS LAST divergence to document here.
+CREATE INDEX IF NOT EXISTS idx_pending_proposals_workspace_pending_sort
+    ON pending_proposals(workspace_id, created_at DESC, id DESC)
+    WHERE status = 'pending';

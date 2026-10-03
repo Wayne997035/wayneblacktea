@@ -17,3 +17,21 @@ DROP INDEX IF EXISTS idx_pending_proposals_status_pending;
 CREATE INDEX IF NOT EXISTS idx_pending_proposals_status_pending
     ON pending_proposals(created_at DESC, id DESC)
     WHERE status = 'pending';
+
+-- [F1003-09] Decision 7a064608 (post-STOP follow-up): the above index
+-- keeps serving the workspace_id-NULL global path and SQLite's
+-- single-tenant mode, but production is NOT assumed single-workspace —
+-- measured (internal/db/migration_000087_explain_test.go, 2000+2000-row
+-- scale) that at LIMIT 500 the planner abandons it for
+-- idx_pending_proposals_workspace_id + an explicit Sort, because
+-- workspace_id isn't in the index at all. This net-new, workspace_id-
+-- leading composite gives the per-workspace production path (every real
+-- call binds a concrete workspace_id — internal/storage/factory.go
+-- fail-closes Postgres startup otherwise) an Index Cond on workspace_id
+-- AND the exact (created_at, id) trailing order, same equality-then-sort
+-- shape as idx_goals_active_due_date (migrations/000086). No FK (red line
+-- #9); IF NOT EXISTS is safe here since this name is net-new, not a
+-- realignment.
+CREATE INDEX IF NOT EXISTS idx_pending_proposals_workspace_pending_sort
+    ON pending_proposals(workspace_id, created_at DESC, id DESC)
+    WHERE status = 'pending';

@@ -93,6 +93,72 @@ func TestMigration000087_PendingProposalsSortKeyIndexExists(t *testing.T) {
 	}
 }
 
+// wantIdxWorkspacePendingSortDef is the exact expected pg_indexes.indexdef
+// text for the net-new workspace-leading composite (decision 7a064608,
+// post-STOP follow-up) — verified against a real Postgres 16 instance, not
+// assumed.
+const wantIdxWorkspacePendingSortDef = "CREATE INDEX idx_pending_proposals_workspace_pending_sort " +
+	"ON public.pending_proposals USING btree (workspace_id, created_at DESC, id DESC) WHERE (status = 'pending'::text)"
+
+// TestMigration000087_WorkspacePendingSortIndexExists is the decision
+// 7a064608 follow-up: proves idx_pending_proposals_workspace_pending_sort
+// is absent pre-087, exists with the exact expected shape post-087, and is
+// fully reversible (down drops it entirely — net-new, unlike the realigned
+// idx_pending_proposals_status_pending).
+func TestMigration000087_WorkspacePendingSortIndexExists(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Docker")
+	}
+	ctx := context.Background()
+	dsn := newIsolatedTestDB(t, testAdminDSN)
+	migrateToVersion(t, dsn, 86)
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	indexDef := func(name string) (string, bool) {
+		var got string
+		err := pool.QueryRow(ctx, `SELECT indexdef FROM pg_indexes WHERE indexname = $1`, name).Scan(&got)
+		if err != nil {
+			return "", false
+		}
+		return got, true
+	}
+
+	if _, ok := indexDef("idx_pending_proposals_workspace_pending_sort"); ok {
+		t.Fatal("idx_pending_proposals_workspace_pending_sort exists before migration 000087 has run")
+	}
+
+	t.Setenv("WBT_AUTO_MIGRATE", "")
+	if err := RunMigrations(ctx, dsn); err != nil {
+		t.Fatalf("RunMigrations to 87: %v", err)
+	}
+	got, ok := indexDef("idx_pending_proposals_workspace_pending_sort")
+	if !ok {
+		t.Fatal("idx_pending_proposals_workspace_pending_sort missing after migration 000087")
+	}
+	if got != wantIdxWorkspacePendingSortDef {
+		t.Errorf("indexdef mismatch:\n got:  %s\n want: %s", got, wantIdxWorkspacePendingSortDef)
+	}
+
+	migrateToVersion(t, dsn, 86)
+	if _, ok := indexDef("idx_pending_proposals_workspace_pending_sort"); ok {
+		t.Error("idx_pending_proposals_workspace_pending_sort still exists after the down migration")
+	}
+
+	migrateToVersion(t, dsn, 87)
+	got, ok = indexDef("idx_pending_proposals_workspace_pending_sort")
+	if !ok {
+		t.Fatal("idx_pending_proposals_workspace_pending_sort missing after re-up")
+	}
+	if got != wantIdxWorkspacePendingSortDef {
+		t.Errorf("indexdef mismatch after re-up:\n got:  %s\n want: %s", got, wantIdxWorkspacePendingSortDef)
+	}
+}
+
 // TestMigration000087_PendingProposalsSortKeyIndexUsedByQuery is the
 // EXPLAIN proof that the realigned index removes the Sort node the pre-087
 // shape needed, under SET LOCAL enable_seqscan = off (same technique as
@@ -115,7 +181,8 @@ func TestMigration000087_PendingProposalsSortKeyIndexUsedByQuery(t *testing.T) {
 
 	wsID := uuid.New()
 	for i := 0; i < 5; i++ {
-		if _, err := pool.Exec(ctx,
+		if _, err := pool.Exec(
+			ctx,
 			`INSERT INTO pending_proposals (id, workspace_id, type, payload, status, created_at)
 			 VALUES ($1, $2, 'task', '{}'::jsonb, 'pending', NOW())`,
 			uuid.New(), wsID,

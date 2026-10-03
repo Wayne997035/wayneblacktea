@@ -42,7 +42,11 @@ type genericPlanGateResult struct {
 // the generic plan's index/Sort shape is informational only — logged, not
 // gated. When PG would switch (willSwitch == true), the generic plan MUST
 // use the index with no Sort node, or pass is false.
-func judgeGenericPlanGate(customTopCost, genericTopCost, cpuOperatorCost float64, nrelations int, genericUsesIndex, genericHasSort bool) genericPlanGateResult {
+func judgeGenericPlanGate(
+	customTopCost, genericTopCost, cpuOperatorCost float64,
+	nrelations int,
+	genericUsesIndex, genericHasSort bool,
+) genericPlanGateResult {
 	threshold := customTopCost + 1000.0*cpuOperatorCost*float64(nrelations+1)
 	willSwitch := genericTopCost < threshold
 	if !willSwitch {

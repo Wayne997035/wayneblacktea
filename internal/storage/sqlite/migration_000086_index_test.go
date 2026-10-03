@@ -197,7 +197,11 @@ func TestMigration000086_GoalsActiveDueDateIndexUsedByProdPathQuery(t *testing.T
 		t.Fatalf("plan fell back to a bare table scan (no index at all):\n%s", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
-		t.Logf("prod path (SQLite) needs USE TEMP B-TREE FOR ORDER BY — expected: the shared (?1 IS NULL OR workspace_id = ?1) query text compiles one value-independent bytecode plan for both the scoped and legacy-NULL callers, so SQLite cannot specialize away the sort the way Postgres's custom plan does. See this test's doc comment.")
+		t.Logf("prod path (SQLite) needs USE TEMP B-TREE FOR ORDER BY — expected: " +
+			"the shared (?1 IS NULL OR workspace_id = ?1) query text compiles one " +
+			"value-independent bytecode plan for both the scoped and legacy-NULL " +
+			"callers, so SQLite cannot specialize away the sort the way Postgres's " +
+			"custom plan does. See this test's doc comment.")
 	}
 }
 
@@ -217,9 +221,11 @@ func TestMigration000086_GoalsActiveDueDateIndexUsedByLegacyNullPathQuery(t *tes
 	plan := explainGoalsQueryPlan(t, conn, nil)
 	t.Logf("legacy-NULL-path EXPLAIN QUERY PLAN:\n%s", plan)
 	if !strings.Contains(plan, "idx_goals_active_due_date") {
-		t.Fatalf("expected idx_goals_active_due_date referenced for the status='active' filter, got a bare scan with no index reference:\n%s", plan)
+		t.Fatalf("expected idx_goals_active_due_date referenced for the status='active' filter, "+
+			"got a bare scan with no index reference:\n%s", plan)
 	}
 	if strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
-		t.Logf("legacy-NULL path needed USE TEMP B-TREE FOR ORDER BY — accepted trade-off, this path is SQLite-dev-only (see migration file header)")
+		t.Logf("legacy-NULL path needed USE TEMP B-TREE FOR ORDER BY — accepted trade-off, " +
+			"this path is SQLite-dev-only (see migration file header)")
 	}
 }

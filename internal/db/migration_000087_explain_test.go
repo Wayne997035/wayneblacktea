@@ -10,14 +10,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// [F1003-09] Lead's supplement 1 methodology applied to migration 000087
-// (idx_pending_proposals_status_pending's realigned created_at DESC, id
-// DESC shape). Per Lead's supplement 2: 000087's index does NOT lead with
-// workspace_id (workspace condition only ever lands in a Filter, never the
-// Index Cond), so the risk being tested here is different from 000086's:
-// whether the planner instead prefers idx_pending_proposals_workspace_id
-// and re-sorts — same custom-plan hard requirement + generic-plan
-// cost-threshold judgment either way.
+// [F1003-09] Lead's supplement 1 methodology applied to migration 000087.
+//
+// Decision 7a064608 (post-STOP follow-up): the first round of this test
+// found that idx_pending_proposals_status_pending alone (no workspace_id
+// column) loses to idx_pending_proposals_workspace_id + an explicit Sort
+// at LIMIT 500 — the original STOP this file now re-validates against.
+// Migration 000087 was extended with a net-new workspace_id-leading
+// composite, idx_pending_proposals_workspace_pending_sort, specifically to
+// serve this production path; this file's hard requirement is now that
+// the custom plan uses THAT index (Index Cond containing workspace_id),
+// not idx_pending_proposals_status_pending.
 //
 // Query text source: the unexported sqlc-generated listPendingProposals
 // constant (internal/db/proposal.sql.go), never hand-transcribed.
@@ -37,9 +40,14 @@ func seedPendingProposalsForCostThreshold(t *testing.T, ctx context.Context, wsI
 	}
 }
 
-// TestMigration000087_CustomPlanUsesIndexNoSort is the hard-judgment half:
-// the production-shaped call must use idx_pending_proposals_status_pending
-// with no Sort node, at both LIMIT 50 and LIMIT 500.
+// TestMigration000087_CustomPlanUsesIndexNoSort is the hard-judgment half,
+// re-pointed at the decision 7a064608 follow-up index: the production-
+// shaped call must use idx_pending_proposals_workspace_pending_sort, with
+// workspace_id in the Index Cond and no Sort node, at both LIMIT 50 and
+// LIMIT 500. (The first round of this test, against
+// idx_pending_proposals_status_pending alone, is what originally
+// discovered the STOP this follow-up index fixes — see this file's
+// header comment.)
 func TestMigration000087_CustomPlanUsesIndexNoSort(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Docker")
@@ -52,8 +60,11 @@ func TestMigration000087_CustomPlanUsesIndexNoSort(t *testing.T) {
 	for _, limit := range []int32{50, 500} {
 		plan := explainCustomPlan(t, ctx, testPgPool, listPendingProposals, wsUUID(wsID), int32(0), limit)
 		t.Logf("[000087] custom plan, limit=%d:\n%s", limit, plan)
-		if !strings.Contains(plan, "idx_pending_proposals_status_pending") {
-			t.Fatalf("STOP: custom plan (limit=%d) doesn't use idx_pending_proposals_status_pending:\n%s", limit, plan)
+		if !strings.Contains(plan, "idx_pending_proposals_workspace_pending_sort") {
+			t.Fatalf("STOP: custom plan (limit=%d) doesn't use idx_pending_proposals_workspace_pending_sort:\n%s", limit, plan)
+		}
+		if !strings.Contains(plan, "workspace_id") {
+			t.Fatalf("STOP: custom plan (limit=%d) index usage doesn't condition on workspace_id:\n%s", limit, plan)
 		}
 		if strings.Contains(plan, "Sort") {
 			t.Fatalf("STOP: custom plan (limit=%d) has a Sort node:\n%s", limit, plan)
@@ -87,7 +98,8 @@ func TestMigration000087_GenericPlanCostThreshold(t *testing.T) {
 			t.Fatalf("STOP: generic-plan EXPLAIN (limit=%d) does not contain \"$1\" — measurement method is broken:\n%s", limit, genericPlan)
 		}
 		genericY := explainTopCost(t, genericPlan)
-		genericUsesIndex := strings.Contains(genericPlan, "idx_pending_proposals_status_pending")
+		genericUsesIndex := strings.Contains(genericPlan, "idx_pending_proposals_workspace_pending_sort") ||
+			strings.Contains(genericPlan, "idx_pending_proposals_status_pending")
 		genericHasSort := strings.Contains(genericPlan, "Sort")
 
 		result := judgeGenericPlanGate(customY, genericY, cpuCost, 1, genericUsesIndex, genericHasSort)

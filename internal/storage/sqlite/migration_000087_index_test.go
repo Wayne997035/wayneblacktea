@@ -53,6 +53,11 @@ const (
 		"ON pending_proposals(created_at DESC) WHERE status = 'pending'"
 	wantIdx000087SQLiteNew = "CREATE INDEX idx_pending_proposals_status_pending " +
 		"ON pending_proposals(created_at DESC,id DESC) WHERE status = 'pending'"
+	// wantIdxWorkspacePendingSort is the net-new workspace-leading
+	// composite added by decision 7a064608 (post-STOP follow-up to the
+	// original F1003-09 round) — see the migration file's header comment.
+	wantIdxWorkspacePendingSort = "CREATE INDEX idx_pending_proposals_workspace_pending_sort " +
+		"ON pending_proposals(workspace_id,created_at DESC,id DESC) WHERE status = 'pending'"
 )
 
 // TestMigration000087_PendingProposalsSortKeyIndexExists proves migration
@@ -82,7 +87,8 @@ func TestMigration000087_PendingProposalsSortKeyIndexExists(t *testing.T) {
 	}
 	got = sqliteIndexSQL(t, conn, "idx_pending_proposals_status_pending")
 	if got != canonicalizeSQL(wantIdx000087SQLiteOld) {
-		t.Errorf("post-down index shape mismatch (want the OLD shape restored, not absence):\n got:  %s\n want: %s", got, canonicalizeSQL(wantIdx000087SQLiteOld))
+		t.Errorf("post-down index shape mismatch (want the OLD shape restored, not absence):\n got:  %s\n want: %s",
+			got, canonicalizeSQL(wantIdx000087SQLiteOld))
 	}
 
 	if err := m.Migrate(87); err != nil {
@@ -94,6 +100,43 @@ func TestMigration000087_PendingProposalsSortKeyIndexExists(t *testing.T) {
 	}
 }
 
+// TestMigration000087_WorkspacePendingSortIndexExists is the decision
+// 7a064608 follow-up: proves the net-new workspace-leading composite is
+// absent pre-087, exists with the exact expected shape post-087, and is
+// fully reversible (down drops it entirely — it is net-new, unlike the
+// realigned idx_pending_proposals_status_pending above).
+func TestMigration000087_WorkspacePendingSortIndexExists(t *testing.T) {
+	t.Parallel() // [F1003-09]
+	conn, m := openMigratorAt86(t)
+
+	if got := sqliteIndexSQL(t, conn, "idx_pending_proposals_workspace_pending_sort"); got != "" {
+		t.Fatalf("idx_pending_proposals_workspace_pending_sort exists before migration 000087 has run (got %q)", got)
+	}
+
+	if err := m.Migrate(87); err != nil {
+		t.Fatalf("migrate to 87: %v", err)
+	}
+	got := sqliteIndexSQL(t, conn, "idx_pending_proposals_workspace_pending_sort")
+	if got != canonicalizeSQL(wantIdxWorkspacePendingSort) {
+		t.Errorf("index shape mismatch:\n got:  %s\n want: %s", got, canonicalizeSQL(wantIdxWorkspacePendingSort))
+	}
+
+	if err := m.Migrate(86); err != nil {
+		t.Fatalf("migrate down to 86: %v", err)
+	}
+	if got := sqliteIndexSQL(t, conn, "idx_pending_proposals_workspace_pending_sort"); got != "" {
+		t.Errorf("idx_pending_proposals_workspace_pending_sort still exists after the down migration (got %q)", got)
+	}
+
+	if err := m.Migrate(87); err != nil {
+		t.Fatalf("re-migrate to 87 after down: %v", err)
+	}
+	got = sqliteIndexSQL(t, conn, "idx_pending_proposals_workspace_pending_sort")
+	if got != canonicalizeSQL(wantIdxWorkspacePendingSort) {
+		t.Errorf("index missing or wrong shape after re-up:\n got:  %s\n want: %s", got, canonicalizeSQL(wantIdxWorkspacePendingSort))
+	}
+}
+
 // seedPendingProposalsForExplain inserts n pending proposals into the given
 // workspace, mirroring the shape ListPendingPage filters/sorts on.
 func seedPendingProposalsForExplain(t *testing.T, conn *sql.DB, workspaceID string, n int) {
@@ -101,7 +144,8 @@ func seedPendingProposalsForExplain(t *testing.T, conn *sql.DB, workspaceID stri
 	ctx := context.Background()
 	for i := 0; i < n; i++ {
 		id := workspaceID + "-pp-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
-		if _, err := conn.ExecContext(ctx,
+		if _, err := conn.ExecContext(
+			ctx,
 			`INSERT INTO pending_proposals (id, workspace_id, type, payload, status) VALUES (?, ?, 'task', '{}', 'pending')`,
 			id, workspaceID,
 		); err != nil {

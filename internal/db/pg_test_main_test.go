@@ -44,7 +44,8 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 	ctx := context.Background()
-	c, err := tcpostgres.Run(ctx,
+	c, err := tcpostgres.Run(
+		ctx,
 		"pgvector/pgvector:pg16",
 		tcpostgres.WithDatabase("wbt_test"),
 		tcpostgres.WithUsername("wbt"),
