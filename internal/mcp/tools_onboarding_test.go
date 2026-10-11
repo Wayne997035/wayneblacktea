@@ -117,6 +117,10 @@ func TestMCPProtocolAppendix_KeepsDetailMovedOutOfDescriptions(t *testing.T) {
 		{"add_task: priority vs importance", "DIFFERENT axis"},
 		{"add_task: kind values", "general (default), fix-pr, feature, refactor, research, chore"},
 		{"update_task: clearing convention", "empty string to clear the field"},
+		// [F1011-15] project_id joined the clear-with-empty-string family, and unlike
+		// branch_name / pr_url it has a must-exist rule that only the appendix states.
+		{"update_task: project_id clears", "branch_name, pr_url and project_id accept an empty string to clear the field"},
+		{"update_task: project_id must exist", "project_id otherwise must be the UUID of an existing project in this workspace."},
 		{"complete_task: artifact detection", "40-character hex SHA"},
 	}
 	for _, tc := range moved {

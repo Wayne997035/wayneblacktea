@@ -350,6 +350,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("area", mcp.Description(
 				"Reclassify the task. Must name an area from wayneblacktea://gtd/areas; omit to keep it.",
 			)),
+			// [F1011-14] Not Required: omitting it must stay legal, it leaves
+			// the stored project alone. Empty-clears and the must-exist rule
+			// live in mcpProtocolAppendix, same split as branch_name / pr_url.
+			mcp.WithString("project_id", mcp.Description("Project UUID to move the task into, empty clears")),
 		), seam(s, "update_task", s.handleUpdateTask),
 		uuidArgs("task_id"),
 		// assignee's MaxLength(200) is advisory-only (see add_task's
@@ -1601,8 +1605,39 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 	if msg := applyBranchAndPRUpdate(args.BranchName, args.PRUrl, &p); msg != "" {
 		return p, msg
 	}
+	if msg := applyProjectUpdate(args.ProjectID, &p); msg != "" {
+		return p, msg
+	}
 
 	return p, ""
+}
+
+// applyProjectUpdate maps update_task's project_id onto the typed tri-state
+// gtd.UpdateTaskParams.Project. [F1011-14]
+//
+//	key absent          -> Project stays nil: tasks.project_id is left alone
+//	""                  -> &ProjectRef{}: clear to NULL
+//	any other string    -> must parse as a UUID, then &ProjectRef{ID: &id}
+//
+// A whitespace-only value is NOT a clear; it fails uuid.Parse like any other
+// malformed value, so a stray space cannot silently unlink a task. The nil UUID
+// parses fine and is a "set" (a project that does not exist, which the store
+// then rejects), never a clear. Whether the project exists in this workspace is
+// the store's call, not this function's: it answers with gtd.ErrProjectNotFound.
+func applyProjectUpdate(projectID *string, p *gtd.UpdateTaskParams) string {
+	if projectID == nil {
+		return ""
+	}
+	if *projectID == "" {
+		p.Project = &gtd.ProjectRef{}
+		return ""
+	}
+	id, parseErr := uuid.Parse(*projectID)
+	if parseErr != nil {
+		return errMsgInvalidProjectIDUUID
+	}
+	p.Project = &gtd.ProjectRef{ID: &id}
+	return ""
 }
 
 // applyClassificationUpdate sets the two fields that say what KIND of work a
@@ -1630,7 +1665,7 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
 		p.DueDate == nil && p.Context == nil && p.Kind == nil &&
 		p.BranchName == nil && p.PRUrl == nil && p.AppendCommitSHA == nil &&
-		p.Area == nil
+		p.Area == nil && p.Project == nil
 }
 
 // requireAssigneeForInProgress enforces that a task cannot transition to
@@ -1689,6 +1724,15 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	task, err := s.gtd.UpdateTask(ctx, args.TaskID, p)
 	if errors.Is(err, gtd.ErrNotFound) {
 		return mcp.NewToolResultError("task not found"), nil
+	}
+	// [F1011-14] A project that does not exist and one that belongs to another
+	// workspace both land here and get the same text, so the answer is no
+	// existence oracle. The sentinel does not wrap ErrNotFound, so the branch
+	// above cannot swallow it into "task not found". Static string: the
+	// caller's UUID is never echoed, and the sentinel stays out of
+	// callerFacingSentinels (NotFound-style sentinels get explicit branches).
+	if errors.Is(err, gtd.ErrProjectNotFound) {
+		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
 		slog.Warn("update_task: UpdateTask failed", "task_id", args.TaskID, "err", err)

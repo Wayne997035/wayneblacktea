@@ -139,7 +139,10 @@ type CreateGoalArgs struct {
 // business logic (validator.IsValidKind) distinct from the schema's advisory
 // enum. BranchName/PRUrl are *string: applyBranchAndPRUpdate distinguishes
 // "key absent" (leave unchanged) from "key present as empty string" (clear
-// the field) — genuine presence-based business logic.
+// the field) — genuine presence-based business logic. ProjectID is a *string
+// for the same reason, and is not uuidArgs-validated at the seam: the seam
+// would also have to accept "" (a clear), so applyProjectUpdate is the single
+// parse path, as resolveGoalID is for update_project's goal_id.
 type UpdateTaskArgs struct {
 	TaskID      uuid.UUID `mcp:"task_id"`
 	Status      string    `mcp:"status"`
@@ -154,6 +157,7 @@ type UpdateTaskArgs struct {
 	BranchName  *string   `mcp:"branch_name"`
 	PRUrl       *string   `mcp:"pr_url"`
 	Area        string    `mcp:"area"`
+	ProjectID   *string   `mcp:"project_id"`
 }
 
 // UpdateProjectStatusArgs — update_project_status. Status is required and
