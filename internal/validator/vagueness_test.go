@@ -349,6 +349,23 @@ func TestCheckVagueness_LueAllowlist(t *testing.T) {
 		{"marker 節略", lueP + "節略", true},
 		{"marker 餘略", lueP + "餘略", true},
 
+		// Words that contain 略 but are not on either allowlist. Any of these
+		// going green means an allowlist was widened; the last six are the
+		// Simplified forms of allowlisted Traditional words. [PR #200 R1-02]
+		{"not allowlisted 略述", lueP + "略述", true},
+		{"not allowlisted 略有改善", lueP + "略有改善", true},
+		{"not allowlisted 略微", lueP + "略微", true},
+		{"not allowlisted 略為", lueP + "略為", true},
+		{"not allowlisted 略顯", lueP + "略顯", true},
+		{"not allowlisted 略高", lueP + "略高", true},
+		{"not allowlisted 略低", lueP + "略低", true},
+		{"simplified 战略", lueP + "战略", true},
+		{"simplified 领略", lueP + "领略", true},
+		{"simplified 简略", lueP + "简略", true},
+		{"simplified 约略", lueP + "约略", true},
+		{"simplified 略过", lueP + "略过", true},
+		{"simplified 缩略", lueP + "缩略", true},
+
 		// The trailing 略 causes the hit, not the 省略 before it.
 		{"省略 A,其餘略", lueP + "省略 A,其餘略", true},
 		{"省略 A,其餘說明", lueP + "省略 A,其餘說明", false},

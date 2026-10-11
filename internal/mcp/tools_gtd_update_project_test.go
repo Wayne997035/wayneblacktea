@@ -170,7 +170,7 @@ func projectRefState(r *gtd.ProjectRef) string {
 // It calls parseUpdateTaskArgs, the function handleUpdateTask calls, and not the
 // helper it delegates to: a test of the helper alone leaves the line that
 // assigns the helper's result to p.Project unguarded, and a store that ignores
-// Project (as this branch's SQLite store did) cannot show that line is wrong.
+// Project cannot show that line is wrong.
 func TestUpdateTask_ProjectIDParse(t *testing.T) {
 	t.Parallel()
 	valid := uuid.New()
@@ -249,9 +249,8 @@ func TestUpdateTask_ProjectIDAttachThenListed(t *testing.T) {
 // TestUpdateTask_OmittingProjectIDPreservesIt: an update that does not mention
 // project_id must leave the link alone.
 //
-// This branch's store never touches project_id, so a pass here is not evidence
-// about the MCP layer; it only becomes a check once a store that writes the
-// column is under it.
+// Runs against the SQLite store, so it fails if UpdateTask rewrites project_id
+// on an update that omits it.
 func TestUpdateTask_OmittingProjectIDPreservesIt(t *testing.T) {
 	t.Parallel()
 	s, d := newTestWorkSessionServerWithDB(t)

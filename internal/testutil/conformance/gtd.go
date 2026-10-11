@@ -268,22 +268,35 @@ func gtdSmokeProjectIDClear(t *testing.T, ctx context.Context, store gtd.StoreIf
 // [F1011-16] Row 10: a project that does not exist is rejected with
 // ErrProjectNotFound and nothing is written, the other fields of the same call
 // included.
+//
+// The nil UUID runs through the same checks: it is a set to an id no project
+// has, not a clear and not an omit (gtd.ProjectRef). This repo uses uuid.Nil
+// as "absent" elsewhere, so a store that took that shortcut here would quietly
+// clear or keep the link instead of refusing. [PR #200 R1-03]
 func gtdSmokeProjectIDUnknown(t *testing.T, ctx context.Context, store gtd.StoreIface) {
-	const original = "smoke-projid-unknown-task"
-	proj := gtdSmokeProject(t, ctx, store, "smoke-projid-unknown")
-	task := gtdSmokeTask(t, ctx, store, original, &proj)
+	for _, c := range []struct {
+		label   string
+		missing uuid.UUID
+	}{
+		{"random", uuid.New()},
+		{"nil", uuid.Nil},
+	} {
+		original := "smoke-projid-unknown-task-" + c.label
+		proj := gtdSmokeProject(t, ctx, store, "smoke-projid-unknown-"+c.label)
+		task := gtdSmokeTask(t, ctx, store, original, &proj)
 
-	missing := uuid.New()
-	rejected := "should not land"
-	_, err := store.UpdateTask(ctx, task, gtd.UpdateTaskParams{Title: &rejected, Project: &gtd.ProjectRef{ID: &missing}})
-	gtdSmokeWantProjectNotFound(t, err, "UpdateTask(unknown project)")
+		missing := c.missing
+		rejected := "should not land"
+		_, err := store.UpdateTask(ctx, task, gtd.UpdateTaskParams{Title: &rejected, Project: &gtd.ProjectRef{ID: &missing}})
+		gtdSmokeWantProjectNotFound(t, err, "UpdateTask("+c.label+" unknown project)")
 
-	if got, gerr := store.GetTaskByID(ctx, task); gerr != nil {
-		t.Fatalf("GetTaskByID after rejected update: %v", gerr)
-	} else if got.Title != original {
-		t.Errorf("Title = %q, want unchanged %q (a rejected call must write nothing)", got.Title, original)
+		if got, gerr := store.GetTaskByID(ctx, task); gerr != nil {
+			t.Fatalf("GetTaskByID after rejected update (%s): %v", c.label, gerr)
+		} else if got.Title != original {
+			t.Errorf("%s: Title = %q, want unchanged %q (a rejected call must write nothing)", c.label, got.Title, original)
+		}
+		gtdSmokeWantProject(t, ctx, store, task, &proj, "after rejected update ("+c.label+")")
 	}
-	gtdSmokeWantProject(t, ctx, store, task, &proj, "after rejected update")
 }
 
 // [F1011-16] Row 11: a project that lives in another workspace is as good as

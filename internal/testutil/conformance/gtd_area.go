@@ -18,7 +18,7 @@ const (
 // backends: TaskAreaExists accepts it (and refuses near-miss spellings), and
 // TaskAreaCounts lists it once, in sort_order position, counting a task
 // created in it. It is a separate function, not part of RunGTDSmoke, so that
-// function's "6 shared behaviours" contract stays true.
+// function's list of shared behaviours is unchanged.
 //
 // [F1011-01] The Postgres half only runs where openTestPgPool does (not under
 // -short), so a green -short run proves the SQLite half alone. store's
