@@ -80,24 +80,45 @@ var lueOmitCompounds = []string{
 }
 
 // lueTerminators end a clause when they directly follow an omit-class word.
-// Closing brackets are included so "(省略)" is called the same way "(略)" is;
-// quotes and backticks are deliberately absent, they count as content.
+// The closing brackets ) ] ） ］ 】 are terminators, so "(省略)" is called the
+// same way "(略)" is. Quotes, emphasis marks and the other closing brackets are
+// lueClosers instead: one that directly follows the word is skipped by
+// contentFollows, one that follows whitespace opens the next token and counts
+// as content.
 const lueTerminators = ",.;:!?)]，。、；：！？…）］】"
+
+// lueClosers are the quote, emphasis and bracket marks that can close a
+// wrapped omit-class word ("以下「省略」", "**以下省略**"). See lueTerminators
+// for how contentFollows treats them. [PR #200 R1-01]
+const lueClosers = "」』”’＂〞»》〉〕}>｝\"'`*_~＊｀"
 
 // contentFollows reports whether real content follows byte offset end of s on
 // the same line. Horizontal whitespace is skipped; the text ending, a line
-// break or a terminator means nothing follows. It decodes runes instead of
-// indexing bytes: 0xE3 starts both U+3000 and 。, so a byte-wise skip would eat
-// half of 。 and report content after "細節略過。". [F1011-21]
+// break or a terminator means nothing follows. A lueClosers mark directly after
+// the word is skipped too, so a wrapped clause-final omit word is still called
+// (decision ea7e6826: quotes do not exempt); once whitespace has been skipped,
+// such a mark opens the next token and counts as content ("略過 *.pb.go").
+// It decodes runes instead of indexing bytes: 0xE3 starts both U+3000 and 。,
+// so a byte-wise skip would eat half of 。 and report content after "細節略過。".
+// [F1011-21][PR #200 R1-01]
 func contentFollows(s string, end int) bool {
+	sawSpace := false
 	for end < len(s) {
 		r, size := utf8.DecodeRuneInString(s[end:])
 		switch r {
 		case ' ', '\t', '\u00a0', '\u3000':
+			sawSpace = true
 			end += size
 		case '\n', '\r':
 			return false
 		default:
+			if strings.ContainsRune(lueClosers, r) {
+				if sawSpace {
+					return true
+				}
+				end += size
+				continue
+			}
 			return !strings.ContainsRune(lueTerminators, r)
 		}
 	}

@@ -366,6 +366,61 @@ func TestCheckVagueness_LueAllowlist(t *testing.T) {
 		{"simplified 略过", lueP + "略过", true},
 		{"simplified 缩略", lueP + "缩略", true},
 
+		// A clause-final omit word wrapped in a closing mark is still called:
+		// quotes do not exempt (decision ea7e6826). One row per lueClosers
+		// mark, written out literally so removing a mark fails its row.
+		// [PR #200 R1-01]
+		{"wrapped 「」", lueP + "以下「省略」", true},
+		{"wrapped backtick", lueP + "以下`省略`", true},
+		{"wrapped ascii dq", lueP + "以下\"省略\"", true},
+		{"wrapped bold", lueP + "**以下省略**", true},
+		{"wrapped fullwidth dq", lueP + "以下＂省略＂", true},
+		{"wrapped 〝〞", lueP + "以下〝省略〞", true},
+		{"wrapped 《》", lueP + "以下《省略》", true},
+		{"wrapped {}", lueP + "以下{省略}", true},
+		{"wrapped <>", lueP + "以下<省略>", true},
+		{"wrapped «»", lueP + "以下«省略»", true},
+		{"wrapped then 。", lueP + "以下「省略」。", true},
+		{"closer U+300D", lueP + "以下省略」", true},
+		{"closer U+300F", lueP + "以下省略』", true},
+		{"closer U+201D", lueP + "以下省略”", true},
+		{"closer U+2019", lueP + "以下省略’", true},
+		{"closer U+FF02", lueP + "以下省略＂", true},
+		{"closer U+301E", lueP + "以下省略〞", true},
+		{"closer U+00BB", lueP + "以下省略»", true},
+		{"closer U+300B", lueP + "以下省略》", true},
+		{"closer U+3009", lueP + "以下省略〉", true},
+		{"closer U+3015", lueP + "以下省略〕", true},
+		{"closer U+007D", lueP + "以下省略}", true},
+		{"closer U+003E", lueP + "以下省略>", true},
+		{"closer U+FF5D", lueP + "以下省略｝", true},
+		{"closer U+0022", lueP + "以下省略\"", true},
+		{"closer U+0027", lueP + "以下省略'", true},
+		{"closer U+0060", lueP + "以下省略`", true},
+		{"closer U+002A", lueP + "以下省略*", true},
+		{"closer U+005F", lueP + "以下省略_", true},
+		{"closer U+007E", lueP + "以下省略~", true},
+		{"closer U+FF0A", lueP + "以下省略＊", true},
+		{"closer U+FF40", lueP + "以下省略｀", true},
+
+		// The same marks after whitespace open the object of an omit verb and
+		// count as content, for every kind of horizontal whitespace.
+		{"object opens with 1", lueP + "略過 *.pb.go 檔案", false},
+		{"object opens with 2", lueP + "略過 `.env` 檔案", false},
+		{"object opens with 3", lueP + "略過 \".git\" 目錄", false},
+		{"object opens with 4", lueP + "略過 '.' 與 '..'", false},
+		{"object opens with 5", lueP + "省略 *.md", false},
+		{"object opens with 6", lueP + "略過 \"?\" 參數", false},
+		{"object opens with 7", lueP + "省略 `,` 分隔", false},
+		{"ws before opener U+0020", lueP + "略過 *.pb.go 檔案", false},
+		{"ws before opener U+0009", lueP + "略過\t*.pb.go 檔案", false},
+		{"ws before opener U+00A0", lueP + "略過\u00a0*.pb.go 檔案", false},
+		{"ws before opener U+3000", lueP + "略過\u3000*.pb.go 檔案", false},
+		{"content after closer 「」", lueP + "其中「省略」這一步之後補", false},
+		{"content after closer 《》", lueP + "其中《省略》一節之後補", false},
+		{"trailing space after closing mark", lueP + "以下「省略」 ", true},
+		{"object after closing mark and space", lueP + "**省略** project_id", false},
+
 		// The trailing 略 causes the hit, not the 省略 before it.
 		{"省略 A,其餘略", lueP + "省略 A,其餘略", true},
 		{"省略 A,其餘說明", lueP + "省略 A,其餘說明", false},
@@ -480,6 +535,7 @@ func TestCheckVagueness_LueLinearTime(t *testing.T) {
 		{"100k 省略 then x", strings.Repeat("省略 ", 100_000) + "x", false},
 		{"省略 then 1M spaces then x", "省略" + strings.Repeat(" ", 1_000_000) + "x", false},
 		{"100k 省略略過 then x", strings.Repeat("省略略過", 100_000) + "x", false},
+		{"省略 then 1M asterisks then x", "省略" + strings.Repeat("*", 1_000_000) + "x", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
