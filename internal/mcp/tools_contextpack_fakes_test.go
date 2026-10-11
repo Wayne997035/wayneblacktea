@@ -195,6 +195,14 @@ func (noopGTDStore) UpdateProject(context.Context, uuid.UUID, gtd.UpdateProjectP
 	return nil, nil
 }
 func (noopGTDStore) DeleteTask(context.Context, uuid.UUID, string) error { return nil }
+func (noopGTDStore) TaskIDsByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (noopGTDStore) DeleteProjectExpecting(_ context.Context, _ uuid.UUID, _, _ string) (int, error) {
+	return 0, nil
+}
+
 func (noopGTDStore) DeleteProject(context.Context, uuid.UUID, string) (int, error) {
 	return 0, nil
 }

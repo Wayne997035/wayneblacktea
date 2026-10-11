@@ -2502,7 +2502,13 @@ func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, del
 // cannot clean different sets of references. actor is written into the
 // activity_log audit row this call produces, same as DeleteTask's.
 func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
-	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteProjectAdapter{s: s, id: id})
+	return s.DeleteProjectExpecting(ctx, id, actor, "")
+}
+
+// DeleteProjectExpecting is the SQLite twin of gtd.Store.DeleteProjectExpecting.
+// [PR #200 SE-01]
+func (s *GTDStore) DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error) {
+	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), expectedTaskSet, &sqliteDeleteProjectAdapter{s: s, id: id})
 	if err != nil {
 		return 0, fmt.Errorf("%w", err) // context already added by DeleteProjectOrchestration
 	}
@@ -2735,9 +2741,46 @@ func (a *sqliteDeleteProjectAdapter) WriteDeletionAuditLog(
 	return a.run(ctx, q, uuid.New().String(), a.s.db.workspaceArg(), deletedBy, notes)
 }
 
-func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx,
-		`DELETE FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`)
+func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.tx.QueryContext(ctx,
+		`DELETE FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2) RETURNING id`,
+		a.id.String(), a.s.db.workspaceArg())
+	if err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return scanSQLiteTaskIDs(rows)
+}
+
+func scanSQLiteTaskIDs(rows *sql.Rows) ([]uuid.UUID, error) {
+	defer func() { _ = rows.Close() }()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("%w", err)
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("task id %q: %w", raw, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return ids, nil
+}
+
+// TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
+// counts (same WHERE clause). [PR #200 SE-01]
+func (s *GTDStore) TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.conn.QueryContext(ctx,
+		`SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`,
+		projectID.String(), s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("TaskIDsByProjectAllStatuses", err)
+	}
+	return scanSQLiteTaskIDs(rows)
 }
 
 func (a *sqliteDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {

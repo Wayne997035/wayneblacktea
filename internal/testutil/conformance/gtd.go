@@ -23,10 +23,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// RunGTDSmoke runs the 12 shared GTD behaviours (project create/conflict,
-// task Area COALESCE, delete-project cascade, cross-workspace delete no-op, and
+// RunGTDSmoke runs the 13 shared GTD behaviours (project create/conflict,
+// task Area COALESCE, delete-project cascade, cross-workspace delete no-op,
 // the UpdateTask project_id contract: attach, omit-preserved, clear, unknown
-// project, cross-workspace project, unknown task) against store, as t.Run
+// project, cross-workspace project, unknown task, and DeleteProjectExpecting's
+// task-set check) against store, as t.Run
 // subtests named backend+"/"+<op>. secondWorkspaceStore MUST be built from the
 // same underlying DB as store (same pgxpool / same sqlite file) but a different
 // workspace ID, so row 6's cross-workspace DeleteProject no-op and row 11's
@@ -70,6 +71,85 @@ func RunGTDSmoke(t *testing.T, store, secondWorkspaceStore gtd.StoreIface, backe
 		gtdSmokeProjectIDCrossWorkspace(t, ctx, store, secondWorkspaceStore)
 	})
 	t.Run(backend+"/UpdateTask_ProjectID_UnknownTask", func(t *testing.T) { gtdSmokeProjectIDUnknownTask(t, ctx, store) })
+
+	// Row 13 [PR #200 SE-01]: delete_project's confirm deletes exactly the
+	// task set its preview digested, or nothing.
+	t.Run(backend+"/DeleteProject_TaskSetChanged", func(t *testing.T) { gtdSmokeDeleteProjectTaskSetChanged(t, ctx, store) })
+}
+
+// gtdSmokeDeleteProjectTaskSetChanged: DeleteProjectExpecting refuses with
+// ErrProjectTasksChanged, deleting nothing, when the project's task set is not
+// the one the preview digested, and deletes normally when it is — status
+// changes do not change the set, and the preview counts tasks of every status.
+func gtdSmokeDeleteProjectTaskSetChanged(t *testing.T, ctx context.Context, store gtd.StoreIface) {
+	preview := func(proj uuid.UUID) string {
+		t.Helper()
+		ids, err := store.TaskIDsByProjectAllStatuses(ctx, proj)
+		if err != nil {
+			t.Fatalf("TaskIDsByProjectAllStatuses: %v", err)
+		}
+		return gtd.TaskSetDigest(ids)
+	}
+	stillThere := func(proj uuid.UUID, tasks []uuid.UUID, when string) {
+		t.Helper()
+		if _, err := store.GetProjectByID(ctx, proj); err != nil {
+			t.Errorf("%s: project gone after a refused delete: %v", when, err)
+		}
+		for _, id := range tasks {
+			if _, err := store.GetTaskByID(ctx, id); err != nil {
+				t.Errorf("%s: task %s gone after a refused delete: %v", when, id, err)
+			}
+		}
+	}
+	wantDeleted := func(proj uuid.UUID, digest string, want int, when string) {
+		t.Helper()
+		n, err := store.DeleteProjectExpecting(ctx, proj, "smoke-test", digest)
+		if err != nil {
+			t.Fatalf("%s: DeleteProjectExpecting: %v", when, err)
+		}
+		if n != want {
+			t.Errorf("%s: deleted %d tasks, want %d", when, n, want)
+		}
+	}
+
+	// (a) a task created after the preview refuses the delete.
+	proj := gtdSmokeProject(t, ctx, store, "smoke-taskset-added")
+	first := gtdSmokeTask(t, ctx, store, "smoke-taskset-first", &proj)
+	digest := preview(proj)
+	second := gtdSmokeTask(t, ctx, store, "smoke-taskset-second", &proj)
+	if _, err := store.DeleteProjectExpecting(ctx, proj, "smoke-test", digest); !errors.Is(err, gtd.ErrProjectTasksChanged) {
+		t.Errorf("added task: err = %v, want ErrProjectTasksChanged", err)
+	}
+	stillThere(proj, []uuid.UUID{first, second}, "added task")
+
+	// (b) an empty preview is a real set: a task added after it refuses too.
+	empty := gtdSmokeProject(t, ctx, store, "smoke-taskset-empty")
+	emptyDigest := preview(empty)
+	late := gtdSmokeTask(t, ctx, store, "smoke-taskset-late", &empty)
+	if _, err := store.DeleteProjectExpecting(ctx, empty, "smoke-test", emptyDigest); !errors.Is(err, gtd.ErrProjectTasksChanged) {
+		t.Errorf("empty preview: err = %v, want ErrProjectTasksChanged", err)
+	}
+	stillThere(empty, []uuid.UUID{late}, "empty preview")
+
+	// (c) status changes after the preview leave the set alone.
+	moved := gtdSmokeProject(t, ctx, store, "smoke-taskset-status")
+	s1 := gtdSmokeTask(t, ctx, store, "smoke-taskset-s1", &moved)
+	gtdSmokeTask(t, ctx, store, "smoke-taskset-s2", &moved)
+	statusDigest := preview(moved)
+	if _, err := store.CompleteTask(ctx, s1, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	wantDeleted(moved, statusDigest, 2, "status changed after preview")
+
+	// (d) the preview counts tasks of every status: a completed task taken
+	// before the preview is part of the set, so the delete goes through.
+	done := gtdSmokeProject(t, ctx, store, "smoke-taskset-completed")
+	d1 := gtdSmokeTask(t, ctx, store, "smoke-taskset-done", &done)
+	gtdSmokeTask(t, ctx, store, "smoke-taskset-open", &done)
+	if _, err := store.CompleteTask(ctx, d1, nil); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	wantDeleted(done, preview(done), 2, "preview with a completed task")
 }
 
 func gtdSmokeCreateProjectHappyPath(t *testing.T, ctx context.Context, store gtd.StoreIface) {

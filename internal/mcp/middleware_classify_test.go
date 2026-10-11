@@ -281,6 +281,14 @@ func (m *mockClassifyGTDStore) DeleteTask(_ context.Context, _ uuid.UUID, _ stri
 	return errMockNotImpl
 }
 
+func (m *mockClassifyGTDStore) TaskIDsByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (m *mockClassifyGTDStore) DeleteProjectExpecting(_ context.Context, _ uuid.UUID, _, _ string) (int, error) {
+	return 0, nil
+}
+
 func (m *mockClassifyGTDStore) DeleteProject(_ context.Context, _ uuid.UUID, _ string) (int, error) {
 	return 0, errMockNotImpl
 }

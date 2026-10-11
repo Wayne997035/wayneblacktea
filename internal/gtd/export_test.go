@@ -1,6 +1,10 @@
 package gtd
 
-import "context"
+import (
+	"context"
+
+	"github.com/google/uuid"
+)
 
 // WithUpdateTaskStatusGuardedTestHook attaches hook to ctx so a subsequent
 // UpdateTaskStatusGuarded call runs it synchronously between its pre-read
@@ -11,4 +15,11 @@ import "context"
 // export_test.go pattern as internal/storage/sqlite/export_test.go).
 func WithUpdateTaskStatusGuardedTestHook(ctx context.Context, hook func()) context.Context {
 	return context.WithValue(ctx, updateTaskStatusGuardedHookKey, hook)
+}
+
+// NewPGDeleteProjectAdapterForTest exposes the Postgres delete-project adapter
+// so a test can wrap it and commit a concurrent write between BeginTx and
+// DeleteTaskRows. [PR #200 SE-01]
+func NewPGDeleteProjectAdapterForTest(s *Store, id uuid.UUID) DeleteProjectAdapter {
+	return &pgDeleteProjectAdapter{s: s, id: id}
 }

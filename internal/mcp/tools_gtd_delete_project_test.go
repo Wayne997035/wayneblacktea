@@ -281,3 +281,113 @@ func TestDeleteProject_TokenIsSingleUse(t *testing.T) {
 		t.Errorf("want 'no pending deletion' on replay, got: %s", resultText(r))
 	}
 }
+
+// TestDeleteProject_ConfirmRefusedWhenTasksChanged: the preview binds the
+// confirm. A change to the project's task set between the two calls — a task
+// moved in, a swap that keeps the count, a task added to an empty project —
+// refuses the confirm and deletes nothing; a status change does not.
+// [PR #200 SE-01]
+func TestDeleteProject_ConfirmRefusedWhenTasksChanged(t *testing.T) {
+	t.Parallel()
+	const changed = "project changed since the preview"
+	ctx := context.Background()
+
+	newTask := func(t *testing.T, s *Server, proj uuid.UUID) uuid.UUID {
+		t.Helper()
+		task, err := s.gtd.CreateTask(ctx, gtd.CreateTaskParams{ProjectID: &proj, Title: "task " + uuid.NewString()})
+		if err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+		return task.ID
+	}
+	move := func(t *testing.T, s *Server, task, proj uuid.UUID) {
+		t.Helper()
+		if r := callUpdateTask(t, s, map[string]any{"task_id": task.String(), "project_id": proj.String()}); r.IsError {
+			t.Fatalf("update_task move: %s", resultText(r))
+		}
+	}
+	preview := func(t *testing.T, s *Server, proj uuid.UUID) string {
+		t.Helper()
+		return extractToken(t, callDeleteProject(t, s, map[string]any{"project_id": proj.String()}))
+	}
+	confirm := func(t *testing.T, s *Server, proj uuid.UUID, token string) *mcpmsg.CallToolResult {
+		t.Helper()
+		return callDeleteProject(t, s, map[string]any{
+			"project_id": proj.String(), "confirm": true, "deletion_token": token,
+		})
+	}
+	wantRefused := func(t *testing.T, s *Server, r *mcpmsg.CallToolResult, proj uuid.UUID, tasks ...uuid.UUID) {
+		t.Helper()
+		if !r.IsError || !strings.Contains(resultText(r), changed) {
+			t.Fatalf("confirm after the task set changed: want an error containing %q, got IsError=%v %s",
+				changed, r.IsError, resultText(r))
+		}
+		if !projectStillExists(t, s, proj) {
+			t.Error("project deleted although the confirm was refused")
+		}
+		for _, id := range tasks {
+			if _, err := s.gtd.GetTaskByID(ctx, id); err != nil {
+				t.Errorf("task %s gone although the confirm was refused: %v", id, err)
+			}
+		}
+	}
+
+	t.Run("task moved in", func(t *testing.T) {
+		t.Parallel()
+		s := newTestWorkSessionServer(t)
+		target, _ := seedProjectWithTasks(t, s, 0)
+		other, _ := seedProjectWithTasks(t, s, 0)
+		kept := newTask(t, s, target)
+		mover := newTask(t, s, other)
+
+		token := preview(t, s, target)
+		move(t, s, mover, target)
+		wantRefused(t, s, confirm(t, s, target, token), target, kept, mover)
+	})
+
+	t.Run("swap keeps the count", func(t *testing.T) {
+		t.Parallel()
+		s := newTestWorkSessionServer(t)
+		target, _ := seedProjectWithTasks(t, s, 0)
+		other, _ := seedProjectWithTasks(t, s, 0)
+		leaving := newTask(t, s, target)
+		arriving := newTask(t, s, other)
+
+		token := preview(t, s, target)
+		move(t, s, leaving, other)
+		move(t, s, arriving, target)
+		wantRefused(t, s, confirm(t, s, target, token), target, leaving, arriving)
+	})
+
+	t.Run("empty preview then a task moved in", func(t *testing.T) {
+		t.Parallel()
+		s := newTestWorkSessionServer(t)
+		target, _ := seedProjectWithTasks(t, s, 0)
+		other, _ := seedProjectWithTasks(t, s, 0)
+		mover := newTask(t, s, other)
+
+		token := preview(t, s, target)
+		move(t, s, mover, target)
+		wantRefused(t, s, confirm(t, s, target, token), target, mover)
+	})
+
+	t.Run("status change still deletes", func(t *testing.T) {
+		t.Parallel()
+		s := newTestWorkSessionServer(t)
+		target, _ := seedProjectWithTasks(t, s, 0)
+		done := newTask(t, s, target)
+		newTask(t, s, target)
+
+		token := preview(t, s, target)
+		if _, err := s.gtd.CompleteTask(ctx, done, nil); err != nil {
+			t.Fatalf("CompleteTask: %v", err)
+		}
+		r := confirm(t, s, target, token)
+		if r.IsError {
+			t.Fatalf("a status change must not refuse the confirm, got: %s", resultText(r))
+		}
+		if projectStillExists(t, s, target) {
+			t.Error("confirm reported success but the project is still there")
+		}
+	})
+}

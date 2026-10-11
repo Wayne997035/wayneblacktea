@@ -80,6 +80,11 @@ type StoreIface interface {
 	// Used by delete_project's step-1 preview, which only ever needed
 	// len(tasks), not the tasks themselves.
 	CountTasksByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) (int, error)
+	// TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
+	// counts (same WHERE clause). delete_project's step-1 preview digests them
+	// (TaskSetDigest) so step 2 can refuse a delete whose task set changed.
+	// [PR #200 SE-01]
+	TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error)
 	// TasksByDueDateRange returns pending or in_progress tasks whose
 	// due_date falls inside [from, to] (inclusive on both ends), scoped to
 	// the configured workspace. Used by the calendar timeline to surface
@@ -212,6 +217,11 @@ type StoreIface interface {
 	// is written into the activity_log audit row this call produces (see
 	// DeleteProjectOrchestration).
 	DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error)
+	// DeleteProjectExpecting is DeleteProject that refuses with
+	// ErrProjectTasksChanged, rolling the whole delete back, when the tasks it
+	// deletes are not the set expectedTaskSet digests. "" means no check.
+	// [PR #200 SE-01]
+	DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error)
 	// RestoreProject reverses the most recent delete_project for id within
 	// the 30-day retention window (design 4), returning the restored
 	// project and how many tasks were written back. actor identifies who

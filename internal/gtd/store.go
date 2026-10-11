@@ -1707,7 +1707,42 @@ type txBeginner interface {
 // written into the activity_log audit row this call produces (see
 // DeleteProjectOrchestration).
 func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
-	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteProjectAdapter{s: s, id: id})
+	return s.DeleteProjectExpecting(ctx, id, actor, "")
+}
+
+// DeleteProjectExpecting is DeleteProject that refuses, rolling back the whole
+// delete, when the tasks it deletes are not the set expectedTaskSet digests
+// (TaskSetDigest). "" means no check. [PR #200 SE-01]
+func (s *Store) DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error) {
+	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), expectedTaskSet, &pgDeleteProjectAdapter{s: s, id: id})
+}
+
+// TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
+// counts (same WHERE clause). [PR #200 SE-01]
+func (s *Store) TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.dbtx.Query(ctx,
+		`SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`,
+		projectID, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task ids for project %s: %w", projectID, err)
+	}
+	return scanPGTaskIDs(rows)
+}
+
+func scanPGTaskIDs(rows pgx.Rows) ([]uuid.UUID, error) {
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("%w", err)
+		}
+		ids = append(ids, uuid.UUID(id.Bytes))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return ids, nil
 }
 
 type pgDeleteProjectAdapter struct {
@@ -1928,8 +1963,14 @@ func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(ctx context.Context, dele
 	return nil
 }
 
-func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
+func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.tx.Query(ctx,
+		`DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2) RETURNING id`,
+		a.id, a.s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return scanPGTaskIDs(rows)
 }
 
 func (a *pgDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {
