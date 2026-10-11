@@ -63,6 +63,22 @@ func TestCheckTaskInput(t *testing.T) {
 			kind:        "chore",
 			wantEmpty:   true,
 		},
+		// [F1011-21] 省略 followed by content is not a 略 placeholder; this one seam
+		// serves every strict-mode entry point (HTTP create, add_task, proposal accept).
+		{
+			name:        "lue allowlist: 省略 with content after it is clean",
+			description: "Fix internal/gtd/store.go:392: 省略 X 則不變",
+			kind:        "general",
+			wantEmpty:   true,
+		},
+		// [F1011-21] a real placeholder 略 still warns through CheckTaskInput.
+		{
+			name:        "lue placeholder: 細節略 still warns",
+			description: "Fix internal/gtd/store.go:392: 細節略",
+			kind:        "general",
+			wantEmpty:   false,
+			wantContain: "description: contains vague phrase \"略\"",
+		},
 	}
 
 	for _, tc := range tests {

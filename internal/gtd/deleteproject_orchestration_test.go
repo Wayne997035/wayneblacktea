@@ -34,6 +34,9 @@ type fakeDeleteProjectAdapter struct {
 	taskCount     int
 	countTasksErr error
 
+	// deleted is what DeleteTaskRows reports as the ids it deleted.
+	deleted []uuid.UUID
+
 	// failOn maps a recorded call name to the error that call returns.
 	failOn map[string]error
 
@@ -151,8 +154,8 @@ func (f *fakeDeleteProjectAdapter) WriteDeletionAuditLog(_ context.Context, dele
 	return f.record("WriteDeletionAuditLog")
 }
 
-func (f *fakeDeleteProjectAdapter) DeleteTaskRows(context.Context) error {
-	return f.record("DeleteTaskRows")
+func (f *fakeDeleteProjectAdapter) DeleteTaskRows(context.Context) ([]uuid.UUID, error) {
+	return f.deleted, f.record("DeleteTaskRows")
 }
 
 func (f *fakeDeleteProjectAdapter) DeleteProjectRow(context.Context) error {
@@ -211,7 +214,7 @@ func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 7}
 	deletedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
-	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, deletedAt, f)
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, deletedAt, "", f)
 	if err != nil {
 		t.Fatalf("happy path must not error, got %v", err)
 	}
@@ -247,7 +250,7 @@ func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
 // would just be updated alongside it.
 func TestDeleteProjectOrchestration_EveryTaskCleanupPrecedesTheRowDelete(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: true}
-	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); err != nil {
+	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -287,7 +290,7 @@ func TestDeleteProjectOrchestration_EveryTaskCleanupPrecedesTheRowDelete(t *test
 func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: false, taskCount: 99}
 
-	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f)
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
 	if err != nil {
 		t.Fatalf("a missing project must not error, got %v", err)
 	}
@@ -311,7 +314,7 @@ func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
 // "this project had no tasks", so the bug would read as a valid answer.
 func TestDeleteProjectOrchestration_CountIsReadBeforeAnyDeletion(t *testing.T) {
 	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 3}
-	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); err != nil {
+	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	countAt, deleteAt := -1, -1
@@ -364,7 +367,7 @@ func TestDeleteProjectOrchestration_StepFailureStopsAndRollsBack(t *testing.T) {
 				failOn:    map[string]error{step: boom},
 			}
 
-			n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f)
+			n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
 			if err == nil {
 				t.Fatalf("%s failed but the orchestration reported success", step)
 			}
@@ -396,7 +399,8 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("BeginTx", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{beginTxErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); !errors.Is(err, boom) {
+		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		if f.rollbackDone {
@@ -406,7 +410,8 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("WorkspacePrecheck", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{precheckErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); !errors.Is(err, boom) {
+		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		if !f.rollbackDone {
@@ -416,7 +421,8 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("CountTasks", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{exists: true, countTasksErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f); !errors.Is(err, boom) {
+		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		for _, c := range f.calls {
@@ -433,11 +439,68 @@ func TestDeleteProjectOrchestration_CommitFailureIsReported(t *testing.T) {
 	boom := errors.New("commit refused")
 	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 4, commitErr: boom}
 
-	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), f)
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
 	if !errors.Is(err, boom) {
 		t.Fatalf("want wrapped commit error, got %v", err)
 	}
 	if n != 0 {
 		t.Errorf("returned %d tasks after a failed commit, want 0", n)
 	}
+}
+
+// TestDeleteProjectOrchestration_TaskSetChanged pins the delete_project
+// confirm check: the ids DeleteTaskRows actually deleted must be the set the
+// step-1 preview digested, or the whole delete rolls back before the project
+// row goes. [PR #200 SE-01]
+func TestDeleteProjectOrchestration_TaskSetChanged(t *testing.T) {
+	previewed := []uuid.UUID{uuid.New()}
+	movedIn := uuid.New()
+	contains := func(calls []string, name string) bool {
+		for _, c := range calls {
+			if c == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("different set refused", func(t *testing.T) {
+		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 1, deleted: append([]uuid.UUID{movedIn}, previewed...)}
+		n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), gtd.TaskSetDigest(previewed), f)
+		if !errors.Is(err, gtd.ErrProjectTasksChanged) {
+			t.Fatalf("err = %v, want ErrProjectTasksChanged", err)
+		}
+		if n != 0 {
+			t.Errorf("n = %d, want 0", n)
+		}
+		for _, call := range []string{"DeleteProjectRow", "WriteDeletionAuditLog", "Commit"} {
+			if contains(f.calls, call) {
+				t.Errorf("%s ran after the task set changed; the delete must stop before it", call)
+			}
+		}
+		if !f.rollbackDone {
+			t.Error("Rollback did not run")
+		}
+	})
+
+	t.Run("same set commits", func(t *testing.T) {
+		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 1, deleted: previewed}
+		digest := gtd.TaskSetDigest(previewed)
+		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), digest, f); err != nil {
+			t.Fatalf("matching set must delete, got %v", err)
+		}
+		if !contains(f.calls, "Commit") {
+			t.Error("Commit did not run for a matching set")
+		}
+	})
+
+	t.Run("empty expected skips the check", func(t *testing.T) {
+		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 2, deleted: append([]uuid.UUID{movedIn}, previewed...)}
+		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); err != nil {
+			t.Fatalf(`expectedTaskSet "" must not check, got %v`, err)
+		}
+		if !contains(f.calls, "Commit") {
+			t.Error(`Commit did not run with expectedTaskSet ""`)
+		}
+	})
 }

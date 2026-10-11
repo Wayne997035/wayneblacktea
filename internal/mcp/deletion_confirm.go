@@ -56,7 +56,7 @@ func deletionKeyKind(key string) deletionKind {
 // string, so that a token appearing in a log or an error message does not
 // also disclose which session issued it (see issueDeletionToken).
 func (s *Server) issuePendingDeletion(
-	ctx context.Context, key string, kind deletionKind,
+	ctx context.Context, key string, kind deletionKind, expectedTaskSet string,
 ) (string, time.Time, *mcp.CallToolResult) {
 	var count int
 	s.deleteTokens.Range(func(k, v any) bool {
@@ -83,14 +83,16 @@ func (s *Server) issuePendingDeletion(
 		token:           token,
 		expiresAt:       expires,
 		issuedBySession: currentSessionID(ctx),
+		expectedTaskSet: expectedTaskSet,
 	})
 	return token, expires, nil
 }
 
 // spendPendingDeletion is step 2 for both delete tools: validate the supplied
-// token against the record stored under key and consume it. It returns nil
-// when — and only when — the caller may proceed with the actual delete; any
-// non-nil result is a refusal to return as-is.
+// token against the record stored under key and consume it. It returns a nil
+// result when — and only when — the caller may proceed with the actual delete,
+// together with the record it consumed (delete_project reads its
+// expectedTaskSet); any non-nil result is a refusal to return as-is.
 //
 // tool and idArg only shape the messages ("delete_task"/"task_id"), so each
 // tool tells its caller how to retry in its own terms.
@@ -107,9 +109,9 @@ func (s *Server) issuePendingDeletion(
 // That argument does not survive its own arithmetic — roughly 7,200 guesses
 // fit in the 60s TTL, against a 122-bit UUID — and a wrong reason for a
 // right rule is what the next reader inherits.)
-func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, supplied string) *mcp.CallToolResult {
+func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, supplied string) (deletionToken, *mcp.CallToolResult) {
 	if supplied == "" {
-		return mcp.NewToolResultError("deletion_token is required when confirm=true")
+		return deletionToken{}, mcp.NewToolResultError("deletion_token is required when confirm=true")
 	}
 
 	// [F170-SEC-R3-03] Load, not LoadAndDelete — same property as
@@ -119,7 +121,7 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 	// "no pending deletion" instead of the real reason.
 	stored, ok := s.deleteTokens.Load(key)
 	if !ok {
-		return mcp.NewToolResultError(
+		return deletionToken{}, mcp.NewToolResultError(
 			"no pending deletion for this " + idArg + "; call without confirm first to obtain a token",
 		)
 	}
@@ -138,8 +140,8 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 		// requires `old` (here, `stored`) to be of a comparable type — not
 		// that a later assertion into some other type succeeds. The sole
 		// non-test write path to this map (issuePendingDeletion above) only
-		// ever stores a deletionToken{string, time.Time, string}, and all
-		// three of those are comparable, so `stored`'s dynamic type is
+		// ever stores a deletionToken{string, time.Time, string, string}, and all
+		// four of those are comparable, so `stored`'s dynamic type is
 		// always deletionToken in practice — this branch is defensive
 		// against a shape this codebase never actually produces. Contrast
 		// tools_reconcile.go's reconcileConfirmation, which holds
@@ -155,7 +157,7 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 		if !s.deleteTokens.CompareAndDelete(key, stored) {
 			slog.Debug(tool+": corrupted-record refusal found nothing to clear (already replaced)", idArg, key)
 		}
-		return mcp.NewToolResultError("internal: deletion token state corrupted")
+		return deletionToken{}, mcp.NewToolResultError("internal: deletion token state corrupted")
 	}
 	if s.now().After(rec.expiresAt) {
 		// [SEC171-13][SEC171-17] CompareAndDelete for the same reason as the
@@ -174,7 +176,7 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 		if !s.deleteTokens.CompareAndDelete(key, stored) {
 			slog.Debug(tool+": expired-token refusal found nothing to clear (already replaced)", idArg, key)
 		}
-		return mcp.NewToolResultError("deletion_token expired; call without confirm to obtain a new token")
+		return deletionToken{}, mcp.NewToolResultError("deletion_token expired; call without confirm to obtain a new token")
 	}
 	// Constant-time string compare on equal-length inputs would be ideal, but
 	// these tokens are generated server-side UUIDs and never exposed to
@@ -193,7 +195,7 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 		if !s.deleteTokens.CompareAndDelete(key, stored) {
 			slog.Debug(tool+": token-mismatch refusal found nothing to clear (already replaced)", idArg, key)
 		}
-		return mcp.NewToolResultError("deletion_token mismatch")
+		return deletionToken{}, mcp.NewToolResultError("deletion_token mismatch")
 	}
 	// U9 partial mitigation (Category S): the confirming call must present
 	// the same session id the issuing call carried, when one was tracked.
@@ -203,7 +205,7 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 	// [F170-SEC-R3-03] Non-consuming: the token stays live for its remaining
 	// TTL so the session it was issued to can still spend it.
 	if !deletionTokenMatchesSession(ctx, rec) {
-		return mcp.NewToolResultError(
+		return deletionToken{}, mcp.NewToolResultError(
 			"deletion_token was issued to a different session; call " + tool + " without confirm " +
 				"from that same session to obtain a new token",
 		)
@@ -225,13 +227,13 @@ func (s *Server) spendPendingDeletion(ctx context.Context, tool, idArg, key, sup
 	// still called the unconditional Delete they were supposed to replace —
 	// true only at this one line, not at the three that mattered for the
 	// cross-session case. deletionToken's fields are all comparable (string,
-	// time.Time, string), which is what makes CompareAndDelete legal at
+	// time.Time, string, string), which is what makes CompareAndDelete legal at
 	// every one of these four sites — reconcile's record is not, and uses
 	// LoadAndDelete for that reason plus its key being the token itself.
 	if !s.deleteTokens.CompareAndDelete(key, stored) {
-		return mcp.NewToolResultError(
+		return deletionToken{}, mcp.NewToolResultError(
 			"no pending deletion for this " + idArg + "; call without confirm first to obtain a token",
 		)
 	}
-	return nil
+	return rec, nil
 }

@@ -1437,14 +1437,24 @@ func mergeTaskUpdateFields(p *UpdateTaskParams, existing *db.Task) taskUpdateMer
 	}
 }
 
-// UpdateTask performs a partial update of a task by ID. nil fields in p are
-// preserved from the existing row (no null-clear support). Pre-reads the existing
-// task to fill nil params, then executes a single UPDATE RETURNING.
-// Returns ErrNotFound when no row matching id exists in the configured workspace.
+// UpdateTask performs a partial update of a task by ID. A nil field in p keeps
+// the stored value. p.Project is the typed target for project_id: a non-nil
+// ProjectRef with a nil ID clears the column to NULL, one with an ID sets it
+// (see ProjectRef). Pre-reads the existing task to fill nil params, checks the
+// target project when an ID is given, then executes a single UPDATE RETURNING.
+// Returns ErrNotFound when no row matching id exists in the configured workspace,
+// and ErrProjectNotFound when p.Project.ID names no project in that workspace.
 func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams) (*db.Task, error) {
 	existing, err := s.getTaskByID(ctx, id)
 	if err != nil {
 		return nil, err // ErrNotFound propagated as-is
+	}
+
+	// [F1011-12] Step 2 of the order documented on ProjectRef: the task has been
+	// read, so an unknown task already returned ErrNotFound above; now check the
+	// project. A rejection here returns before any column is written.
+	if err := s.checkTaskProject(ctx, p.Project); err != nil {
+		return nil, err
 	}
 
 	// Merge: keep existing values for unspecified fields.
@@ -1461,6 +1471,11 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 	// getTaskByID read above and this UPDATE). $12 is nil (NULL) when the
 	// caller didn't pass AppendCommitSHA, in which case commit_shas is left
 	// untouched entirely.
+	//
+	// [F1011-12] project_id is decided in SQL, not by the Go-side merge above:
+	// $16 true = write $17 (NULL clears), false = keep the stored value. A bare
+	// COALESCE cannot do this, since NULL is a legal value to write here.
+	setProject, projectTarget := taskProjectWriteArgs(p.Project)
 	const q = `UPDATE tasks
 		SET title       = $1,
 		    description = $2,
@@ -1475,6 +1490,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		    pr_url      = $11,
 		    commit_shas = CASE WHEN $12::text IS NOT NULL THEN array_append(commit_shas, $12::text) ELSE commit_shas END,
 		    area        = COALESCE($15::text, area),
+		    project_id  = CASE WHEN $16::boolean THEN $17::uuid ELSE project_id END,
 		    updated_at  = NOW()
 		WHERE id = $13
 		  AND ($14::uuid IS NULL OR workspace_id = $14)
@@ -1487,6 +1503,7 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		merged.dueDate, merged.taskContext, merged.status, merged.kind,
 		merged.branchName, merged.prURL, p.AppendCommitSHA,
 		id, s.workspaceID, p.Area,
+		setProject, projectTarget,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("updating task %s: %w", id, err)
@@ -1507,6 +1524,36 @@ func (s *Store) UpdateTask(ctx context.Context, id uuid.UUID, p UpdateTaskParams
 		return nil, fmt.Errorf("scanning updated task %s: %w", id, err)
 	}
 	return &t, nil
+}
+
+// checkTaskProject validates the project a task is about to be pointed at.
+// [F1011-12] Nothing to check when ref is nil (omitted) or ref.ID is nil
+// (clear to NULL). Otherwise the project must exist in this store's workspace:
+// GetProjectByID is workspace-scoped, so a project of another workspace reads as
+// missing. Its ErrNotFound becomes ErrProjectNotFound (never ErrNotFound, which
+// the MCP layer reports as "task not found"); any other error is returned as is.
+func (s *Store) checkTaskProject(ctx context.Context, ref *ProjectRef) error {
+	if ref == nil || ref.ID == nil {
+		return nil
+	}
+	if _, err := s.GetProjectByID(ctx, *ref.ID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrProjectNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// taskProjectWriteArgs turns the tri-state into the two UPDATE parameters that
+// drive the CASE on project_id: write reports "set or clear" (ref != nil) and
+// target carries the new value (NULL for clear). [F1011-12] The decision stays
+// in SQL so an update that omits Project never rewrites the column.
+func taskProjectWriteArgs(ref *ProjectRef) (write bool, target pgtype.UUID) {
+	if ref == nil {
+		return false, pgtype.UUID{}
+	}
+	return true, pgconv.ToUUID(ref.ID)
 }
 
 // UpdateGoal performs a full update of a goal by ID, replacing all mutable fields.
@@ -1660,7 +1707,42 @@ type txBeginner interface {
 // written into the activity_log audit row this call produces (see
 // DeleteProjectOrchestration).
 func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
-	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &pgDeleteProjectAdapter{s: s, id: id})
+	return s.DeleteProjectExpecting(ctx, id, actor, "")
+}
+
+// DeleteProjectExpecting is DeleteProject that refuses, rolling back the whole
+// delete, when the tasks it deletes are not the set expectedTaskSet digests
+// (TaskSetDigest). "" means no check. [PR #200 SE-01]
+func (s *Store) DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error) {
+	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), expectedTaskSet, &pgDeleteProjectAdapter{s: s, id: id})
+}
+
+// TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
+// counts (same WHERE clause). [PR #200 SE-01]
+func (s *Store) TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.dbtx.Query(ctx,
+		`SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`,
+		projectID, s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task ids for project %s: %w", projectID, err)
+	}
+	return scanPGTaskIDs(rows)
+}
+
+func scanPGTaskIDs(rows pgx.Rows) ([]uuid.UUID, error) {
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("%w", err)
+		}
+		ids = append(ids, uuid.UUID(id.Bytes))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return ids, nil
 }
 
 type pgDeleteProjectAdapter struct {
@@ -1881,8 +1963,14 @@ func (a *pgDeleteProjectAdapter) WriteDeletionAuditLog(ctx context.Context, dele
 	return nil
 }
 
-func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
+func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.tx.Query(ctx,
+		`DELETE FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2) RETURNING id`,
+		a.id, a.s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return scanPGTaskIDs(rows)
 }
 
 func (a *pgDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {

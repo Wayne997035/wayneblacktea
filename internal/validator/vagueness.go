@@ -29,6 +29,10 @@ var vaguenessMarkers = []string{
 // The lower-cased "auto-captured from ..." variants are explicit defence in
 // depth: even if upstream code drops the uppercase form for some encoding /
 // case-flip path, the phrase set still catches the literal placeholder.
+//
+// The single character 略 is NOT in this set: a substring match flags it
+// inside ordinary words (省略 策略 忽略 ...), so hasPlaceholderLue handles it
+// with a position-based allowlist scan instead. [F1011-21]
 var vaguenessPhrasesLower = []string{
 	"see audit",
 	"see above",
@@ -43,7 +47,6 @@ var vaguenessPhrasesLower = []string{
 	"更多細節",
 	"詳見",
 	"詳述",
-	"略",
 	"等等",
 	"auto-captured from mcp",
 	"auto-captured from activity log",
@@ -52,6 +55,122 @@ var vaguenessPhrasesLower = []string{
 // minDescriptionRunes is the minimum rune count below which a text that also
 // lacks a file:line reference is flagged as vague.
 const minDescriptionRunes = 30
+
+// lueChar is the elision character the allowlist scan looks for. It has no
+// case, so strings.ToLower leaves it unchanged and the scan can run on the
+// same lower-cased copy the phrase loop uses. [F1011-21]
+const lueChar = "略"
+
+// lueCompounds are ordinary words that contain 略 but are not placeholders.
+// A 略 inside one of them is exempt wherever the word occurs, including at the
+// end of a clause ("影響可忽略。" is a normal statement). [F1011-21]
+//
+// Every entry MUST hold exactly one 略 and at least 2 runes: the offset
+// arithmetic in lueCovers depends on it. [F1011-22] (TestLueCompounds_Invariants)
+var lueCompounds = []string{
+	"忽略", "策略", "概略", "粗略", "約略", "大略", "戰略", "領略", "侵略", "攻略",
+}
+
+// lueOmitCompounds are words meaning "leave out / skip / shorten". At the end
+// of a clause they read as an elision marker ("以下省略"), so their 略 is exempt
+// only when more content follows on the same line (see contentFollows). Same
+// one-略, 2-rune invariant as lueCompounds. [F1011-21]
+var lueOmitCompounds = []string{
+	"省略", "略過", "簡略", "縮略",
+}
+
+// lueTerminators end a clause when they directly follow an omit-class word.
+// The closing brackets ) ] ） ］ 】 are terminators, so "(省略)" is called the
+// same way "(略)" is. Quotes, emphasis marks and the other closing brackets are
+// lueClosers instead: one that directly follows the word is skipped by
+// contentFollows, one that follows whitespace opens the next token and counts
+// as content.
+const lueTerminators = ",.;:!?)]，。、；：！？…）］】"
+
+// lueClosers are the quote, emphasis and bracket marks that can close a
+// wrapped omit-class word ("以下「省略」", "**以下省略**"). See lueTerminators
+// for how contentFollows treats them. [PR #200 R1-01]
+const lueClosers = "」』”’＂〞»》〉〕}>｝\"'`*_~＊｀"
+
+// contentFollows reports whether real content follows byte offset end of s on
+// the same line. Horizontal whitespace is skipped; the text ending, a line
+// break or a terminator means nothing follows. A lueClosers mark directly after
+// the word is skipped too, so a wrapped clause-final omit word is still called
+// (decision ea7e6826: quotes do not exempt); once whitespace has been skipped,
+// such a mark opens the next token and counts as content ("略過 *.pb.go").
+// It decodes runes instead of indexing bytes: 0xE3 starts both U+3000 and 。,
+// so a byte-wise skip would eat half of 。 and report content after "細節略過。".
+// [F1011-21][PR #200 R1-01]
+func contentFollows(s string, end int) bool {
+	sawSpace := false
+	for end < len(s) {
+		r, size := utf8.DecodeRuneInString(s[end:])
+		switch r {
+		case ' ', '\t', '\u00a0', '\u3000':
+			sawSpace = true
+			end += size
+		case '\n', '\r':
+			return false
+		default:
+			if strings.ContainsRune(lueClosers, r) {
+				if sawSpace {
+					return true
+				}
+				end += size
+				continue
+			}
+			return !strings.ContainsRune(lueTerminators, r)
+		}
+	}
+	return false
+}
+
+// lueCovers reports whether word w, positioned so that its 略 sits at byte
+// offset pos of lower, occurs there. It returns the byte offset just past w.
+func lueCovers(lower string, pos int, w string) (int, bool) {
+	start := pos - strings.Index(w, lueChar)
+	if start < 0 || !strings.HasPrefix(lower[start:], w) {
+		return 0, false
+	}
+	return start + len(w), true
+}
+
+// lueExempt reports whether the 略 at byte offset pos of lower belongs to an
+// allowlisted compound. Any one qualifying covering word is enough. [F1011-21]
+func lueExempt(lower string, pos int) bool {
+	for _, w := range lueCompounds {
+		if _, ok := lueCovers(lower, pos, w); ok {
+			return true
+		}
+	}
+	for _, w := range lueOmitCompounds {
+		if end, ok := lueCovers(lower, pos, w); ok && contentFollows(lower, end) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPlaceholderLue reports whether lower holds a 略 outside every exempt
+// compound. It scans occurrence by occurrence with strings.Index (no regex,
+// no backtracking) and each whitespace run is read by at most one occurrence,
+// so the cost is linear in len(lower). It must NOT strip the compounds and
+// then search for 略: that is order-dependent and splices ("略省略過" would
+// collapse to nothing and lose the placeholder). [F1011-21]
+func hasPlaceholderLue(lower string) bool {
+	from := 0
+	for {
+		rel := strings.Index(lower[from:], lueChar)
+		if rel < 0 {
+			return false
+		}
+		pos := from + rel
+		if !lueExempt(lower, pos) {
+			return true
+		}
+		from = pos + len(lueChar)
+	}
+}
 
 // isFilePathByte reports whether b is a valid byte in a file path segment
 // (word characters, dot, dash, slash).
@@ -132,6 +251,11 @@ func CheckVagueness(field, text, kind string) []string {
 		if strings.Contains(lower, phrase) {
 			warnings = append(warnings, field+": contains vague phrase \""+phrase+"\"")
 		}
+	}
+
+	// 略 check: position-based allowlist scan, one warning per call. [F1011-21]
+	if hasPlaceholderLue(lower) {
+		warnings = append(warnings, field+": contains vague phrase \"略\"")
 	}
 
 	// Short + no file:line check.

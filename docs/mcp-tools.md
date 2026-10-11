@@ -277,7 +277,7 @@ Updates one or more mutable fields of a task. All params except `task_id` are op
 | Arg | Required |
 |-----|----------|
 | `task_id` | Yes — Task UUID (or an 8+ char unique prefix of one) |
-| `status` (`pending`/`in_progress`/`cancelled`) `title` (max 2000) `description` (max 10000) `priority` (1-5) `importance` (1-3) `assignee` (max 200) `due_date` (RFC3339) `context` (max 10000) `branch_name` (empty string clears) `pr_url` (empty string clears) | No |
+| `status` (`pending`/`in_progress`/`cancelled`) `title` (max 2000) `description` (max 10000) `priority` (1-5) `importance` (1-3) `assignee` (max 200) `due_date` (RFC3339) `context` (max 10000) `branch_name` (empty string clears) `pr_url` (empty string clears) `project_id` (UUID of an existing project in this workspace moves the task into it; empty string clears) | No |
 
 ### `complete_task`
 

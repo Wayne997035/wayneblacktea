@@ -2,7 +2,12 @@ package gtd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,7 +86,7 @@ type DeleteProjectAdapter interface {
 	// all task-reference cleanups: once the rows are gone their ids cannot
 	// be selected any more, so a cleanup that runs afterwards silently
 	// matches nothing.
-	DeleteTaskRows(ctx context.Context) error
+	DeleteTaskRows(ctx context.Context) ([]uuid.UUID, error)
 
 	// DeleteProjectRow deletes the project row itself.
 	DeleteProjectRow(ctx context.Context) error
@@ -131,7 +136,7 @@ type DeleteProjectAdapter interface {
 // here, once, for the same reason: it is the unit restore_project and the
 // pruner both operate on.
 func DeleteProjectOrchestration(
-	ctx context.Context, id uuid.UUID, deletedBy string, deletedAt time.Time, adapter DeleteProjectAdapter,
+	ctx context.Context, id uuid.UUID, deletedBy string, deletedAt time.Time, expectedTaskSet string, adapter DeleteProjectAdapter,
 ) (int, error) {
 	if err := adapter.BeginTx(ctx); err != nil {
 		return 0, fmt.Errorf("delete project %s: begin tx: %w", id, err)
@@ -178,7 +183,16 @@ func DeleteProjectOrchestration(
 		{"nullify work_sessions.project_id", adapter.NullifyWorkSessionProjectRefs},
 		{"nullify vision_items.project_id", adapter.NullifyVisionItemProjectRefs},
 		{"nullify procedural_memories.project_id", adapter.NullifyProceduralMemoryProjectRefs},
-		{"delete task rows", adapter.DeleteTaskRows},
+		{"delete task rows", func(ctx context.Context) error {
+			ids, err := adapter.DeleteTaskRows(ctx)
+			if err != nil {
+				return fmt.Errorf("%w", err) // context added by the step loop below
+			}
+			if expectedTaskSet != "" && TaskSetDigest(ids) != expectedTaskSet {
+				return ErrProjectTasksChanged
+			}
+			return nil
+		}},
 		{"delete project row", adapter.DeleteProjectRow},
 	}
 	for _, s := range steps {
@@ -198,4 +212,20 @@ func DeleteProjectOrchestration(
 		return 0, fmt.Errorf("delete project %s: commit: %w", id, err)
 	}
 	return taskCount, nil
+}
+
+// ErrProjectTasksChanged: the set of tasks a confirmed delete_project actually
+// deleted is not the set its step-1 preview showed. [PR #200 SE-01]
+var ErrProjectTasksChanged = errors.New("gtd: project tasks changed since preview")
+
+// TaskSetDigest is an order-independent digest of a set of task ids. The empty
+// set has a fixed, non-empty digest, so "" stays free to mean "do not check".
+func TaskSetDigest(ids []uuid.UUID) string {
+	ss := make([]string, len(ids))
+	for i, id := range ids {
+		ss[i] = id.String()
+	}
+	sort.Strings(ss)
+	sum := sha256.Sum256([]byte(strings.Join(ss, "\n")))
+	return hex.EncodeToString(sum[:])
 }

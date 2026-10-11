@@ -113,6 +113,14 @@ func (s *stubGTDStore) UpdateProject(_ context.Context, _ uuid.UUID, _ gtd.Updat
 	return nil, nil
 }
 func (s *stubGTDStore) DeleteTask(_ context.Context, _ uuid.UUID, _ string) error { return nil }
+func (s *stubGTDStore) TaskIDsByProjectAllStatuses(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (s *stubGTDStore) DeleteProjectExpecting(_ context.Context, _ uuid.UUID, _, _ string) (int, error) {
+	return 0, nil
+}
+
 func (s *stubGTDStore) DeleteProject(_ context.Context, _ uuid.UUID, _ string) (int, error) {
 	return 0, nil
 }

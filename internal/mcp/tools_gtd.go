@@ -350,6 +350,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			mcp.WithString("area", mcp.Description(
 				"Reclassify the task. Must name an area from wayneblacktea://gtd/areas; omit to keep it.",
 			)),
+			// [F1011-14] Not Required: omitting it must stay legal, it leaves
+			// the stored project alone. Empty-clears and the must-exist rule
+			// live in mcpProtocolAppendix, same split as branch_name / pr_url.
+			mcp.WithString("project_id", mcp.Description("Project UUID to move the task into, empty clears")),
 		), seam(s, "update_task", s.handleUpdateTask),
 		uuidArgs("task_id"),
 		// assignee's MaxLength(200) is advisory-only (see add_task's
@@ -1601,8 +1605,39 @@ func parseUpdateTaskArgs(args UpdateTaskArgs) (gtd.UpdateTaskParams, string) {
 	if msg := applyBranchAndPRUpdate(args.BranchName, args.PRUrl, &p); msg != "" {
 		return p, msg
 	}
+	if msg := applyProjectUpdate(args.ProjectID, &p); msg != "" {
+		return p, msg
+	}
 
 	return p, ""
+}
+
+// applyProjectUpdate maps update_task's project_id onto the typed tri-state
+// gtd.UpdateTaskParams.Project. [F1011-14]
+//
+//	key absent          -> Project stays nil: tasks.project_id is left alone
+//	""                  -> &ProjectRef{}: clear to NULL
+//	any other string    -> must parse as a UUID, then &ProjectRef{ID: &id}
+//
+// A whitespace-only value is NOT a clear; it fails uuid.Parse like any other
+// malformed value, so a stray space cannot silently unlink a task. The nil UUID
+// parses fine and is a "set" (a project that does not exist, which the store
+// then rejects), never a clear. Whether the project exists in this workspace is
+// the store's call, not this function's: it answers with gtd.ErrProjectNotFound.
+func applyProjectUpdate(projectID *string, p *gtd.UpdateTaskParams) string {
+	if projectID == nil {
+		return ""
+	}
+	if *projectID == "" {
+		p.Project = &gtd.ProjectRef{}
+		return ""
+	}
+	id, parseErr := uuid.Parse(*projectID)
+	if parseErr != nil {
+		return errMsgInvalidProjectIDUUID
+	}
+	p.Project = &gtd.ProjectRef{ID: &id}
+	return ""
 }
 
 // applyClassificationUpdate sets the two fields that say what KIND of work a
@@ -1630,7 +1665,7 @@ func updateTaskParamsIsEmpty(p gtd.UpdateTaskParams) bool {
 		p.Priority == nil && p.Importance == nil && p.Assignee == nil &&
 		p.DueDate == nil && p.Context == nil && p.Kind == nil &&
 		p.BranchName == nil && p.PRUrl == nil && p.AppendCommitSHA == nil &&
-		p.Area == nil
+		p.Area == nil && p.Project == nil
 }
 
 // requireAssigneeForInProgress enforces that a task cannot transition to
@@ -1689,6 +1724,15 @@ func (s *Server) handleUpdateTask(ctx context.Context, args UpdateTaskArgs) (*mc
 	task, err := s.gtd.UpdateTask(ctx, args.TaskID, p)
 	if errors.Is(err, gtd.ErrNotFound) {
 		return mcp.NewToolResultError("task not found"), nil
+	}
+	// [F1011-14] A project that does not exist and one that belongs to another
+	// workspace both land here and get the same text, so the answer is no
+	// existence oracle. The sentinel does not wrap ErrNotFound, so the branch
+	// above cannot swallow it into "task not found". Static string: the
+	// caller's UUID is never echoed, and the sentinel stays out of
+	// callerFacingSentinels (NotFound-style sentinels get explicit branches).
+	if errors.Is(err, gtd.ErrProjectNotFound) {
+		return mcp.NewToolResultError("project not found"), nil
 	}
 	if err != nil {
 		slog.Warn("update_task: UpdateTask failed", "task_id", args.TaskID, "err", err)
@@ -1892,7 +1936,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 			return storeErrorResult("loading task", err), nil
 		}
 
-		token, expires, refusal := s.issuePendingDeletion(ctx, key, deletionKindTask)
+		token, expires, refusal := s.issuePendingDeletion(ctx, key, deletionKindTask, "")
 		if refusal != nil {
 			return refusal, nil
 		}
@@ -1914,7 +1958,7 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 	// and come from the issuing session. spendPendingDeletion consumes it and
 	// returns nil only when the delete may proceed; every refusal branch and
 	// the reason it does or does not consume the token live there.
-	if refusal := s.spendPendingDeletion(ctx, "delete_task", "task_id", key, suppliedToken); refusal != nil {
+	if _, refusal := s.spendPendingDeletion(ctx, "delete_task", "task_id", key, suppliedToken); refusal != nil {
 		return refusal, nil
 	}
 
@@ -1930,12 +1974,14 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 // blast radius that is larger by construction: confirming removes every task
 // under the project, not one row.
 //
-// That size is exactly why step 1 reports tasks_to_delete. The count is read
-// before the token is issued so the caller sees the real scale of what it is
-// about to confirm; the number the delete itself returns is re-counted inside
-// the deleting transaction (DeleteProjectOrchestration), so a task created
-// between the two calls is still deleted and still counted — the step-1
-// number is a preview, and is documented as one rather than reused.
+// That size is exactly why step 1 reports tasks_to_delete, and why the
+// preview is binding [PR #200 SE-01]: step 1 reads the task ids before the
+// token is issued and stores their gtd.TaskSetDigest in the token record;
+// step 2 passes it to DeleteProjectExpecting, which compares it with the ids
+// its DELETE actually removed and rolls the whole delete back on any
+// difference. A task created, moved in or moved out between the two calls
+// therefore refuses the confirm instead of being deleted or skipped; the
+// caller previews again and confirms what it now sees.
 func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs) (*mcp.CallToolResult, error) {
 	id := args.ProjectID
 	key := projectDeletionKey(id.String())
@@ -1953,13 +1999,15 @@ func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs
 		if err != nil {
 			return storeErrorResult("loading project", err), nil
 		}
-		// COUNT-only — step 1 only ever needed len(tasks), not the full rows.
-		taskCount, err := s.gtd.CountTasksByProjectAllStatuses(ctx, id) // [F0929-60]
+		// Ids, not full rows [F0929-60]: step 1 needs the count to show and the
+		// set to bind the confirm to [PR #200 SE-01].
+		taskIDs, err := s.gtd.TaskIDsByProjectAllStatuses(ctx, id)
 		if err != nil {
-			return storeErrorResult("counting tasks under project", err), nil
+			return storeErrorResult("listing tasks under project", err), nil
 		}
+		taskCount := len(taskIDs)
 
-		token, expires, refusal := s.issuePendingDeletion(ctx, key, deletionKindProject)
+		token, expires, refusal := s.issuePendingDeletion(ctx, key, deletionKindProject, gtd.TaskSetDigest(taskIDs))
 		if refusal != nil {
 			return refusal, nil
 		}
@@ -1984,11 +2032,17 @@ func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs
 
 	// Step 2 — confirm=true. Same validation and single-use consumption as
 	// delete_task; every refusal branch lives in spendPendingDeletion.
-	if refusal := s.spendPendingDeletion(ctx, "delete_project", "project_id", key, args.DeletionToken); refusal != nil {
+	rec, refusal := s.spendPendingDeletion(ctx, "delete_project", "project_id", key, args.DeletionToken)
+	if refusal != nil {
 		return refusal, nil
 	}
 
-	deleted, err := s.gtd.DeleteProject(ctx, id, s.auditSessionID(ctx))
+	deleted, err := s.gtd.DeleteProjectExpecting(ctx, id, s.auditSessionID(ctx), rec.expectedTaskSet)
+	if errors.Is(err, gtd.ErrProjectTasksChanged) {
+		return mcp.NewToolResultError(
+			"project changed since the preview; call delete_project without confirm to see the current tasks",
+		), nil
+	}
 	if err != nil {
 		slog.Warn("delete_project: DeleteProject failed", "project_id", id, "err", err)
 		return storeErrorResult("deleting project", err), nil

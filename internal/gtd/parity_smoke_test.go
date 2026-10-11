@@ -22,6 +22,7 @@ func TestGTDConformance_Postgres(t *testing.T) {
 	storeA := gtd.NewStore(pool, &wsA)
 	storeB := gtd.NewStore(pool, &wsB)
 	conformance.RunGTDSmoke(t, storeA, storeB, "postgres")
+	conformance.RunGTDAreaSeedSmoke(t, storeA, "postgres") // [F1011-01]
 }
 
 // gtdParitySmokeTemplateKey is this file's own sqlitetemplate registry key
@@ -68,4 +69,5 @@ func TestGTDConformance_SQLite(t *testing.T) {
 	storeA := sqlite.NewGTDStore(dA)
 	storeB := sqlite.NewGTDStore(dB)
 	conformance.RunGTDSmoke(t, storeA, storeB, "sqlite")
+	conformance.RunGTDAreaSeedSmoke(t, storeA, "sqlite") // [F1011-01]
 }

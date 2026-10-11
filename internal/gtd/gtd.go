@@ -63,6 +63,13 @@ const (
 var (
 	// ErrNotFound is returned when a requested entity does not exist.
 	ErrNotFound = errors.New("gtd: not found")
+	// ErrProjectNotFound is returned by UpdateTask when UpdateTaskParams.Project
+	// names a project that does not exist or belongs to another workspace.
+	// [F1011-11] It is built with errors.New and does NOT wrap ErrNotFound: a
+	// caller that maps errors.Is(err, ErrNotFound) to "task not found" must not
+	// report a missing project as a missing task. Stores MUST return this value,
+	// never ErrNotFound, for the project check (see ProjectRef for the order).
+	ErrProjectNotFound = errors.New("gtd: project not found")
 	// ErrConflict is returned on uniqueness violations (e.g. duplicate project name).
 	ErrConflict = errors.New("gtd: conflict")
 	// ErrInvalidRepoName is returned when a non-empty repo_name fails
@@ -292,8 +299,37 @@ type UpdateProjectParams struct {
 	RepoName    *string    // nil → preserve existing; empty string → clear to NULL
 }
 
+// ProjectRef is the tri-state target of UpdateTaskParams.Project. [F1011-11]
+// A bare *uuid.UUID cannot carry it, because nil would have to mean both
+// "leave project_id alone" and "clear it". The three states, and no fourth:
+//
+//	Project == nil                 omitted: tasks.project_id keeps its stored value
+//	Project != nil, ID == nil      clear: tasks.project_id becomes NULL
+//	Project != nil, ID != nil      set: tasks.project_id becomes *ID
+//
+// A store's UpdateTask (Postgres and SQLite alike) MUST decide in this order:
+//
+//  1. Pre-read the task. An unknown or other-workspace task returns ErrNotFound
+//     before anything else is looked at.
+//  2. When ID != nil, check the project with GetProjectByID (workspace-scoped).
+//     Its ErrNotFound becomes ErrProjectNotFound, never ErrNotFound; any other
+//     error is returned as it is.
+//  3. Write project_id in the UPDATE with a SQL-side CASE on the tri-state, not
+//     through the Go-side field merge, so an update that omits Project never
+//     rewrites the column.
+//
+// A call rejected at step 1 or 2 writes nothing, other fields included.
+type ProjectRef struct {
+	ID *uuid.UUID
+}
+
 // UpdateTaskParams holds parameters for a partial update of a task.
-// nil pointer = "don't change this field" (no null-clear support).
+// nil pointer = "don't change this field"; no field is cleared by being nil.
+// Project clears through a typed tri-state: a non-nil ProjectRef whose ID is nil.
+// Several *string fields, such as Description, Assignee, Context, BranchName and
+// PRUrl, clear to NULL when they point at an empty string; the rule for each is in
+// mergeTaskUpdateFields and resolveAssigneeForUpdate (gtd/store.go) and in
+// mergeTaskBaseFields and mergeTaskPRFields (storage/sqlite/gtd.go).
 // All-nil = invalid; callers must set at least one field.
 type UpdateTaskParams struct {
 	Title       *string
@@ -314,6 +350,10 @@ type UpdateTaskParams struct {
 	// value would reclassify every task it touched without a trace.
 	// Callers MUST validate against task_areas first (TaskAreaExists).
 	Area *string
+	// Project: nil → preserve existing; non-nil with a nil ID → clear to NULL;
+	// non-nil with an ID → set. [F1011-11] The order a store checks these in
+	// (task, then project, then the SQL-side write) is documented on ProjectRef.
+	Project *ProjectRef
 	// AppendCommitSHA: nil → no-op, commit_shas is left untouched. Non-nil →
 	// the store atomically appends this single SHA to commit_shas at the SQL
 	// layer (array_append in Postgres, json_insert in SQLite) — never a

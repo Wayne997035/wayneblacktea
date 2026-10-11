@@ -31,7 +31,9 @@ import (
 // [F0930-06] 84 -> 85 for migrations/sqlite/000085_pending_proposals_source_entity_idx.
 // [F1003-08] 85 -> 86 for migrations/sqlite/000086_goals_active_due_date_idx.
 // [F1003-09] 86 -> 87 for migrations/sqlite/000087_pending_proposals_status_pending_sort_key.
-const latestSQLiteSchemaVersion = 87
+// [F1011-02] 87 -> 88 for migrations/sqlite/000088_task_area_changye (data
+// only, one task_areas row, no schema object added).
+const latestSQLiteSchemaVersion = 88
 
 // frozenSnapshotVersion is the highest migration number whose schema changes
 // are ALREADY reflected in internal/storage/sqlite/schema.sql (the retired

@@ -206,7 +206,7 @@ type Server struct {
 	mcpServer atomic.Pointer[server.MCPServer]
 }
 
-// deletionToken records a pending delete_task confirmation. The token is
+// deletionToken records a pending delete_task or delete_project confirmation. The token is
 // generated server-side and returned to the caller in the first response;
 // the caller MUST echo it back on the second call along with confirm=true.
 type deletionToken struct {
@@ -231,6 +231,11 @@ type deletionToken struct {
 	// explanation; both fields share one property, so they share one write-up
 	// rather than two that can drift.
 	issuedBySession string
+	// expectedTaskSet is delete_project's step-1 gtd.TaskSetDigest of the
+	// project's task ids. Step 2 hands it to DeleteProjectExpecting, which
+	// refuses the delete when the set it would remove has changed since the
+	// preview. "" for delete_task, which has no set to check. [PR #200 SE-01]
+	expectedTaskSet string
 }
 
 // deleteTokenTTL is the window during which an issued deletion token remains

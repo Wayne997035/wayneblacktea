@@ -2018,13 +2018,24 @@ func mergeTaskPRFields(existing *db.Task, p gtd.UpdateTaskParams, m *mergedTaskF
 }
 
 // UpdateTask performs a partial update of a task by ID. nil fields in p are
-// preserved from the existing row (no null-clear support). Pre-reads the existing
-// task to fill nil params, then executes a single UPDATE.
-// Returns ErrNotFound when no row matching id exists in the configured workspace.
+// preserved from the existing row; no field is cleared by being nil. Several
+// *string fields, such as Description, Assignee, Context, BranchName and PRUrl,
+// clear to NULL when they point at an empty string, and Project clears through a
+// non-nil gtd.ProjectRef whose ID is nil. Pre-reads the existing task to fill nil
+// params, then executes a single UPDATE.
+// Returns ErrNotFound when no row matching id exists in the configured workspace,
+// and ErrProjectNotFound when p.Project names a project that is not in it.
 func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTaskParams) (*db.Task, error) {
 	existing, err := s.taskByID(ctx, id)
 	if err != nil {
 		return nil, err // ErrNotFound propagated as-is
+	}
+
+	// [F1011-13] The project is checked after the task and before anything is
+	// written, in the order documented on gtd.ProjectRef.
+	projectFlag, projectArg, err := s.resolveProjectWrite(ctx, p.Project)
+	if err != nil {
+		return nil, err
 	}
 
 	// Domain-layer gate (P6.7): a NEW assignee value being set THIS call must
@@ -2081,11 +2092,15 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		    pr_url      = ?12,
 		    commit_shas = CASE WHEN ?13 IS NOT NULL THEN json_insert(COALESCE(commit_shas, '[]'), '$[#]', ?13) ELSE commit_shas END,
 		    area        = COALESCE(?16, area),
+		    project_id  = CASE WHEN ?17 = 1 THEN ?18 ELSE project_id END,
 		    updated_at  = ?14
 		WHERE id = ?1
 		  AND (?15 IS NULL OR workspace_id = ?15)`
 	// ?16 is SQL NULL unless this call sets area, so COALESCE keeps the stored
 	// value — see gtd.UpdateTaskParams.Area for why this is done in SQL.
+	// [F1011-13] ?17 is the integer 1 when this call sets or clears project_id and
+	// 0 when it omits Project; ?18 is the new value (NULL clears). NULL cannot
+	// double as "keep" here, so a COALESCE like area's would make a clear impossible.
 	var areaArg any
 	if p.Area != nil {
 		areaArg = *p.Area
@@ -2096,6 +2111,7 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		id.String(), m.title, m.desc, m.priority, m.importance, m.assignee, m.dueDate, m.taskCtx, m.status, m.kind,
 		m.branchName, m.prURL, m.appendCommitSHA,
 		now, s.db.workspaceArg(), areaArg,
+		projectFlag, projectArg,
 	)
 	if err != nil {
 		return nil, errWrap("UpdateTask", err)
@@ -2105,6 +2121,34 @@ func (s *GTDStore) UpdateTask(ctx context.Context, id uuid.UUID, p gtd.UpdateTas
 		return nil, gtd.ErrNotFound
 	}
 	return s.taskByID(ctx, id)
+}
+
+// resolveProjectWrite turns the tri-state ref into the two UpdateTask args behind
+// `project_id = CASE WHEN ?17 = 1 THEN ?18 ELSE project_id END`. [F1011-13]
+//
+//	ref == nil             -> (0, nil): the CASE keeps the stored project_id
+//	ref.ID == nil          -> (1, nil): the CASE writes NULL
+//	ref.ID != nil, found   -> (1, id):  the CASE writes the ID
+//	ref.ID != nil, missing -> gtd.ErrProjectNotFound, nothing is written
+//
+// The flag is an int rather than a bool so the binding does not depend on how
+// the driver maps a Go bool. The lookup is projectByID, which is scoped to the
+// store's workspace: a project of another workspace is as missing as an unknown
+// one. Its ErrNotFound must not escape as such, because the MCP layer reads it
+// as "task not found"; any other error goes up as projectByID wrapped it.
+func (s *GTDStore) resolveProjectWrite(ctx context.Context, ref *gtd.ProjectRef) (flag int, value any, err error) {
+	if ref == nil {
+		return 0, nil, nil
+	}
+	if ref.ID != nil {
+		if _, lerr := s.projectByID(ctx, *ref.ID); lerr != nil {
+			if errors.Is(lerr, gtd.ErrNotFound) {
+				return 0, nil, gtd.ErrProjectNotFound
+			}
+			return 0, nil, lerr
+		}
+	}
+	return 1, nullStringFromUUID(ref.ID), nil
 }
 
 // UpdateGoal performs a full update of a goal by ID, replacing all mutable fields.
@@ -2458,7 +2502,13 @@ func (a *sqliteDeleteTaskAdapter) WriteDeletionAuditLog(ctx context.Context, del
 // cannot clean different sets of references. actor is written into the
 // activity_log audit row this call produces, same as DeleteTask's.
 func (s *GTDStore) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error) {
-	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), &sqliteDeleteProjectAdapter{s: s, id: id})
+	return s.DeleteProjectExpecting(ctx, id, actor, "")
+}
+
+// DeleteProjectExpecting is the SQLite twin of gtd.Store.DeleteProjectExpecting.
+// [PR #200 SE-01]
+func (s *GTDStore) DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error) {
+	n, err := gtd.DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), expectedTaskSet, &sqliteDeleteProjectAdapter{s: s, id: id})
 	if err != nil {
 		return 0, fmt.Errorf("%w", err) // context already added by DeleteProjectOrchestration
 	}
@@ -2691,9 +2741,46 @@ func (a *sqliteDeleteProjectAdapter) WriteDeletionAuditLog(
 	return a.run(ctx, q, uuid.New().String(), a.s.db.workspaceArg(), deletedBy, notes)
 }
 
-func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx,
-		`DELETE FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`)
+func (a *sqliteDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.tx.QueryContext(ctx,
+		`DELETE FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2) RETURNING id`,
+		a.id.String(), a.s.db.workspaceArg())
+	if err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return scanSQLiteTaskIDs(rows)
+}
+
+func scanSQLiteTaskIDs(rows *sql.Rows) ([]uuid.UUID, error) {
+	defer func() { _ = rows.Close() }()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("%w", err)
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("task id %q: %w", raw, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	return ids, nil
+}
+
+// TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
+// counts (same WHERE clause). [PR #200 SE-01]
+func (s *GTDStore) TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.conn.QueryContext(ctx,
+		`SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`,
+		projectID.String(), s.db.workspaceArg())
+	if err != nil {
+		return nil, errWrap("TaskIDsByProjectAllStatuses", err)
+	}
+	return scanSQLiteTaskIDs(rows)
 }
 
 func (a *sqliteDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {
