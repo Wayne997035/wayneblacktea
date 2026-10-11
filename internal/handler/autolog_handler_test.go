@@ -1302,3 +1302,35 @@ func TestAutoCreateTaskFromClassifier_NoAutoAccept_VagueDescription(t *testing.T
 		t.Errorf("expected 0 direct task creates (description vague), got %d", len(gtdStore.createdTasks))
 	}
 }
+
+// TestShouldAutoAccept_LueAllowlist [F1011-21] checks the auto-accept gate
+// against the 略 allowlist: an exempt compound auto-accepts, a placeholder 略
+// does not, and the confidence threshold still applies. The table is
+// identical to TestShouldAutoAcceptMCP_LueAllowlist in the mcp package — the
+// two predicates are copies, so keep in lockstep.
+func TestShouldAutoAccept_LueAllowlist(t *testing.T) {
+	t.Parallel()
+
+	const prefix = "Fix internal/gtd/store.go:392: " // file:line keeps the too-short warning out of the way
+	cases := []struct {
+		name        string
+		confidence  float64
+		description string
+		want        bool
+	}{
+		{"省略 followed by content auto-accepts", 0.95, prefix + "省略 X 則不變", true},
+		{"only 策略 auto-accepts", 0.95, prefix + "部署策略調整", true},
+		{"placeholder 細節略 blocks", 0.95, prefix + "細節略", false},
+		{"trailing 略 after 省略 A blocks", 0.95, prefix + "省略 A,其餘略", false},
+		{"clause-final 其餘省略 blocks", 0.95, prefix + "其餘省略", false},
+		{"exempt text below the confidence threshold blocks", 0.84, prefix + "省略 X 則不變", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := handler.ShouldAutoAcceptForTest(tc.confidence, tc.description); got != tc.want {
+				t.Errorf("shouldAutoAccept(%v, %q) = %v; want %v", tc.confidence, tc.description, got, tc.want)
+			}
+		})
+	}
+}

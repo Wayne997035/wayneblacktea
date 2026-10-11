@@ -89,6 +89,29 @@ func TestCountVaguePending(t *testing.T) {
 	}
 }
 
+// TestCountVaguePending_LueAllowlist [F1011-21] verifies the health counter
+// applies the 略 allowlist: a pending task whose description only holds an
+// exempt compound (省略 followed by content) is not counted, while a task
+// with a real 略 placeholder is — and is the one sampled. Count 0 would mean
+// the placeholder went undetected; count 2 would mean the allowlist is not
+// applied.
+func TestCountVaguePending_LueAllowlist(t *testing.T) {
+	t.Parallel()
+
+	const prefix = "Fix internal/gtd/store.go:392: " // file:line keeps the too-short warning out of the way
+	exempt := makeVagueTask("pending", prefix+"省略 X 則不變", "feature")
+	placeholder := makeVagueTask("pending", prefix+"細節略", "feature")
+
+	count, sampleIDs := countVaguePending([]db.Task{exempt, placeholder})
+
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (only the placeholder 略 task)", count)
+	}
+	if len(sampleIDs) != 1 || sampleIDs[0] != placeholder.ID.String() {
+		t.Errorf("sampleIDs = %v, want [%s]", sampleIDs, placeholder.ID.String())
+	}
+}
+
 // TestCountVaguePending_CapsSampleIDsAt5 verifies that the sample list is
 // capped at maxVagueSampleIDs even when many vague tasks exist; count
 // reflects the true total.

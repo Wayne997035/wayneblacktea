@@ -13,6 +13,11 @@ func ValidateBranchNameForTest(s string) string {
 	return validateBranchName(s)
 }
 
+// ShouldAutoAcceptForTest exposes shouldAutoAccept for unit testing.
+func ShouldAutoAcceptForTest(confidence float64, description string) bool {
+	return shouldAutoAccept(confidence, description)
+}
+
 // ValidateAuthTokenForTest exposes validateAuthToken for unit testing.
 func ValidateAuthTokenForTest(apiKey, token string) bool {
 	return validateAuthToken(apiKey, token)
