@@ -14,7 +14,7 @@ import (
 //
 // Verified against mcp-go v0.49.0 server.MCPServer.{ListTools,SetTools}
 // (server/server.go:836-866): ListTools returns per-entry copies (safe under
-// Go 1.22+ per-iteration loop vars — this repo is Go 1.26.8), and SetTools
+// Go 1.22+ per-iteration loop vars — this repo is Go 1.26.9), and SetTools
 // replaces the whole tool map and fires ToolsListChanged, which is a no-op
 // here because MCPServer() runs before any transport hands ms to a client —
 // zero registered sessions exist at this point (session.go's notification
