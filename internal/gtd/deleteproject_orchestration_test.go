@@ -399,7 +399,8 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("BeginTx", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{beginTxErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); !errors.Is(err, boom) {
+		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		if f.rollbackDone {
@@ -409,7 +410,8 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("WorkspacePrecheck", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{precheckErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); !errors.Is(err, boom) {
+		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		if !f.rollbackDone {
@@ -419,7 +421,8 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 
 	t.Run("CountTasks", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{exists: true, countTasksErr: boom}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); !errors.Is(err, boom) {
+		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		for _, c := range f.calls {
@@ -482,7 +485,8 @@ func TestDeleteProjectOrchestration_TaskSetChanged(t *testing.T) {
 
 	t.Run("same set commits", func(t *testing.T) {
 		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 1, deleted: previewed}
-		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), gtd.TaskSetDigest(previewed), f); err != nil {
+		digest := gtd.TaskSetDigest(previewed)
+		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), digest, f); err != nil {
 			t.Fatalf("matching set must delete, got %v", err)
 		}
 		if !contains(f.calls, "Commit") {

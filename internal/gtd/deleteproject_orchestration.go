@@ -186,7 +186,7 @@ func DeleteProjectOrchestration(
 		{"delete task rows", func(ctx context.Context) error {
 			ids, err := adapter.DeleteTaskRows(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("%w", err) // context added by the step loop below
 			}
 			if expectedTaskSet != "" && TaskSetDigest(ids) != expectedTaskSet {
 				return ErrProjectTasksChanged

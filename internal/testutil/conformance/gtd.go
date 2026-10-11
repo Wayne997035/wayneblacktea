@@ -375,7 +375,8 @@ func gtdSmokeProjectIDUnknown(t *testing.T, ctx context.Context, store gtd.Store
 		} else if got.Title != original {
 			t.Errorf("%s: Title = %q, want unchanged %q (a rejected call must write nothing)", c.label, got.Title, original)
 		}
-		gtdSmokeWantProject(t, ctx, store, task, &proj, "after rejected update ("+c.label+")")
+		gtdSmokeWantProject(t, ctx, store, task, &proj,
+			"after rejected update ("+c.label+")") //nolint:unqueryvet // a t.Errorf label, not SQL
 	}
 }
 
