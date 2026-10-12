@@ -2521,10 +2521,11 @@ type sqliteDeleteProjectAdapter struct {
 	tx *sql.Tx
 }
 
-// sqliteProjectTaskIDs is the SQLite twin of the Postgres projectTaskIDs
-// subquery. Both name the set of tasks about to be deleted, and every
-// task-level cleanup filters on it so the cleanups and the DELETE can never
-// select different sets.
+// sqliteProjectTaskIDs is the SQLite twin of the Postgres projectTaskIDs.
+// It names the set of tasks about to be deleted: LockTaskRows and the step-1
+// preview (TaskIDsByProjectAllStatuses) read with it, and every task-level
+// cleanup filters on it so the cleanups and the DELETE can never select
+// different sets.
 const sqliteProjectTaskIDs = `SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`
 
 // sqliteRandomUUIDExpr fabricates a random v4 UUID string, evaluated once per
@@ -2612,17 +2613,17 @@ func (a *sqliteDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (boo
 	return exists != 0, nil
 }
 
-func (a *sqliteDeleteProjectAdapter) CountTasks(ctx context.Context) (int, error) {
-	var n int
-	row := a.tx.QueryRowContext(
-		ctx,
-		`SELECT count(*) FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`,
-		a.id.String(), a.s.db.workspaceArg(),
-	)
-	if err := row.Scan(&n); err != nil {
-		return 0, fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
+// LockTaskRows only reads the ids: SQLite needs no row lock here, because the
+// delete transaction holds the store's single connection (SetMaxOpenConns(1)
+// in Open), so no other write in this process can run until it ends. The
+// cleanups and the snapshot keep filtering on sqliteProjectTaskIDs, which
+// therefore selects this same set. [PR #200 SE-R2-01]
+func (a *sqliteDeleteProjectAdapter) LockTaskRows(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.tx.QueryContext(ctx, sqliteProjectTaskIDs, a.id.String(), a.s.db.workspaceArg())
+	if err != nil {
+		return nil, fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
 	}
-	return n, nil
+	return scanSQLiteTaskIDs(rows)
 }
 
 func (a *sqliteDeleteProjectAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
@@ -2774,9 +2775,7 @@ func scanSQLiteTaskIDs(rows *sql.Rows) ([]uuid.UUID, error) {
 // TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
 // counts (same WHERE clause). [PR #200 SE-01]
 func (s *GTDStore) TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.db.conn.QueryContext(ctx,
-		`SELECT id FROM tasks WHERE project_id = ?1 AND (?2 IS NULL OR workspace_id = ?2)`,
-		projectID.String(), s.db.workspaceArg())
+	rows, err := s.db.conn.QueryContext(ctx, sqliteProjectTaskIDs, projectID.String(), s.db.workspaceArg())
 	if err != nil {
 		return nil, errWrap("TaskIDsByProjectAllStatuses", err)
 	}

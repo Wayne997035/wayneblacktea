@@ -219,8 +219,9 @@ type StoreIface interface {
 	DeleteProject(ctx context.Context, id uuid.UUID, actor string) (int, error)
 	// DeleteProjectExpecting is DeleteProject that refuses with
 	// ErrProjectTasksChanged, rolling the whole delete back, when the tasks it
-	// deletes are not the set expectedTaskSet digests. "" means no check.
-	// [PR #200 SE-01]
+	// locks are not the set expectedTaskSet digests. "" skips that preview
+	// check only: the delete is still refused when the tasks it deletes differ
+	// from the tasks it locked. [PR #200 SE-01, SE-R2-01]
 	DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error)
 	// RestoreProject reverses the most recent delete_project for id within
 	// the 30-day retention window (design 4), returning the restored

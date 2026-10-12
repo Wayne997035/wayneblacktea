@@ -49,12 +49,15 @@ type DeleteProjectAdapter interface {
 	// with a silent no-op, matching DeleteTaskOrchestration's contract.
 	WorkspacePrecheck(ctx context.Context) (exists bool, err error)
 
-	// CountTasks reports how many tasks sit under the project, read inside
-	// the same transaction so the number reported back to the caller is the
-	// number actually deleted.
-	CountTasks(ctx context.Context) (int, error)
+	// LockTaskRows returns the ids of every task under the project, read inside
+	// the transaction. The Postgres adapter also locks those rows (FOR UPDATE,
+	// in id order), so none of them can be moved out until the delete ends.
+	// The snapshot and every task-reference cleanup below act on exactly this
+	// set, and the orchestration refuses the delete when DeleteTaskRows removes
+	// any other set. [PR #200 SE-R2-01]
+	LockTaskRows(ctx context.Context) ([]uuid.UUID, error)
 
-	// --- references to the project's tasks ---
+	// --- references to the project's tasks (the set LockTaskRows returned) ---
 
 	CleanupWorkSessionTasks(ctx context.Context) error
 	NullifyWorkSessionsCurrentTask(ctx context.Context) error
@@ -99,15 +102,15 @@ type DeleteProjectAdapter interface {
 	Rollback(ctx context.Context)
 
 	// --- soft-delete snapshot + audit (design 1-3): SnapshotProjectAndTasks
-	// is called first, right after CountTasks and before any cleanup step
+	// is called first, right after LockTaskRows and before any cleanup step
 	// below, so it captures the project and its tasks before this call
 	// touches anything. WriteDeletionAuditLog is called last, immediately
 	// before Commit, so a failed audit write rolls back the whole delete
 	// rather than leaving one with no record of who did it. See
 	// DeleteProjectOrchestration below for the call sites. ---
 
-	// SnapshotProjectAndTasks copies the project row and every task row
-	// under it into deletion_tombstones (design 1/2), tagged with the given
+	// SnapshotProjectAndTasks copies the project row and the task rows
+	// LockTaskRows returned into deletion_tombstones (design 1/2), tagged with the given
 	// deletionID/deletedAt/deletedBy — all three generated ONCE by the
 	// orchestration layer (design 1) so every row in the group shares them.
 	SnapshotProjectAndTasks(ctx context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string) error
@@ -151,10 +154,18 @@ func DeleteProjectOrchestration(
 		return 0, nil
 	}
 
-	taskCount, err := adapter.CountTasks(ctx)
+	// Lock the project's tasks first: every later step works on this one set,
+	// and a preview that no longer matches it is refused before anything is
+	// written. [PR #200 SE-R2-01]
+	locked, err := adapter.LockTaskRows(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("delete project %s: count tasks: %w", id, err)
+		return 0, fmt.Errorf("delete project %s: lock task rows: %w", id, err)
 	}
+	lockedDigest := TaskSetDigest(locked)
+	if expectedTaskSet != "" && lockedDigest != expectedTaskSet {
+		return 0, fmt.Errorf("delete project %s: lock task rows: %w", id, ErrProjectTasksChanged)
+	}
+	taskCount := len(locked)
 
 	// Snapshot BEFORE any cleanup runs (design 1): this is the first write of
 	// the delete, so the rows it copies are exactly what existed before this
@@ -188,7 +199,9 @@ func DeleteProjectOrchestration(
 			if err != nil {
 				return fmt.Errorf("%w", err) // context added by the step loop below
 			}
-			if expectedTaskSet != "" && TaskSetDigest(ids) != expectedTaskSet {
+			// Always compared, "" or not: a task moved in after the lock is
+			// deleted here but was never snapshotted or cleaned.
+			if TaskSetDigest(ids) != lockedDigest {
 				return ErrProjectTasksChanged
 			}
 			return nil
@@ -214,8 +227,9 @@ func DeleteProjectOrchestration(
 	return taskCount, nil
 }
 
-// ErrProjectTasksChanged: the set of tasks a confirmed delete_project actually
-// deleted is not the set its step-1 preview showed. [PR #200 SE-01]
+// ErrProjectTasksChanged: a confirmed delete_project found a different task
+// set than its step-1 preview showed, either when it locked the project's
+// tasks or when it deleted them. [PR #200 SE-01, SE-R2-01]
 var ErrProjectTasksChanged = errors.New("gtd: project tasks changed since preview")
 
 // TaskSetDigest is an order-independent digest of a set of task ids. The empty
