@@ -352,19 +352,19 @@ func TestCheckVagueness_LueAllowlist(t *testing.T) {
 		// Words that contain 略 but are not on either allowlist. Any of these
 		// going green means an allowlist was widened; the last six are the
 		// Simplified forms of allowlisted Traditional words. [PR #200 R1-02]
-		{"not allowlisted 略述", lueP + "略述", true},
+		{"not allowlisted 略述", lueP + "略述如下", true},
 		{"not allowlisted 略有改善", lueP + "略有改善", true},
-		{"not allowlisted 略微", lueP + "略微", true},
-		{"not allowlisted 略為", lueP + "略為", true},
-		{"not allowlisted 略顯", lueP + "略顯", true},
-		{"not allowlisted 略高", lueP + "略高", true},
-		{"not allowlisted 略低", lueP + "略低", true},
-		{"simplified 战略", lueP + "战略", true},
-		{"simplified 领略", lueP + "领略", true},
-		{"simplified 简略", lueP + "简略", true},
-		{"simplified 约略", lueP + "约略", true},
-		{"simplified 略过", lueP + "略过", true},
-		{"simplified 缩略", lueP + "缩略", true},
+		{"not allowlisted 略微", lueP + "略微如下", true},
+		{"not allowlisted 略為", lueP + "略為如下", true},
+		{"not allowlisted 略顯", lueP + "略顯如下", true},
+		{"not allowlisted 略高", lueP + "略高如下", true},
+		{"not allowlisted 略低", lueP + "略低如下", true},
+		{"simplified 战略", lueP + "战略如下", true},
+		{"simplified 领略", lueP + "领略如下", true},
+		{"simplified 简略", lueP + "简略如下", true},
+		{"simplified 约略", lueP + "约略如下", true},
+		{"simplified 略过", lueP + "略过如下", true},
+		{"simplified 缩略", lueP + "缩略如下", true},
 
 		// A clause-final omit word wrapped in a closing mark is still called:
 		// quotes do not exempt (decision ea7e6826). One row per lueClosers
@@ -524,7 +524,7 @@ func lueChoreSkipsScan(t *testing.T) {
 }
 
 // TestCheckVagueness_LueLinearTime guards the [F1011-22] promise that the 略
-// scan stays linear (no ReDoS): four adversarial shapes must each return in
+// scan stays linear (no ReDoS): five adversarial shapes must each return in
 // under a second. It runs serially on purpose so parallel tests cannot skew
 // the clock.
 func TestCheckVagueness_LueLinearTime(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,10 +32,13 @@ type fakeDeleteProjectAdapter struct {
 	exists      bool
 	precheckErr error
 
-	taskCount     int
-	countTasksErr error
+	// locked is what LockTaskRows reports as the ids it locked.
+	locked  []uuid.UUID
+	lockErr error
 
-	// deleted is what DeleteTaskRows reports as the ids it deleted.
+	// deleted, when non-nil, is what DeleteTaskRows reports as the ids it
+	// deleted; nil means it deleted exactly the locked set, as the real
+	// adapters do when nothing moves in after the lock.
 	deleted []uuid.UUID
 
 	// failOn maps a recorded call name to the error that call returns.
@@ -48,7 +52,7 @@ type fakeDeleteProjectAdapter struct {
 	// Recorded arguments from the two soft-delete calls (F191-04/F191-06),
 	// so tests can assert the deletionID/deletedAt/deletedBy DeleteProject
 	// Orchestration generated/threaded through are the SAME values on both,
-	// and that the audit's taskCount matches CountTasks' answer.
+	// and that the audit's taskCount is the number of locked tasks.
 	snapshotDeletionID uuid.UUID
 	snapshotDeletedAt  time.Time
 	snapshotDeletedBy  string
@@ -75,12 +79,24 @@ func (f *fakeDeleteProjectAdapter) WorkspacePrecheck(context.Context) (bool, err
 	return f.exists, nil
 }
 
-func (f *fakeDeleteProjectAdapter) CountTasks(context.Context) (int, error) {
-	f.calls = append(f.calls, "CountTasks")
-	if f.countTasksErr != nil {
-		return 0, f.countTasksErr
+func (f *fakeDeleteProjectAdapter) LockTaskRows(context.Context) ([]uuid.UUID, error) {
+	f.calls = append(f.calls, callLockTaskRows)
+	if f.lockErr != nil {
+		return nil, f.lockErr
 	}
-	return f.taskCount, nil
+	return f.locked, nil
+}
+
+// callLockTaskRows is the recorded name of the LockTaskRows step.
+const callLockTaskRows = "LockTaskRows"
+
+// newIDs returns n fresh task ids.
+func newIDs(n int) []uuid.UUID {
+	ids := make([]uuid.UUID, n)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+	return ids
 }
 
 func (f *fakeDeleteProjectAdapter) CleanupWorkSessionTasks(context.Context) error {
@@ -137,11 +153,11 @@ func (f *fakeDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(context.Co
 
 // SnapshotProjectAndTasks / WriteDeletionAuditLog are now wired into
 // DeleteProjectOrchestration (F191-04/F191-06): SnapshotProjectAndTasks runs
-// right after CountTasks (before any cleanup), WriteDeletionAuditLog right
+// right after LockTaskRows (before any cleanup), WriteDeletionAuditLog right
 // before Commit. The fake also records the deletionID/deletedBy/deletedAt it
 // was called with so tests can assert they are the SAME values passed to
-// both methods, and that WriteDeletionAuditLog's taskCount matches CountTasks'
-// answer.
+// both methods, and that WriteDeletionAuditLog's taskCount is the number of
+// locked tasks.
 func (f *fakeDeleteProjectAdapter) SnapshotProjectAndTasks(
 	_ context.Context, deletionID uuid.UUID, deletedAt time.Time, deletedBy string,
 ) error {
@@ -155,7 +171,10 @@ func (f *fakeDeleteProjectAdapter) WriteDeletionAuditLog(_ context.Context, dele
 }
 
 func (f *fakeDeleteProjectAdapter) DeleteTaskRows(context.Context) ([]uuid.UUID, error) {
-	return f.deleted, f.record("DeleteTaskRows")
+	if f.deleted != nil {
+		return f.deleted, f.record("DeleteTaskRows")
+	}
+	return f.locked, f.record("DeleteTaskRows")
 }
 
 func (f *fakeDeleteProjectAdapter) DeleteProjectRow(context.Context) error {
@@ -182,7 +201,7 @@ const callCommit = "Commit"
 var happyPathCalls = []string{
 	"BeginTx",
 	"WorkspacePrecheck",
-	"CountTasks",
+	callLockTaskRows,
 	"SnapshotProjectAndTasks",
 	"CleanupWorkSessionTasks",
 	"NullifyWorkSessionsCurrentTask",
@@ -211,7 +230,7 @@ var happyPathCalls = []string{
 // still reporting success. That failure is invisible at runtime and shows up
 // only as a column pointing at a task that no longer exists.
 func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
-	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 7}
+	f := &fakeDeleteProjectAdapter{exists: true, locked: newIDs(7)}
 	deletedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
 	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, deletedAt, "", f)
@@ -240,7 +259,7 @@ func TestDeleteProjectOrchestration_HappyPathOrder(t *testing.T) {
 		t.Errorf("deletedBy not threaded through: snapshot=%q audit=%q", f.snapshotDeletedBy, f.auditDeletedBy)
 	}
 	if f.auditTaskCount != 7 {
-		t.Errorf("audit taskCount = %d, want 7 (CountTasks' answer)", f.auditTaskCount)
+		t.Errorf("audit taskCount = %d, want 7 (the number of locked tasks)", f.auditTaskCount)
 	}
 }
 
@@ -288,7 +307,7 @@ func TestDeleteProjectOrchestration_EveryTaskCleanupPrecedesTheRowDelete(t *test
 // shared with DeleteTaskOrchestration: deleting something already gone is a
 // quiet zero, not an error, so a retried delete does not look like a failure.
 func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
-	f := &fakeDeleteProjectAdapter{exists: false, taskCount: 99}
+	f := &fakeDeleteProjectAdapter{exists: false, locked: newIDs(99)}
 
 	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
 	if err != nil {
@@ -313,24 +332,24 @@ func TestDeleteProjectOrchestration_MissingProjectIsSilentNoOp(t *testing.T) {
 // DeleteTaskRows would always return 0 — and 0 is indistinguishable from
 // "this project had no tasks", so the bug would read as a valid answer.
 func TestDeleteProjectOrchestration_CountIsReadBeforeAnyDeletion(t *testing.T) {
-	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 3}
+	f := &fakeDeleteProjectAdapter{exists: true, locked: newIDs(3)}
 	if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	countAt, deleteAt := -1, -1
+	lockAt, deleteAt := -1, -1
 	for i, c := range f.calls {
 		switch c {
-		case "CountTasks":
-			countAt = i
+		case callLockTaskRows:
+			lockAt = i
 		case "DeleteTaskRows":
 			deleteAt = i
 		}
 	}
-	if countAt == -1 || deleteAt == -1 {
-		t.Fatalf("probe broken: CountTasks=%d DeleteTaskRows=%d in %v", countAt, deleteAt, f.calls)
+	if lockAt == -1 || deleteAt == -1 {
+		t.Fatalf("probe broken: LockTaskRows=%d DeleteTaskRows=%d in %v", lockAt, deleteAt, f.calls)
 	}
-	if countAt > deleteAt {
-		t.Error("CountTasks runs after DeleteTaskRows — the count would always be 0")
+	if lockAt > deleteAt {
+		t.Error("LockTaskRows runs after DeleteTaskRows — the count would always be 0")
 	}
 }
 
@@ -362,9 +381,9 @@ func TestDeleteProjectOrchestration_StepFailureStopsAndRollsBack(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			boom := fmt.Errorf("%s exploded", step)
 			f := &fakeDeleteProjectAdapter{
-				exists:    true,
-				taskCount: 5,
-				failOn:    map[string]error{step: boom},
+				exists: true,
+				locked: newIDs(5),
+				failOn: map[string]error{step: boom},
 			}
 
 			n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
@@ -419,15 +438,15 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 		}
 	})
 
-	t.Run("CountTasks", func(t *testing.T) {
-		f := &fakeDeleteProjectAdapter{exists: true, countTasksErr: boom}
+	t.Run(callLockTaskRows, func(t *testing.T) {
+		f := &fakeDeleteProjectAdapter{exists: true, lockErr: boom}
 		_, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
 		if !errors.Is(err, boom) {
 			t.Fatalf("want wrapped boom, got %v", err)
 		}
 		for _, c := range f.calls {
 			if strings.HasPrefix(c, "Cleanup") || strings.HasPrefix(c, "Nullify") {
-				t.Fatalf("CountTasks failed, yet %s ran", c)
+				t.Fatalf("LockTaskRows failed, yet %s ran", c)
 			}
 		}
 	})
@@ -437,7 +456,7 @@ func TestDeleteProjectOrchestration_BeginAndPrecheckAndCountFailures(t *testing.
 // step: a failed commit must not be reported as a successful delete.
 func TestDeleteProjectOrchestration_CommitFailureIsReported(t *testing.T) {
 	boom := errors.New("commit refused")
-	f := &fakeDeleteProjectAdapter{exists: true, taskCount: 4, commitErr: boom}
+	f := &fakeDeleteProjectAdapter{exists: true, locked: newIDs(4), commitErr: boom}
 
 	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
 	if !errors.Is(err, boom) {
@@ -465,7 +484,7 @@ func TestDeleteProjectOrchestration_TaskSetChanged(t *testing.T) {
 	}
 
 	t.Run("different set refused", func(t *testing.T) {
-		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 1, deleted: append([]uuid.UUID{movedIn}, previewed...)}
+		f := &fakeDeleteProjectAdapter{exists: true, locked: previewed, deleted: append([]uuid.UUID{movedIn}, previewed...)}
 		n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), gtd.TaskSetDigest(previewed), f)
 		if !errors.Is(err, gtd.ErrProjectTasksChanged) {
 			t.Fatalf("err = %v, want ErrProjectTasksChanged", err)
@@ -484,7 +503,7 @@ func TestDeleteProjectOrchestration_TaskSetChanged(t *testing.T) {
 	})
 
 	t.Run("same set commits", func(t *testing.T) {
-		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 1, deleted: previewed}
+		f := &fakeDeleteProjectAdapter{exists: true, locked: previewed}
 		digest := gtd.TaskSetDigest(previewed)
 		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), digest, f); err != nil {
 			t.Fatalf("matching set must delete, got %v", err)
@@ -494,13 +513,77 @@ func TestDeleteProjectOrchestration_TaskSetChanged(t *testing.T) {
 		}
 	})
 
-	t.Run("empty expected skips the check", func(t *testing.T) {
-		f := &fakeDeleteProjectAdapter{exists: true, taskCount: 2, deleted: append([]uuid.UUID{movedIn}, previewed...)}
+	// "" skips only the preview check: the locked set here is not the
+	// previewed one, and the delete still commits because it deletes exactly
+	// what it locked. Deleted-vs-locked is TestDeleteProjectOrchestration_
+	// DeletedVsLocked's job. [PR #200 SE-R2-01]
+	t.Run("empty expected skips the preview check", func(t *testing.T) {
+		f := &fakeDeleteProjectAdapter{exists: true, locked: append([]uuid.UUID{movedIn}, previewed...)}
 		if _, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f); err != nil {
-			t.Fatalf(`expectedTaskSet "" must not check, got %v`, err)
+			t.Fatalf(`expectedTaskSet "" must skip the preview check, got %v`, err)
 		}
 		if !contains(f.calls, "Commit") {
 			t.Error(`Commit did not run with expectedTaskSet ""`)
 		}
 	})
+}
+
+// A previewed task moved out before the lock leaves the locked set short of
+// the preview: the delete is refused before anything is written, not after
+// the snapshot and cleanups have run. [PR #200 SE-R2-01]
+func TestDeleteProjectOrchestration_LockedSetMismatch(t *testing.T) {
+	previewed := newIDs(2)
+	f := &fakeDeleteProjectAdapter{exists: true, locked: previewed[:1]}
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), gtd.TaskSetDigest(previewed), f)
+	if !errors.Is(err, gtd.ErrProjectTasksChanged) {
+		t.Fatalf("err = %v (n=%d), want ErrProjectTasksChanged", err, n)
+	}
+	for _, c := range f.calls {
+		if c == "SnapshotProjectAndTasks" || c == "DeleteTaskRows" || c == "ResetPromotedVisionItems" ||
+			strings.HasPrefix(c, "Cleanup") || strings.HasPrefix(c, "Nullify") {
+			t.Errorf("%s ran after the locked set failed the preview check", c)
+		}
+	}
+	if !f.rollbackDone {
+		t.Error("Rollback did not run")
+	}
+}
+
+// With no preview to check (""), deleting a task that was never locked — one
+// moved in after the lock, so never snapshotted or cleaned — is still
+// refused. [PR #200 SE-R2-01]
+func TestDeleteProjectOrchestration_DeletedVsLocked(t *testing.T) {
+	locked := newIDs(1)
+	f := &fakeDeleteProjectAdapter{exists: true, locked: locked, deleted: append([]uuid.UUID{uuid.New()}, locked...)}
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), "", f)
+	if !errors.Is(err, gtd.ErrProjectTasksChanged) {
+		t.Fatalf("err = %v (n=%d), want ErrProjectTasksChanged", err, n)
+	}
+	if n != 0 {
+		t.Errorf("n = %d, want 0", n)
+	}
+	if slices.Contains(f.calls, callCommit) {
+		t.Error("Commit ran although the deleted set differs from the locked set")
+	}
+	if !f.rollbackDone {
+		t.Error("Rollback did not run")
+	}
+}
+
+// The count returned and written to the audit row is the number of locked
+// tasks, which the set check guarantees is the number deleted. [PR #200
+// SE-R2-01, DBI-R2-01]
+func TestDeleteProjectOrchestration_CountFromLocked(t *testing.T) {
+	locked := newIDs(3)
+	f := &fakeDeleteProjectAdapter{exists: true, locked: locked}
+	n, err := gtd.DeleteProjectOrchestration(context.Background(), uuid.New(), testerActor, time.Now().UTC(), gtd.TaskSetDigest(locked), f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("returned count = %d, want 3 (the locked tasks)", n)
+	}
+	if f.auditTaskCount != 3 {
+		t.Errorf("audit taskCount = %d, want 3 (the locked tasks)", f.auditTaskCount)
+	}
 }

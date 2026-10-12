@@ -1711,18 +1711,19 @@ func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID, actor string) (
 }
 
 // DeleteProjectExpecting is DeleteProject that refuses, rolling back the whole
-// delete, when the tasks it deletes are not the set expectedTaskSet digests
-// (TaskSetDigest). "" means no check. [PR #200 SE-01]
+// delete, when the tasks it locks are not the set expectedTaskSet digests
+// (TaskSetDigest). "" skips that preview check only: the delete is still
+// refused when the tasks it deletes differ from the tasks it locked.
+// [PR #200 SE-01, SE-R2-01]
 func (s *Store) DeleteProjectExpecting(ctx context.Context, id uuid.UUID, actor, expectedTaskSet string) (int, error) {
 	return DeleteProjectOrchestration(ctx, id, actor, time.Now().UTC(), expectedTaskSet, &pgDeleteProjectAdapter{s: s, id: id})
 }
 
 // TaskIDsByProjectAllStatuses returns the ids CountTasksByProjectAllStatuses
-// counts (same WHERE clause). [PR #200 SE-01]
+// counts. It is the same query the delete locks with (projectTaskIDs), so the
+// preview and the delete name the same set. [PR #200 SE-01, DBI-R2-02]
 func (s *Store) TaskIDsByProjectAllStatuses(ctx context.Context, projectID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.dbtx.Query(ctx,
-		`SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`,
-		projectID, s.workspaceID)
+	rows, err := s.dbtx.Query(ctx, projectTaskIDs, projectID, s.workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing task ids for project %s: %w", projectID, err)
 	}
@@ -1746,23 +1747,24 @@ func scanPGTaskIDs(rows pgx.Rows) ([]uuid.UUID, error) {
 }
 
 type pgDeleteProjectAdapter struct {
-	s  *Store
-	id uuid.UUID
-	tx pgx.Tx
+	s      *Store
+	id     uuid.UUID
+	tx     pgx.Tx
+	locked []uuid.UUID // the task ids LockTaskRows locked; see execLockedTasks
 }
 
-// projectTaskIDs is the subquery every task-level cleanup filters on. Kept in
-// one place so a workspace scope can never be present on some cleanups and
-// missing on others — that asymmetry would delete one workspace's tasks while
-// clearing another's references.
+// projectTaskIDs names the project's tasks: the delete locks them with it
+// (LockTaskRows) and the step-1 preview lists them with it
+// (TaskIDsByProjectAllStatuses), so both name the same set. Kept in one place
+// so a workspace scope can never be present on one and missing on the other.
 const projectTaskIDs = `SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`
 
-// execWorkspaceScoped runs a statement taking $1 = project id and $2 =
-// workspace. Used by everything that reads or deletes task rows, so the
-// cleanups and the DELETE select exactly the same set: a cleanup matching a
-// wider set than the DELETE would clear a reference to a task that survives.
-func (a *pgDeleteProjectAdapter) execWorkspaceScoped(ctx context.Context, q string) error {
-	return a.run(ctx, q, a.id, a.s.workspaceID)
+// execLockedTasks runs a statement taking $1 = the task ids LockTaskRows
+// locked. Every task-reference cleanup uses it instead of re-reading the
+// project's tasks, so a task moved into the project after the lock never has
+// its references cleared, and a locked task cannot be missed. [PR #200 SE-R2-01]
+func (a *pgDeleteProjectAdapter) execLockedTasks(ctx context.Context, q string) error {
+	return a.run(ctx, q, a.locked)
 }
 
 // execByProject runs a statement taking $1 = project id alone. The five
@@ -1783,12 +1785,23 @@ func (a *pgDeleteProjectAdapter) run(ctx context.Context, q string, args ...any)
 	return nil
 }
 
+// txOptionsBeginner is satisfied by *pgxpool.Pool, which is what a Store is
+// built on in production (internal/storage/factory.go). A Store made by WithTx
+// sits on a pgx.Tx, which cannot choose an isolation level.
+type txOptionsBeginner interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
+// BeginTx pins READ COMMITTED instead of inheriting the server default. The
+// DELETE must see a task moved into the project after LockTaskRows so the set
+// check refuses it; under REPEATABLE READ it would not, and that task would be
+// left pointing at the deleted project. [PR #200 SE-R2-01, DBI-R2-03]
 func (a *pgDeleteProjectAdapter) BeginTx(ctx context.Context) error {
-	beginner, ok := a.s.dbtx.(txBeginner)
+	beginner, ok := a.s.dbtx.(txOptionsBeginner)
 	if !ok {
-		return errors.New("dbtx does not support Begin (cannot run cascade cleanup atomically)")
+		return errors.New("dbtx cannot begin a READ COMMITTED transaction (delete_project must not run on a WithTx store)")
 	}
-	tx, err := beginner.Begin(ctx)
+	tx, err := beginner.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("%w", err)
 	}
@@ -1811,42 +1824,48 @@ func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, e
 	return exists, nil
 }
 
-func (a *pgDeleteProjectAdapter) CountTasks(ctx context.Context) (int, error) {
-	var n int
-	if err := a.tx.QueryRow(
-		ctx,
-		`SELECT count(*) FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`,
-		a.id, a.s.workspaceID,
-	).Scan(&n); err != nil {
-		return 0, fmt.Errorf("%w", err)
+// LockTaskRows locks the project's task rows in id order (the same order for
+// every concurrent delete, so two of them cannot deadlock each other) and
+// remembers their ids for the snapshot and the cleanups. While the lock is
+// held an update_task that moves one of them out waits until this delete ends.
+// [PR #200 SE-R2-01]
+func (a *pgDeleteProjectAdapter) LockTaskRows(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := a.tx.Query(ctx, projectTaskIDs+` ORDER BY id FOR UPDATE`, a.id, a.s.workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("%w", err)
 	}
-	return n, nil
+	ids, err := scanPGTaskIDs(rows)
+	if err != nil {
+		return nil, err
+	}
+	a.locked = ids
+	return ids, nil
 }
 
 func (a *pgDeleteProjectAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `DELETE FROM work_session_tasks WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execLockedTasks(ctx, `DELETE FROM work_session_tasks WHERE task_id = ANY($1::uuid[])`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyWorkSessionsCurrentTask(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `UPDATE work_sessions SET current_task_id = NULL, updated_at = NOW()
-		WHERE current_task_id IN (`+projectTaskIDs+`)`)
+	return a.execLockedTasks(ctx, `UPDATE work_sessions SET current_task_id = NULL, updated_at = NOW()
+		WHERE current_task_id = ANY($1::uuid[])`)
 }
 
 func (a *pgDeleteProjectAdapter) CleanupCompletionCandidates(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `DELETE FROM completion_candidates WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execLockedTasks(ctx, `DELETE FROM completion_candidates WHERE task_id = ANY($1::uuid[])`)
 }
 
 func (a *pgDeleteProjectAdapter) ResetPromotedVisionItems(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `UPDATE vision_items SET promoted_task_id = NULL, status = 'open'
-		WHERE promoted_task_id IN (`+projectTaskIDs+`)`)
+	return a.execLockedTasks(ctx, `UPDATE vision_items SET promoted_task_id = NULL, status = 'open'
+		WHERE promoted_task_id = ANY($1::uuid[])`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyDecisionTaskRefs(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `UPDATE decisions SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execLockedTasks(ctx, `UPDATE decisions SET task_id = NULL WHERE task_id = ANY($1::uuid[])`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyKnowledgeItemTaskRefs(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `UPDATE knowledge_items SET task_id = NULL WHERE task_id IN (`+projectTaskIDs+`)`)
+	return a.execLockedTasks(ctx, `UPDATE knowledge_items SET task_id = NULL WHERE task_id = ANY($1::uuid[])`)
 }
 
 func (a *pgDeleteProjectAdapter) NullifyActivityLogProjectRefs(ctx context.Context) error {
@@ -1881,7 +1900,7 @@ func (a *pgDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.
 	return a.execByProject(ctx, `UPDATE procedural_memories SET project_id = NULL WHERE project_id = $1`)
 }
 
-// SnapshotProjectAndTasks copies the project row and every task row under it
+// SnapshotProjectAndTasks copies the project row and the locked task rows
 // into deletion_tombstones (design 1/2) via to_jsonb() in SQL — never
 // assembled from db.Task/db.Project, which deliberately omit columns (e.g.
 // area, added in 000079) that a struct-based snapshot would silently drop on
@@ -1891,11 +1910,13 @@ func (a *pgDeleteProjectAdapter) NullifyProceduralMemoryProjectRefs(ctx context.
 // project it belonged to), and to_jsonb(p) vs to_jsonb(t) each need their own
 // FROM clause.
 //
-// Both statements share the exact workspace predicate CountTasks/DeleteTask
-// Rows use (projectTaskIDs / the projects lookup in WorkspacePrecheck): if
-// this predicate were ever wrong, the snapshot would silently capture 0 rows
-// while the delete that follows still succeeds — F191-04 asserts the task
-// snapshot's row count equals CountTasks' answer specifically to catch that.
+// The task statement copies exactly the rows LockTaskRows locked (by id, not by
+// re-reading project_id), so a task moved into the project after the lock is
+// never tombstoned and a locked task cannot be missed. [PR #200 SE-R2-01] The
+// project statement shares WorkspacePrecheck's predicate: if it were ever
+// wrong, the snapshot would silently capture 0 rows while the delete that
+// follows still succeeds — F191-04 asserts the task snapshot's row count
+// equals the locked count specifically to catch that.
 //
 // deletion_tombstones.workspace_id is set from the SOURCE row's own
 // workspace_id (p.workspace_id / t.workspace_id), not a.s.workspaceID: the
@@ -1935,9 +1956,9 @@ func (a *pgDeleteProjectAdapter) SnapshotProjectAndTasks(
 		(id, workspace_id, deletion_id, entity_kind, entity_id, project_id, payload, deleted_by, deleted_at)
 		SELECT gen_random_uuid(), t.workspace_id, $2, 'task', t.id, t.project_id, to_jsonb(t), $3, $4
 		  FROM tasks t
-		 WHERE t.project_id = $1
+		 WHERE t.id = ANY($1::uuid[])
 		   AND ($5::uuid IS NULL OR t.workspace_id = $5)`
-	if _, err := a.tx.Exec(ctx, taskQ, a.id, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
+	if _, err := a.tx.Exec(ctx, taskQ, a.locked, deletionID, deletedBy, deletedAt, a.s.workspaceID); err != nil {
 		return fmt.Errorf("%w", err) // context added one level up by DeleteProjectOrchestration
 	}
 	return nil
@@ -1974,7 +1995,7 @@ func (a *pgDeleteProjectAdapter) DeleteTaskRows(ctx context.Context) ([]uuid.UUI
 }
 
 func (a *pgDeleteProjectAdapter) DeleteProjectRow(ctx context.Context) error {
-	return a.execWorkspaceScoped(ctx, `DELETE FROM projects WHERE id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`)
+	return a.run(ctx, `DELETE FROM projects WHERE id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`, a.id, a.s.workspaceID)
 }
 
 func (a *pgDeleteProjectAdapter) Commit(ctx context.Context) error {
