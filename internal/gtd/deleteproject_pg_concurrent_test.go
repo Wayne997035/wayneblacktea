@@ -316,6 +316,8 @@ func taskRefsPointAt(t *testing.T, pool *pgxpool.Pool, r taskRefs, taskID uuid.U
 // and out again before the DELETE: it must not be tombstoned and none of its
 // references may be cleared. The previewed task K, which is deleted, must have
 // all six references cleared.
+//
+//nolint:gocyclo // one seeded delete, then a flat run of independent assertions; splitting detaches each check from its fixture
 func TestDeleteProjectOrchestration_PGForeignTaskInAndOut(t *testing.T) {
 	pool := openTestPgPool(t)
 	ws := uuid.New()
