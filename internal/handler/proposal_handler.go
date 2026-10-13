@@ -349,6 +349,13 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeDecision:
+		// [F205-01] With the seam wired, TypeDecision joins the atomic
+		// proposal.AcceptOrchestration flow (decision insert + proposal
+		// resolve in one transaction). The unwired branch below is the legacy
+		// two-step path and goes away with F205-03.
+		if h.goalProjectAdapter != nil {
+			return h.acceptGoalOrProject(c, ctx, id, prop)
+		}
 		return h.acceptDecision(c, ctx, id, prop)
 	case proposal.TypeConcept:
 		return h.acceptConcept(c, ctx, id, prop)
@@ -527,21 +534,41 @@ func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Contex
 		c.Logger().Errorf("ConfirmProposal accept %s: %v", id, err)
 		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
+	return c.JSON(http.StatusOK, seamAcceptResponse(proposal.Type(prop.Type), resolved, created))
+}
+
+// seamAcceptResponse builds the confirm response for a proposal accepted via
+// proposal.AcceptOrchestration. Only the types whose confirmResponse has a
+// dedicated field surface the created row: TypeKnowledge (KnowledgeItem) and
+// [F205-01] TypeDecision (Decision). Both backends' adapters MUST return the
+// concrete db type for these — a different shape would silently drop the
+// field from the response, which is why TypeDecision's backend parity is
+// pinned by TestConfirmProposal_TypeDecision_BackendParity.
+func seamAcceptResponse(t proposal.Type, resolved *db.PendingProposal, created any) confirmResponse {
 	resp := confirmResponse{Proposal: toResponse(*resolved)}
-	if proposal.Type(prop.Type) == proposal.TypeKnowledge {
+	switch t {
+	case proposal.TypeKnowledge:
 		if item, ok := created.(*db.KnowledgeItem); ok {
 			resp.KnowledgeItem = item
 		}
+	case proposal.TypeDecision:
+		if dec, ok := created.(*db.Decision); ok {
+			resp.Decision = dec
+		}
+	default:
+		// TypeGoal/TypeProject have no dedicated confirmResponse field, so
+		// their created value is discarded.
 	}
-	return c.JSON(http.StatusOK, resp)
+	return resp
 }
 
 // validateGoalProjectPayload decodes payload with the same
 // proposal.DecodeGoalParams / proposal.DecodeProjectParams /
-// proposal.DecodeKnowledgePayload [F184-03] helpers the AcceptAdapter's
-// Materialize step uses, returning a human-readable message on failure
-// ("" = ok). Non-goal/project/knowledge types are not reachable here (see
-// handleAccept's switch) and fall through to "" (no-op).
+// proposal.DecodeKnowledgePayload [F184-03] / proposal.DecodeDecisionParams
+// [F205-01] helpers the AcceptAdapter's Materialize step uses, returning a
+// human-readable message on failure ("" = ok). Types outside those four are
+// not reachable here (see handleAccept's switch) and fall through to ""
+// (no-op).
 func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 	switch t {
 	case proposal.TypeGoal:
@@ -561,11 +588,20 @@ func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 		if _, err := proposal.DecodeKnowledgePayload(payload); err != nil {
 			return err.Error()
 		}
+	case proposal.TypeDecision:
+		// [F205-01] proposal.DecodeDecisionParams is the single decoder for
+		// TypeDecision (the old handler-local one had no length caps). Its
+		// error text is already specific ("decision payload missing title",
+		// "decision title exceeds 512 bytes", ...) so it is surfaced verbatim,
+		// same choice as TypeKnowledge above.
+		if _, err := proposal.DecodeDecisionParams(payload); err != nil {
+			return err.Error()
+		}
 	default:
 		// Unreachable: handleAccept's switch only routes
-		// TypeGoal/TypeProject/TypeKnowledge here (proposal_handler.go's
-		// switch above). Kept exhaustive to satisfy the exhaustive linter
-		// without a //nolint suppression.
+		// TypeGoal/TypeProject/TypeKnowledge/TypeDecision here
+		// (proposal_handler.go's switch above). Kept exhaustive to satisfy
+		// the exhaustive linter without a //nolint suppression.
 	}
 	return ""
 }
@@ -752,9 +788,9 @@ type proposalBatchMeta struct {
 	isTask     bool
 	tp         proposal.TaskPayload
 	// isGoalOrProject marks TypeGoal/TypeProject/TypeKnowledge [F184-03]
-	// proposals when h.goalProjectAdapter is wired. Unlike the materialise-
-	// then-generic-Resolve pattern the other types below use, these three
-	// route straight through proposal.AcceptOrchestration (batchResolveOne
+	// and TypeDecision [F205-01] proposals when h.goalProjectAdapter is
+	// wired. Unlike the materialise-then-generic-Resolve pattern the other
+	// types below use, these four route straight through proposal.AcceptOrchestration (batchResolveOne
 	// returns early for this flag) because AcceptOrchestration owns its own
 	// atomic resolve inside the transaction — see acceptGoalOrProject's doc
 	// comment for why they can't share the two-step pattern. false with
@@ -825,6 +861,15 @@ func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) pro
 		}
 		return proposalBatchMeta{isConcept: true, cp: cp}
 	case proposal.TypeDecision:
+		// [F205-01] With the seam wired TypeDecision is handled exactly like
+		// TypeGoal/TypeProject/TypeKnowledge below. The legacy isDecision
+		// meta is only the unwired fallback and goes away with F205-03.
+		if h.goalProjectAdapter != nil {
+			if errMsg := validateGoalProjectPayload(proposal.TypeDecision, prop.Payload); errMsg != "" {
+				return proposalBatchMeta{isGoalOrProject: true, payloadErr: errMsg}
+			}
+			return proposalBatchMeta{isGoalOrProject: true}
+		}
 		dp, errMsg := decodeProposalDecisionPayload(prop.Payload)
 		if errMsg != "" {
 			return proposalBatchMeta{isDecision: true, payloadErr: errMsg}
@@ -916,7 +961,7 @@ func (h *ProposalHandler) batchResolveOne(
 				entry.Error = "project name already exists"
 				return entry
 			}
-			c.Logger().Errorf("ConfirmBatch accept goal/project %s: %v", id, err)
+			c.Logger().Errorf("ConfirmBatch accept via seam %s: %v", id, err)
 			entry.Error = errInternalGeneric
 			return entry
 		}
