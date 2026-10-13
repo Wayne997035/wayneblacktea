@@ -53,6 +53,29 @@ func TestPgAcceptAdapter_MaterializeProject_NilGTDStore(t *testing.T) {
 	}
 }
 
+// TestPgAcceptAdapter_MaterializeDecision_NilDecisionStore [F205-02] guards
+// pgAcceptAdapter.materializeDecision the same way: deleting its nil-store
+// guard lets a.deps.Decision.WithTx(a.tx) run on a nil *decision.Store, which
+// dereferences s.q and panics. TypeDecision is reachable from the HTTP accept
+// path since F205-01, so a handler wired without a Decision dep must get an
+// error back, not a crashed request.
+func TestPgAcceptAdapter_MaterializeDecision_NilDecisionStore(t *testing.T) {
+	a := &pgAcceptAdapter{deps: PgAcceptDeps{Decision: nil}}
+	payload, err := json.Marshal(map[string]any{"title": "decision title", "decision": "adopt X"})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	prop := &db.PendingProposal{Payload: payload}
+
+	_, err = a.materializeDecision(context.Background(), prop)
+	if err == nil {
+		t.Fatal("materializeDecision: want error for nil Decision store, got nil (would have panicked on WithTx)")
+	}
+	if !strings.Contains(err.Error(), "decision store") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "decision store")
+	}
+}
+
 func TestPgAcceptAdapter_MaterializeConcept_NilLearningStore(t *testing.T) {
 	a := &pgAcceptAdapter{deps: PgAcceptDeps{Learning: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "concept title", "content": "concept content"})

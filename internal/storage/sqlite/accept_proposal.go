@@ -114,6 +114,13 @@ func (a *sqliteAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingP
 	}
 }
 
+// materializeDecision inserts the TypeDecision row inside the open tx and
+// returns the full *db.Decision, read back through that same tx. [F205-02]
+// Matches pgAcceptAdapter.materializeDecision's return type so the HTTP
+// handler can surface confirmResponse.Decision identically on both backends
+// (decision cbbbf686: the two backends are functionally identical); the
+// read-back must go through a.tx because the single pooled connection is
+// held by it (see ResolveAccepted's note below).
 func (a *sqliteAcceptAdapter) materializeDecision(ctx context.Context, prop *db.PendingProposal) (any, error) {
 	dp, err := proposal.DecodeDecisionParams(prop.Payload)
 	if err != nil {
@@ -126,7 +133,11 @@ func (a *sqliteAcceptAdapter) materializeDecision(ctx context.Context, prop *db.
 	if err != nil {
 		return nil, fmt.Errorf("creating decision: %w", err)
 	}
-	return map[string]string{"id": decisionID.String(), "title": dp.Title}, nil
+	dec, err := a.deps.Decision.decisionByIDTx(ctx, a.tx, decisionID)
+	if err != nil {
+		return nil, fmt.Errorf("re-reading decision %s: %w", decisionID, err)
+	}
+	return dec, nil
 }
 
 func (a *sqliteAcceptAdapter) materializeGoal(ctx context.Context, prop *db.PendingProposal) (any, error) {
