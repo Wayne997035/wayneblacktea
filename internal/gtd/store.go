@@ -1678,8 +1678,8 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status Pr
 
 // txBeginner abstracts the Begin method shared by *pgxpool.Pool and pgx.Tx
 // (a tx Begin starts a savepoint, which preserves atomicity for nested calls).
-// Implemented by both so DeleteTask works whether the Store was constructed
-// from a pool or already inside a transaction via WithTx.
+// DeleteTask no longer uses it: it needs a transaction at a fixed isolation
+// level, which only a pool can begin (see txOptionsBeginner).
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
@@ -1824,11 +1824,14 @@ func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, e
 	return exists, nil
 }
 
-// LockTaskRows locks the project's task rows in id order (the same order for
-// every concurrent delete, so two of them cannot deadlock each other) and
-// remembers their ids for the snapshot and the cleanups. While the lock is
-// held an update_task that moves one of them out waits until this delete ends.
-// [PR #200 SE-R2-01]
+// LockTaskRows locks the project's task rows in id order and remembers their
+// ids for the snapshot and the cleanups. delete_task also takes its task row
+// before it touches any reference row (pgDeleteTaskAdapter.WorkspacePrecheck),
+// so a delete_project and a delete_task on the same task both go task row
+// first and queue behind one another instead of waiting in a cycle. While the
+// lock is held an update_task that moves one of them out waits until this
+// delete ends.
+// [PR #200 SE-R2-01] [F202-01]
 func (a *pgDeleteProjectAdapter) LockTaskRows(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := a.tx.Query(ctx, projectTaskIDs+` ORDER BY id FOR UPDATE`, a.id, a.s.workspaceID)
 	if err != nil {
@@ -2027,12 +2030,18 @@ type pgDeleteTaskAdapter struct {
 	tx pgx.Tx
 }
 
+// BeginTx pins READ COMMITTED instead of inheriting the server default.
+// [F202-03] WorkspacePrecheck waits for the task row when a delete_project holds
+// it. At READ COMMITTED a row deleted meanwhile is skipped and delete_task is a
+// quiet no-op; at REPEATABLE READ the same wait fails with SQLSTATE 40001, so
+// the outcome would depend on the server setting. Only a pool can choose an
+// isolation level; a Store made by WithTx sits on a pgx.Tx, which cannot.
 func (a *pgDeleteTaskAdapter) BeginTx(ctx context.Context) error {
-	beginner, ok := a.s.dbtx.(txBeginner)
+	beginner, ok := a.s.dbtx.(txOptionsBeginner)
 	if !ok {
-		return errors.New("dbtx does not support Begin (cannot run cascade cleanup atomically)")
+		return errors.New("dbtx cannot begin a READ COMMITTED transaction (delete_task must not run on a WithTx store)")
 	}
-	tx, err := beginner.Begin(ctx)
+	tx, err := beginner.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
@@ -2040,19 +2049,30 @@ func (a *pgDeleteTaskAdapter) BeginTx(ctx context.Context) error {
 	return nil
 }
 
+// WorkspacePrecheck reports whether the task exists in the adapter's workspace
+// and, when it does, locks its row until this transaction ends.
+// [F202-01] delete_project locks the task row before it cleans any reference
+// row; taking the same row first here keeps both deletes in one order, so a
+// delete_task and a delete_project on the same task queue instead of deadlocking.
 func (a *pgDeleteTaskAdapter) WorkspacePrecheck(ctx context.Context) (bool, error) {
-	var exists bool
-	if err := a.tx.QueryRow(
+	// [F202-01] The statement below must keep its row lock clause (FOR UPDATE):
+	// without it this is a plain read and the order above is lost.
+	var id uuid.UUID
+	err := a.tx.QueryRow(
 		ctx,
-		`SELECT EXISTS(
-		    SELECT 1 FROM tasks
-		     WHERE id = $1
-		       AND ($2::uuid IS NULL OR workspace_id = $2)
-		 )`, a.id, a.s.workspaceID,
-	).Scan(&exists); err != nil {
+		`SELECT id FROM tasks
+		  WHERE id = $1
+		    AND ($2::uuid IS NULL OR workspace_id = $2)
+		    FOR UPDATE`, a.id, a.s.workspaceID,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// absent, in another workspace, or deleted while this waited for the lock
+		return false, nil
+	}
+	if err != nil {
 		return false, fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
-	return exists, nil
+	return true, nil
 }
 
 // CleanupWorkSessionTasks removes join-table rows (was ON DELETE CASCADE on
