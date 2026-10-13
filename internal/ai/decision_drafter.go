@@ -179,7 +179,8 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 	if err := json.Unmarshal([]byte(raw), &draft); err != nil {
 		// Log + return empty draft so a single bad model response doesn't
 		// crash the tool call. The middleware drops empty drafts already.
-		slog.Warn("decision drafter: model returned invalid JSON",
+		slog.Warn(
+			"decision drafter: model returned invalid JSON",
 			"err", err,
 			"raw_len", len(raw),
 		)
@@ -190,12 +191,14 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 		// so the middleware can record a discrete warning. Other cap rejects
 		// (over-long title, etc.) are recoverable: log + drop silently.
 		if errors.Is(capErr, ErrInjectionDetected) {
-			slog.Warn("decision drafter: prompt-injection markers in draft",
+			slog.Warn(
+				"decision drafter: prompt-injection markers in draft",
 				"reason", reason,
 			)
 			return nil, capErr
 		}
-		slog.Warn("decision drafter: draft rejected by code-side caps",
+		slog.Warn(
+			"decision drafter: draft rejected by code-side caps",
 			"reason", reason,
 		)
 		return &DecisionDraft{}, nil
