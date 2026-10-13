@@ -838,7 +838,6 @@ func wireHandlers(
 	decH := handler.NewDecisionHandler(stores.Decision())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
 	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
-		WithDecision(stores.Decision()).
 		WithKnowledge(stores.Knowledge()).
 		WithTask(stores.GTD()).
 		WithGoalProjectAccept(buildGoalProjectAcceptAdapter(stores))
