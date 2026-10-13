@@ -1678,8 +1678,8 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, id uuid.UUID, status Pr
 
 // txBeginner abstracts the Begin method shared by *pgxpool.Pool and pgx.Tx
 // (a tx Begin starts a savepoint, which preserves atomicity for nested calls).
-// Implemented by both so DeleteTask works whether the Store was constructed
-// from a pool or already inside a transaction via WithTx.
+// DeleteTask no longer uses it: it needs a transaction at a fixed isolation
+// level, which only a pool can begin (see txOptionsBeginner).
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
@@ -2030,12 +2030,18 @@ type pgDeleteTaskAdapter struct {
 	tx pgx.Tx
 }
 
+// BeginTx pins READ COMMITTED instead of inheriting the server default.
+// [F202-03] WorkspacePrecheck waits for the task row when a delete_project holds
+// it. At READ COMMITTED a row deleted meanwhile is skipped and delete_task is a
+// quiet no-op; at REPEATABLE READ the same wait fails with SQLSTATE 40001, so
+// the outcome would depend on the server setting. Only a pool can choose an
+// isolation level; a Store made by WithTx sits on a pgx.Tx, which cannot.
 func (a *pgDeleteTaskAdapter) BeginTx(ctx context.Context) error {
-	beginner, ok := a.s.dbtx.(txBeginner)
+	beginner, ok := a.s.dbtx.(txOptionsBeginner)
 	if !ok {
-		return errors.New("dbtx does not support Begin (cannot run cascade cleanup atomically)")
+		return errors.New("dbtx cannot begin a READ COMMITTED transaction (delete_task must not run on a WithTx store)")
 	}
-	tx, err := beginner.Begin(ctx)
+	tx, err := beginner.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}

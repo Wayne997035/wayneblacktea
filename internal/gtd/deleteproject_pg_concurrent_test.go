@@ -714,3 +714,70 @@ func TestDeleteTaskVsDeleteProject_PGTaskFirst(t *testing.T) {
 		t.Errorf("delete_project = (%d, %v), want ErrProjectTasksChanged (K was deleted before it locked)", dRes.n, dRes.err)
 	}
 }
+
+// [F202-03] Guards the READ COMMITTED pin in pgDeleteTaskAdapter.BeginTx. The
+// server default is REPEATABLE READ and delete_project holds K, so delete_task
+// queues behind it. Once delete_project commits, a delete_task left at the
+// server default fails with SQLSTATE 40001 ("could not serialize access");
+// pinned to READ COMMITTED it finds K gone and is a quiet no-op, as in
+// TestDeleteTaskVsDeleteProject_PGProjectFirst.
+func TestDeleteTaskVsDeleteProject_PGProjectFirstRepeatableRead(t *testing.T) {
+	const rrLevel = "repeatable read"
+	base := openTestPgPool(t)
+	ctx := f202Context(t)
+	cfg := base.Config()
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = rrLevel
+	rr, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("probe broken: NewWithConfig: %v", err)
+	}
+	t.Cleanup(rr.Close)
+	var level string
+	if err := rr.QueryRow(ctx, `SHOW default_transaction_isolation`).Scan(&level); err != nil || level != rrLevel {
+		t.Fatalf("probe broken: rr pool default_transaction_isolation = %q (%v), want %s", level, err, rrLevel)
+	}
+
+	// newF202Fixture asserts a read committed pool, so build the fixture by hand:
+	// the store, project and task live on the rr pool, the seeds and checks use base
+	ws := uuid.New()
+	store := newPgGTDStore(rr, &ws)
+	project := mustProjectID(t, store, "f202-rr-"+ws.String())
+	task := mustTaskID(t, store, project, "K")
+	refs := seedTaskRefs(t, base, ws, task)
+	fx := &f202Fixture{pool: base, store: store, project: project, task: task, refs: refs, preview: previewDigest(t, store, project)}
+	probe := f202Connect(t, base)
+
+	tCh := make(chan error, 1)
+	hookWait := make(chan error, 1)
+	w := &wrapDeleteAdapter{
+		DeleteProjectAdapter: gtd.NewPGDeleteProjectAdapterForTest(fx.store, fx.project),
+		beforeSnapshot: func() {
+			// delete_project has locked K and now idles in its transaction
+			f202DeleteTaskAsync(ctx, fx, tCh)
+			_, err := f202WaitFor(probe, f202WaitsOnIdleTx)
+			hookWait <- err
+		},
+	}
+	dRes := f202Await(t, f202DeleteProjectAsync(ctx, fx, w), "delete_project")
+	tErr := f202Await(t, tCh, "delete_task")
+	t.Logf("F202 result: T=%v D=(%d, %v)", tErr, dRes.n, dRes.err)
+
+	select {
+	case err := <-hookWait:
+		if err != nil {
+			t.Fatalf("probe broken: delete_task never waited on delete_project's lock: %v", err)
+		}
+	default:
+		t.Fatal("probe broken: the beforeSnapshot hook never ran")
+	}
+	f202Verify(t, fx, tErr, dRes)
+	if tErr != nil {
+		t.Errorf("delete_task = %v, want nil (K was already deleted by delete_project)", tErr)
+	}
+	if dRes.err != nil || dRes.n != 1 {
+		t.Errorf("delete_project = (%d, %v), want (1, nil)", dRes.n, dRes.err)
+	}
+}
