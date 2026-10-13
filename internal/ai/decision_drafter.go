@@ -87,10 +87,10 @@ const (
 	drafterAllowedControlChar  = '\t'
 )
 
-// drafterMaxAlternativeBytes caps each alternative in BYTES, not runes
-// [F205-04]. It aligns with proposal.DecodeDecisionParams' per-alternative
-// `if len(a) > 100 {` check (internal/proposal/accept_decode.go), which the
-// HTTP accept path (F205-01) and the MCP accept path both run before a drafted
+// drafterMaxAlternativeBytes caps each alternative in BYTES, not runes (see
+// truncateToBytes). It aligns with proposal.DecodeDecisionParams'
+// per-alternative `if len(a) > 100 {` check (internal/proposal/accept_decode.go),
+// which the HTTP accept path and the MCP accept path both run before a drafted
 // proposal can become a decision. Without this cap a CJK alternative longer
 // than ~33 characters is producer-valid but cannot be accepted. Code-side
 // enforcement is the real gate; drafterSystemPrompt only tells the model the
@@ -247,8 +247,8 @@ func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string, err error
 	if len(d.Alternatives) > drafterMaxAlternatives {
 		d.Alternatives = d.Alternatives[:drafterMaxAlternatives]
 	}
-	// [F205-04] Per-alternative byte cap. MUST stay AFTER the injection scan
-	// above: cutting first would drop a marker sitting past the cap and turn a
+	// Per-alternative byte cap. MUST stay AFTER the injection scan above:
+	// cutting first would drop a marker sitting past the cap and turn a
 	// security reject into a silently shortened proposal
 	// (TestDecisionDrafter_InjectionPastAlternativeCapStillDetected).
 	for i := range d.Alternatives {
@@ -260,7 +260,7 @@ func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string, err error
 // truncateToBytes cuts s to at most limit bytes without splitting a UTF-8
 // sequence: it backs up from limit to the start of the rune that straddles it.
 func truncateToBytes(s string, limit int) string {
-	if len(s) <= limit {
+	if len(s) <= limit { // [F205-04] the per-alternative byte cap lives on this branch
 		return s
 	}
 	cut := limit

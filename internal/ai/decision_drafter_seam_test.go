@@ -9,7 +9,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 )
 
-// TestDrafterAlternativesAcceptedBySeamDecoder [F205-04] is the drift guard
+// TestDrafterAlternativesAcceptedBySeamDecoder is the drift guard
 // between the producer and the consumer of a decision proposal: whatever
 // ai.enforceDraftCaps lets through must be accepted by
 // proposal.DecodeDecisionParams, the single decoder behind both the HTTP and
@@ -21,6 +21,7 @@ import (
 // the producer itself writes (internal/mcp/middleware_decision_proposer.go
 // aliases it) — not from a local copy of the JSON shape.
 func TestDrafterAlternativesAcceptedBySeamDecoder(t *testing.T) {
+	// [F205-04] producer/consumer drift guard for the per-alternative byte cap.
 	cases := []struct {
 		name        string
 		alternative string

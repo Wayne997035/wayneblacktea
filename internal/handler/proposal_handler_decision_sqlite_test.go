@@ -676,6 +676,7 @@ func newSQLiteDecisionBackend(t *testing.T) decisionBackend {
 }
 
 func TestConfirmProposal_TypeDecision_SQLite_MaterialisesDecisionsRow(t *testing.T) {
+	// [F205-01] the accept response carries the created decision and one decisions row is written.
 	runDecisionMaterialises(t, newSQLiteDecisionBackend(t))
 }
 

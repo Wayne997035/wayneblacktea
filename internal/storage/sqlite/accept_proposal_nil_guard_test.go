@@ -56,12 +56,13 @@ func TestSqliteAcceptAdapter_MaterializeProject_NilGTDStore(t *testing.T) {
 	}
 }
 
-// TestSqliteAcceptAdapter_MaterializeDecision_NilDecisionStore [F205-02]
-// guards sqliteAcceptAdapter.materializeDecision: deleting its nil-store guard
-// lets a.deps.Decision.LogTx run on a nil *DecisionStore, which dereferences
-// s.db and panics. a.tx is nil here on purpose — the guard fires before the
-// tx is touched.
+// TestSqliteAcceptAdapter_MaterializeDecision_NilDecisionStore guards
+// sqliteAcceptAdapter.materializeDecision: deleting its nil-store guard lets
+// a.deps.Decision.LogTx run on a nil *DecisionStore, which dereferences s.db
+// and panics. a.tx is nil here on purpose — the guard fires before the tx is
+// touched.
 func TestSqliteAcceptAdapter_MaterializeDecision_NilDecisionStore(t *testing.T) {
+	// [F205-02] nil-store guard of the SQLite adapter's decision materialisation.
 	t.Parallel() // [F0925-10]
 	a := &sqliteAcceptAdapter{deps: AcceptDeps{Decision: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "decision title", "decision": "adopt X"})

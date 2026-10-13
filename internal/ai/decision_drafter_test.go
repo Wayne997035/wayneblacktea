@@ -415,12 +415,13 @@ func TestDraft_RejectsInjectionEvasion(t *testing.T) {
 	}
 }
 
-// TestDecisionDrafter_CapEnforcement_AlternativeBytesBoundary [F205-04] pins
+// TestDecisionDrafter_CapEnforcement_AlternativeBytesBoundary pins
 // the per-alternative BYTE cap enforceDraftCaps applies after the injection
 // scan: exactly drafterMaxAlternativeBytes is kept verbatim, longer values are
 // cut to the cap on a rune boundary (never mid-rune, never rejecting the whole
 // draft — truncation is harmless, like the alternatives count cap).
 func TestDecisionDrafter_CapEnforcement_AlternativeBytesBoundary(t *testing.T) {
+	// [F205-04] boundary of the per-alternative byte cap.
 	cases := []struct {
 		name string
 		in   string
@@ -462,12 +463,13 @@ func TestDecisionDrafter_CapEnforcement_AlternativeBytesBoundary(t *testing.T) {
 	}
 }
 
-// TestDecisionDrafter_InjectionPastAlternativeCapStillDetected [F205-04]
-// guards the ORDER inside enforceDraftCaps: the injection scan must see the
+// TestDecisionDrafter_InjectionPastAlternativeCapStillDetected guards the
+// ORDER inside enforceDraftCaps: the injection scan must see the
 // full alternative, so a marker placed after the byte cap still raises
 // ErrInjectionDetected. Truncating before the scan would silently cut the
 // marker off and store a clean-looking shortened proposal instead.
 func TestDecisionDrafter_InjectionPastAlternativeCapStillDetected(t *testing.T) {
+	// [F205-04] the injection scan runs before the byte cap truncates.
 	filler := strings.Repeat("a", 150)
 	cases := []struct {
 		name         string
@@ -499,10 +501,10 @@ func TestDecisionDrafter_InjectionPastAlternativeCapStillDetected(t *testing.T) 
 	}
 }
 
-// TestDrafterSystemPrompt_MentionsAlternativeByteCap [F205-04] keeps the
-// model-facing limit and the code-side constant from drifting apart: the
+// TestDrafterSystemPrompt_MentionsAlternativeByteCap keeps the model-facing limit and the code-side constant from drifting apart: the
 // prompt tells the model the same number enforceDraftCaps enforces.
 func TestDrafterSystemPrompt_MentionsAlternativeByteCap(t *testing.T) {
+	// [F205-04] the prompt states the same byte cap the code enforces.
 	want := strconv.Itoa(drafterMaxAlternativeBytes)
 	if !strings.Contains(drafterSystemPrompt, want) {
 		t.Errorf("drafterSystemPrompt does not mention the alternative byte cap %q:\n%s", want, drafterSystemPrompt)

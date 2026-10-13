@@ -53,13 +53,14 @@ func TestPgAcceptAdapter_MaterializeProject_NilGTDStore(t *testing.T) {
 	}
 }
 
-// TestPgAcceptAdapter_MaterializeDecision_NilDecisionStore [F205-02] guards
+// TestPgAcceptAdapter_MaterializeDecision_NilDecisionStore guards
 // pgAcceptAdapter.materializeDecision the same way: deleting its nil-store
 // guard lets a.deps.Decision.WithTx(a.tx) run on a nil *decision.Store, which
 // dereferences s.q and panics. TypeDecision is reachable from the HTTP accept
-// path since F205-01, so a handler wired without a Decision dep must get an
-// error back, not a crashed request.
+// path since it was routed through the seam, so a handler wired without a
+// Decision dep must get an error back, not a crashed request.
 func TestPgAcceptAdapter_MaterializeDecision_NilDecisionStore(t *testing.T) {
+	// [F205-02] nil-store guard of the PG adapter's decision materialisation.
 	a := &pgAcceptAdapter{deps: PgAcceptDeps{Decision: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "decision title", "decision": "adopt X"})
 	if err != nil {

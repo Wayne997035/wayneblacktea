@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// [F205-03] A handler built WITHOUT WithGoalProjectAccept must fail CLOSED for
+// A handler built WITHOUT WithGoalProjectAccept must fail CLOSED for
 // TypeDecision: a resolve-only fallback would flip the proposal to accepted
 // with no decisions row behind it, and Resolve only matches status='pending',
 // so that loss is permanent. TypeGoal/TypeProject/TypeKnowledge keep their
@@ -33,6 +33,7 @@ func unwiredHandler(store *fakeProposalStore) *handler.ProposalHandler {
 }
 
 func TestConfirmProposal_TypeDecision_AdapterNotWired_FailsClosed(t *testing.T) {
+	// [F205-03] an unwired handler must not resolve a TypeDecision proposal.
 	row := unwiredProposalRow(proposal.TypeDecision, decisionPayload(t, "unwired-single"))
 	store := newFakeProposalStore(row)
 

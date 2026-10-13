@@ -101,7 +101,7 @@ type ProposalHandler struct {
 	// accept falls back to the legacy "Resolve only" branch (matches
 	// pre-A1-http behaviour, and keeps callers that don't wire
 	// WithGoalProjectAccept — e.g. existing unit tests — working unchanged).
-	// TypeDecision does NOT fall back [F205-03]: it fails closed (500 / per-row
+	// TypeDecision does NOT fall back: it fails closed (500 / per-row
 	// "internal error", no resolve). Wire via WithGoalProjectAccept.
 	goalProjectAdapter goalProjectAcceptAdapterFactory
 }
@@ -340,7 +340,7 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 	case proposal.TypeTask:
 		return h.acceptTask(c, ctx, id, prop)
 	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge, proposal.TypeDecision:
-		// [F205-01] TypeDecision routes through the same atomic
+		// TypeDecision routes through the same atomic
 		// proposal.AcceptOrchestration seam: the decision insert and the
 		// proposal resolve commit together, so a failed resolve rolls the
 		// decisions row back (the former h.decision.Log + separate
@@ -456,7 +456,7 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 }
 
 // acceptGoalOrProject materialises a TypeGoal, TypeProject, [F184-03]
-// TypeKnowledge, or [F205-01] TypeDecision proposal via the atomic
+// TypeKnowledge, or TypeDecision proposal via the atomic
 // proposal.AcceptOrchestration flow (ReadPending → PrepareOutOfBand → BeginTx
 // → Materialize → ResolveAccepted → Commit) — the same seam
 // internal/proposal/accept_pg.go and internal/storage/sqlite/accept_proposal.go
@@ -473,7 +473,7 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 // silently dropping them here would be a response-shape regression (see
 // seamAcceptResponse).
 //
-// h.goalProjectAdapter nil: TypeDecision fails CLOSED [F205-03] — 500 and no
+// h.goalProjectAdapter nil: TypeDecision fails CLOSED — 500 and no
 // resolve, because a resolve-only fallback would flip the proposal to accepted
 // with no decisions row behind it (permanent data loss: Resolve only matches
 // status='pending'). TypeGoal/TypeProject/TypeKnowledge keep the legacy
@@ -486,7 +486,7 @@ func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uui
 // (e.g. a test).
 func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
 	if h.goalProjectAdapter == nil {
-		if proposal.Type(prop.Type) == proposal.TypeDecision {
+		if proposal.Type(prop.Type) == proposal.TypeDecision { // [F205-03] fail closed: no resolve-only fallback for decisions
 			c.Logger().Errorf("ConfirmProposal accept %s: decision accept adapter not wired", id)
 			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 		}
@@ -531,7 +531,7 @@ func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Contex
 // seamAcceptResponse builds the confirm response for a proposal accepted via
 // proposal.AcceptOrchestration. Only the types whose confirmResponse has a
 // dedicated field surface the created row: TypeKnowledge (KnowledgeItem) and
-// [F205-01] TypeDecision (Decision). Both backends' adapters MUST return the
+// TypeDecision (Decision). Both backends' adapters MUST return the
 // concrete db type for these — a different shape would silently drop the
 // field from the response, which is why TypeDecision's backend parity is
 // pinned by TestConfirmProposal_TypeDecision_BackendParity.
@@ -543,7 +543,8 @@ func seamAcceptResponse(t proposal.Type, resolved *db.PendingProposal, created a
 			resp.KnowledgeItem = item
 		}
 	case proposal.TypeDecision:
-		if dec, ok := created.(*db.Decision); ok {
+		dec, ok := created.(*db.Decision)
+		if ok { // [F205-01] surface the created decision in the response
 			resp.Decision = dec
 		}
 	default:

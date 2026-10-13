@@ -205,6 +205,7 @@ func shapeOf(t *testing.T, rec *httptest.ResponseRecorder) decisionShape {
 // same decision object shape. If either adapter returned a non-*db.Decision the
 // `decision` key would vanish on that backend and the comparison would fail.
 func TestConfirmProposal_TypeDecision_BackendParity(t *testing.T) {
+	// [F205-02] SQLite and PG return the same decision object for the same accept.
 	title := "parity-" + uuid.NewString()
 	shapes := map[string]decisionShape{}
 	t.Run("sqlite", func(t *testing.T) {
