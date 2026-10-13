@@ -794,7 +794,7 @@ func (s *Store) BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match
 	qtx := s.q.WithTx(tx)
 	applied := make(map[uuid.UUID]bool, len(matches))
 	for _, m := range matches {
-		ok, perr := s.applyOnePRMatch(ctx, qtx, m)
+		ok, perr := s.applyOnePRMatch(ctx, tx, qtx, m)
 		if perr != nil {
 			return nil, fmt.Errorf("BatchCompleteTasksByPRMatch task %s: %w", m.TaskID, perr)
 		}
@@ -812,7 +812,7 @@ func (s *Store) BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match
 // applyOnePRMatch performs the per-task work for BatchCompleteTasksByPRMatch:
 // guarded UPDATE (skip if already completed) + activity_log INSERT. Returns
 // true when the row actually transitioned, false when it was already done.
-func (s *Store) applyOnePRMatch(ctx context.Context, qtx *db.Queries, m Match) (bool, error) {
+func (s *Store) applyOnePRMatch(ctx context.Context, tx pgx.Tx, qtx *db.Queries, m Match) (bool, error) {
 	// Guarded UPDATE: only flip tasks that are STILL pending/in_progress at
 	// apply time. Setting status, artifact, and pr_url in one statement keeps
 	// the row consistent. status IN ('pending','in_progress') mirrors the
@@ -835,7 +835,10 @@ func (s *Store) applyOnePRMatch(ctx context.Context, qtx *db.Queries, m Match) (
 		WHERE id = $2
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
 		  AND status IN ('pending', 'in_progress')`
-	res, err := s.dbtx.Exec(ctx, upd, m.PRUrl, m.TaskID, s.workspaceID)
+	// [F203-01] Run the UPDATE on the batch's own tx, not s.dbtx (which would
+	// commit it on a separate connection), so "mark completed" and the
+	// pr_auto_close audit row below commit or roll back together.
+	res, err := tx.Exec(ctx, upd, m.PRUrl, m.TaskID, s.workspaceID)
 	if err != nil {
 		return false, fmt.Errorf("update task: %w", err)
 	}
