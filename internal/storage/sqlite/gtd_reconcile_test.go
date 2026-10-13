@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,5 +227,86 @@ func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
 	}
 	if result.Matches[0].Reason != gtd.MatchReasonPRURLExact {
 		t.Errorf("reason = %q, want pr_url_exact", result.Matches[0].Reason)
+	}
+}
+
+// TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate
+// [F203-03] pins "mark-complete and its audit row move together": when the
+// activity_log INSERT of a later match fails, the earlier match's task UPDATE
+// must roll back with it. It is the SQLite half of the PG probe F203-02
+// (dual-backend parity); SQLite already runs the whole batch in one *sql.Tx,
+// so this probe is green today and goes red if anyone splits the batch into
+// per-match commits.
+//
+// The failure is injected with a BEFORE INSERT trigger keyed on a marker in
+// activity_log.notes (the notes carry head_ref), so only the second match's
+// audit INSERT fails. Every assertion uses t.Errorf so one run reports all
+// violated invariants; the fixed [F203-03/N] prefixes are what the
+// acceptance counts grep for.
+func TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate(t *testing.T) {
+	t.Parallel() // [F203-03]
+	store, d := openMemWithDB(t, "")
+	ctx := context.Background()
+
+	const (
+		injectedMsg = "f203 injected failure"
+		failMarker  = "F203FAILMARKER"
+		prURLA      = "https://github.com/owner/repo/pull/2031"
+		prURLB      = "https://github.com/owner/repo/pull/2032"
+	)
+
+	if err := d.ExecContext(ctx, `CREATE TRIGGER f203_fail BEFORE INSERT ON activity_log
+		WHEN NEW.notes LIKE '%`+failMarker+`%'
+		BEGIN SELECT RAISE(ABORT, '`+injectedMsg+`'); END`); err != nil {
+		t.Fatalf("create failure-injection trigger: %v", err)
+	}
+
+	taskA, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f203 task A", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask A: %v", err)
+	}
+	taskB, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f203 task B", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask B: %v", err)
+	}
+
+	// A is applied first and succeeds; B's audit INSERT then trips the trigger.
+	matches := []gtd.Match{
+		{TaskID: taskA.ID, Reason: gtd.MatchReasonBranchNameExact, PRUrl: prURLA, PRHeadRef: "feature/f203-a"},
+		{TaskID: taskB.ID, Reason: gtd.MatchReasonBranchNameExact, PRUrl: prURLB, PRHeadRef: "feature/" + failMarker},
+	}
+	_, batchErr := store.BatchCompleteTasksByPRMatch(ctx, matches)
+
+	switch {
+	case batchErr == nil:
+		t.Errorf("[F203-03/1] BatchCompleteTasksByPRMatch error = nil, want error containing %q", injectedMsg)
+	case !strings.Contains(batchErr.Error(), injectedMsg):
+		t.Errorf("[F203-03/1] BatchCompleteTasksByPRMatch error = %v, want it to contain %q", batchErr, injectedMsg)
+	}
+
+	gotA, err := store.GetTaskByID(ctx, taskA.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID A: %v", err)
+	}
+	if gotA.Status != taskStatusPending || gotA.PRUrl.Valid {
+		t.Errorf("[F203-03/2] task A status = %q pr_url = %+v, want pending with pr_url unset (rolled back with the failed batch)",
+			gotA.Status, gotA.PRUrl)
+	}
+
+	gotB, err := store.GetTaskByID(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID B: %v", err)
+	}
+	if gotB.Status != taskStatusPending {
+		t.Errorf("[F203-03/3] task B status = %q, want pending (its audit INSERT failed)", gotB.Status)
+	}
+
+	var auditRowsA int
+	const countA = `SELECT COUNT(*) FROM activity_log WHERE action = 'pr_auto_close' AND notes LIKE '%' || ?1 || '%'`
+	if err := d.QueryRowContext(ctx, countA, prURLA).Scan(&auditRowsA); err != nil {
+		t.Fatalf("count pr_auto_close rows for A: %v", err)
+	}
+	if auditRowsA != 0 {
+		t.Errorf("[F203-03/4] activity_log has %d pr_auto_close row(s) for task A's PR, want 0 (rolled back with the failed batch)", auditRowsA)
 	}
 }
