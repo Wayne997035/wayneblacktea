@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -603,10 +604,12 @@ func newSQLiteDecisionBackend(t *testing.T) decisionBackend {
 		Learning: learningStore,
 		Decision: wbtsqlite.NewDecisionStore(sdb),
 	}
-	count := func(t *testing.T, query, title string) int {
+	// scanCount takes the *sql.Row (not a query string) so every SQL text stays
+	// a literal at its call site — unqueryvet rejects a variable query.
+	scanCount := func(t *testing.T, row *sql.Row) int {
 		t.Helper()
 		var n int
-		if err := sdb.QueryRowContext(ctx, query, title).Scan(&n); err != nil {
+		if err := row.Scan(&n); err != nil {
 			t.Fatalf("count query: %v", err)
 		}
 		return n
@@ -642,11 +645,11 @@ func newSQLiteDecisionBackend(t *testing.T) decisionBackend {
 		},
 		decisionCount: func(t *testing.T, title string) int {
 			t.Helper()
-			return count(t, "SELECT count(*) FROM decisions WHERE title = ?", title)
+			return scanCount(t, sdb.QueryRowContext(ctx, "SELECT count(*) FROM decisions WHERE title = ?", title))
 		},
 		goalCount: func(t *testing.T, title string) int {
 			t.Helper()
-			return count(t, "SELECT count(*) FROM goals WHERE title = ?", title)
+			return scanCount(t, sdb.QueryRowContext(ctx, "SELECT count(*) FROM goals WHERE title = ?", title))
 		},
 		decisionAudit: func(t *testing.T, title string) decisionAuditRow {
 			t.Helper()
