@@ -336,6 +336,13 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeConcept:
+		// With the seam wired, TypeConcept joins the atomic
+		// proposal.AcceptOrchestration flow (concepts row + review_schedule
+		// row + proposal resolve in one transaction). The unwired branch is
+		// the legacy two-step path.
+		if h.goalProjectAdapter != nil {
+			return h.acceptGoalOrProject(c, ctx, id, prop)
+		}
 		return h.acceptConcept(c, ctx, id, prop)
 	case proposal.TypeTask:
 		return h.acceptTask(c, ctx, id, prop)
@@ -547,6 +554,11 @@ func seamAcceptResponse(t proposal.Type, resolved *db.PendingProposal, created a
 		if ok { // [F205-01] surface the created decision in the response
 			resp.Decision = dec
 		}
+	case proposal.TypeConcept:
+		concept, ok := created.(*db.Concept)
+		if ok { // [F205-05] surface the created concept in the response
+			resp.Concept = concept
+		}
 	default:
 		// TypeGoal/TypeProject have no dedicated confirmResponse field, so
 		// their created value is discarded.
@@ -557,10 +569,11 @@ func seamAcceptResponse(t proposal.Type, resolved *db.PendingProposal, created a
 // validateGoalProjectPayload decodes payload with the same
 // proposal.DecodeGoalParams / proposal.DecodeProjectParams /
 // proposal.DecodeKnowledgePayload [F184-03] / proposal.DecodeDecisionParams
-// [F205-01] helpers the AcceptAdapter's Materialize step uses, returning a
-// human-readable message on failure ("" = ok). Types outside those four are
-// not reachable here (see handleAccept's switch) and fall through to ""
-// (no-op).
+// [F205-01] helpers the AcceptAdapter's Materialize step uses (TypeConcept is
+// the exception: it is gated by the handler's own, stricter
+// decodeConceptCandidatePayload), returning a human-readable message on
+// failure ("" = ok). Types outside those five are not reachable here (see
+// handleAccept's switch) and fall through to "" (no-op).
 func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 	switch t {
 	case proposal.TypeGoal:
@@ -589,9 +602,18 @@ func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 		if _, err := proposal.DecodeDecisionParams(payload); err != nil {
 			return err.Error()
 		}
+	case proposal.TypeConcept:
+		// The handler's own decodeConceptCandidatePayload stays the gate: it is
+		// the strictest of the three concept decoders, so passing it implies
+		// proposal.DecodeConceptPayload (the in-tx decode) passes too, and the
+		// 400 texts ("concept title exceeds 512 characters", "too many tags
+		// (max 50)", ...) stay exactly what clients already see.
+		if _, errMsg := decodeConceptCandidatePayload(payload); errMsg != "" {
+			return errMsg
+		}
 	default:
 		// Unreachable: handleAccept's switch only routes
-		// TypeGoal/TypeProject/TypeKnowledge/TypeDecision here
+		// TypeGoal/TypeProject/TypeKnowledge/TypeDecision/TypeConcept here
 		// (proposal_handler.go's switch above). Kept exhaustive to satisfy
 		// the exhaustive linter without a //nolint suppression.
 	}
@@ -788,6 +810,15 @@ func (h *ProposalHandler) batchProposalMeta(c echo.Context, ctx context.Context,
 func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) proposalBatchMeta {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeConcept:
+		// With the seam wired TypeConcept is handled exactly like
+		// TypeGoal/TypeProject/TypeKnowledge/TypeDecision below. The legacy
+		// isConcept meta is only the unwired fallback.
+		if h.goalProjectAdapter != nil {
+			if errMsg := validateGoalProjectPayload(proposal.TypeConcept, prop.Payload); errMsg != "" {
+				return proposalBatchMeta{isGoalOrProject: true, payloadErr: errMsg}
+			}
+			return proposalBatchMeta{isGoalOrProject: true}
+		}
 		cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
 		if errMsg != "" {
 			return proposalBatchMeta{isConcept: true, payloadErr: errMsg}
