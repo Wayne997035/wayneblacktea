@@ -170,6 +170,12 @@ func (a *sqliteAcceptAdapter) materializeProject(ctx context.Context, prop *db.P
 	return map[string]string{"id": projectID.String(), "name": pp.Name, "title": pp.Title}, nil
 }
 
+// materializeConcept inserts the concepts row and its initial review_schedule
+// row inside the open tx and returns the full *db.Concept, read back through
+// that same tx. It matches pgAcceptAdapter.materializeConcept's return type so
+// the HTTP handler can surface confirmResponse.Concept identically on both
+// backends (decision cbbbf686); the read-back must go through a.tx because the
+// single pooled connection is held by it (see ResolveAccepted's note below).
 func (a *sqliteAcceptAdapter) materializeConcept(ctx context.Context, prop *db.PendingProposal) (any, error) {
 	cp, err := proposal.DecodeConceptPayload(prop.Payload)
 	if err != nil {
@@ -182,7 +188,11 @@ func (a *sqliteAcceptAdapter) materializeConcept(ctx context.Context, prop *db.P
 	if err != nil {
 		return nil, fmt.Errorf("creating concept: %w", err)
 	}
-	return map[string]string{"id": conceptID.String(), "title": cp.Title}, nil
+	concept, err := a.deps.Learning.conceptByIDTx(ctx, a.tx, conceptID)
+	if err != nil { // [F205-06] the tx read-back that makes SQLite return *db.Concept like PG
+		return nil, fmt.Errorf("re-reading concept %s: %w", conceptID, err)
+	}
+	return concept, nil
 }
 
 // materializeKnowledge inserts the TypeKnowledge row inside the open tx via
