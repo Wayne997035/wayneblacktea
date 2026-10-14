@@ -2,6 +2,7 @@ package proposal
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,9 +25,9 @@ import (
 //	per-tag cap, non-empty title             none, none in all three
 //	{}, null, empty tags                     ok, zero value in all three
 //	empty bytes, []                          error in all three
-//	source_item_id / source_item_type that   REJECT                     ACCEPT (field ignored)          REJECT
-//	is not a string (123, ["x"])             <-- the one accept/reject divergence between the decoders
-//	text: malformed JSON                    "concept proposal          "decoding concept payload: "    "decoding concept payload
+//	source_item_id / source_item_type that   REJECT                     REJECT (aligned, see            REJECT
+//	is not a string (123, ["x"])                                        SharedCases)
+//	text: malformed JSON                   "concept proposal          "decoding concept payload: "    "decoding concept payload
 //	                                         payload is malformed"      + raw json error                failed" (storeErrorText)
 //	text: title cap                          "...exceeds 512            "...exceeds 512 bytes"          "...exceeds 512 bytes"
 //	                                         characters" (counts bytes)
@@ -120,6 +121,16 @@ func TestDecodeConceptPayload(t *testing.T) {
 			payload: []byte(`{"title":"t","content":"c","tags":["a"],"source_item_id":"abc","source_item_type":"knowledge"}`),
 			want:    ConceptPayload{Title: "t", Content: "c", Tags: []string{"a"}},
 		},
+		{
+			name:    "a non-string source_item_id is rejected, like the handler and MCP decoders",
+			payload: []byte(`{"title":"t","content":"c","source_item_id":123}`),
+			wantErr: "decoding concept payload",
+		},
+		{
+			name:    "a non-string source_item_type is rejected",
+			payload: []byte(`{"title":"t","content":"c","source_item_type":["x"]}`),
+			wantErr: "decoding concept payload",
+		},
 		{name: "malformed JSON is rejected", payload: []byte(`{bad`), wantErr: "decoding concept payload"},
 		{name: "a wrong-typed title is rejected", payload: []byte(`{"title":123}`), wantErr: "decoding concept payload"},
 		{name: "a JSON array is rejected", payload: []byte(`[]`), wantErr: "decoding concept payload"},
@@ -142,6 +153,45 @@ func TestDecodeConceptPayload(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("DecodeConceptPayload = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// sharedConceptCase is one row of testdata/concept_payload_cases.json, the
+// single source of truth for which concept payloads must be accepted or
+// rejected. The same file is read by the handler's and the MCP path's concept
+// decoder tests, so the accept/reject surface of all three decoders cannot
+// drift apart unnoticed. Texts are deliberately not compared (they differ).
+type sharedConceptCase struct {
+	Name    string `json:"name"`
+	Payload string `json:"payload"`
+	Accept  bool   `json:"accept"`
+}
+
+// TestDecodeConceptPayload_SharedCases feeds every shared case, byte for
+// byte, to DecodeConceptPayload and asserts accept versus reject only.
+func TestDecodeConceptPayload_SharedCases(t *testing.T) {
+	// [F205-09] the seam decoder accepts and rejects exactly what the shared case file says.
+	raw, err := os.ReadFile("testdata/concept_payload_cases.json")
+	if err != nil {
+		t.Fatalf("read shared cases: %v", err)
+	}
+	var cases []sharedConceptCase
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatalf("parse shared cases: %v", err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("shared case file has no cases")
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			_, err := DecodeConceptPayload([]byte(c.Payload))
+			if c.Accept && err != nil {
+				t.Errorf("want accept, got error: %v", err)
+			}
+			if !c.Accept && err == nil {
+				t.Error("want reject, got accept")
 			}
 		})
 	}
