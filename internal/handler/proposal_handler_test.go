@@ -134,6 +134,61 @@ func (f *fakeProposalLearningStore) LearningStats(_ context.Context) (*learning.
 	return &learning.LearningStatsResult{}, nil
 }
 
+// ---- fake accept adapter ----
+
+// fakeAcceptAdapter is a no-DB proposal.AcceptAdapter for the fake-store
+// handler tests. It drives the same fakes the handler reads from, so a case
+// written against the fakes keeps its intent now that TypeConcept accept runs
+// through proposal.AcceptOrchestration: ReadPending reads the fake proposal
+// store, Materialize creates a concept through the fake learning store (so
+// createCount and an injected error still apply; every other proposal type
+// materialises nothing), and ResolveAccepted resolves through the fake store.
+// A Materialize error therefore aborts the accept before Resolve — the
+// "materialise first, Resolve NOT called" property these cases assert.
+type fakeAcceptAdapter struct {
+	proposal.BaseAcceptAdapter
+	id       uuid.UUID
+	store    *fakeProposalStore
+	learning *fakeProposalLearningStore
+}
+
+func (a *fakeAcceptAdapter) ReadPending(ctx context.Context) (*db.PendingProposal, error) {
+	return a.store.Get(ctx, a.id)
+}
+
+func (a *fakeAcceptAdapter) BeginTx(context.Context) error { return nil }
+
+func (a *fakeAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, _ any) (any, error) {
+	if proposal.Type(prop.Type) != proposal.TypeConcept {
+		return nil, nil
+	}
+	cp, err := proposal.DecodeConceptPayload(prop.Payload)
+	if err != nil {
+		return nil, err
+	}
+	concept, err := a.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
+	if err != nil {
+		return nil, err
+	}
+	return concept, nil
+}
+
+func (a *fakeAcceptAdapter) ResolveAccepted(ctx context.Context) (*db.PendingProposal, error) {
+	return a.store.Resolve(ctx, a.id, proposal.StatusAccepted)
+}
+
+func (a *fakeAcceptAdapter) Commit(context.Context) error { return nil }
+
+func (a *fakeAcceptAdapter) Rollback(context.Context) {}
+
+// fakeAcceptAdapterFactory is the WithGoalProjectAccept argument that builds a
+// fakeAcceptAdapter over store and learning for each accept call.
+func fakeAcceptAdapterFactory(store *fakeProposalStore, learning *fakeProposalLearningStore) func(uuid.UUID) proposal.AcceptAdapter {
+	return func(id uuid.UUID) proposal.AcceptAdapter {
+		return &fakeAcceptAdapter{id: id, store: store, learning: learning}
+	}
+}
+
 // ---- helpers ----
 
 func makeConceptProposal(id uuid.UUID, title, content string, tags []string) db.PendingProposal {
@@ -268,7 +323,8 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, tc.learning)
+			h := handler.NewProposalHandler(tc.store, tc.learning).
+				WithGoalProjectAccept(fakeAcceptAdapterFactory(tc.store, tc.learning))
 			e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 			rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", tc.body)
 			if rec.Code != tc.wantCode {
@@ -424,7 +480,8 @@ func TestProposalHandler_ConfirmProposal_Accept(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, tc.learning)
+			h := handler.NewProposalHandler(tc.store, tc.learning).
+				WithGoalProjectAccept(fakeAcceptAdapterFactory(tc.store, tc.learning))
 			e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 			rec := performRequest(e, http.MethodPost, "/api/proposals/"+tc.paramID+"/confirm", tc.body)
 			if rec.Code != tc.wantCode {
@@ -449,7 +506,7 @@ func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
 		store := newFakeProposalStore(conceptProp)
 		learn := &fakeProposalLearningStore{err: errors.New("db down")}
 		e := newEcho()
-		h := handler.NewProposalHandler(store, learn)
+		h := handler.NewProposalHandler(store, learn).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
 		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
 		if rec.Code != http.StatusInternalServerError {
@@ -464,7 +521,7 @@ func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
 		store := newFakeProposalStore(conceptProp)
 		learn := &fakeProposalLearningStore{concept: &db.Concept{ID: uuid.New(), Title: "Test"}}
 		e := newEcho()
-		h := handler.NewProposalHandler(store, learn)
+		h := handler.NewProposalHandler(store, learn).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
 		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
 		if rec.Code != http.StatusOK {

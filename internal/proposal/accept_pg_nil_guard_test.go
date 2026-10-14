@@ -16,9 +16,10 @@ import (
 // `return &Store{q: s.q.WithTx(tx)}`, which dereferences s.q on a nil
 // receiver). materializeGoal/materializeProject are reachable in production
 // since PR #17 wired AcceptOrchestration to the HTTP accept-proposal
-// endpoint (see dispatch note); materializeConcept has no production caller
-// yet but is guarded defensively for the same reason. No real Postgres pool
-// or open tx is needed here — the nil check fires before either is touched.
+// endpoint (see dispatch note); materializeConcept is reachable from the same
+// endpoint now that TypeConcept accept goes through the seam. No real
+// Postgres pool or open tx is needed here — the nil check fires before either
+// is touched.
 func TestPgAcceptAdapter_MaterializeGoal_NilGTDStore(t *testing.T) {
 	a := &pgAcceptAdapter{deps: PgAcceptDeps{GTD: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "goal title", "area": "career"})
