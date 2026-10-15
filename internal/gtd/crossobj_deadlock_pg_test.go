@@ -366,8 +366,9 @@ func e979RunRingA(t *testing.T, pk e979Park) {
 // [F1013-22] Probe B: X = knowledge_items(project_id=P1, task_id=T2), Y = knowledge_items(project_id=P2,
 // task_id=T1). The park row has project_id=P1 and no task reference.
 //
-//	mid-decisions:     delete_project(P1) is frozen at its decisions statement of the project_id stage,
-//	                   holding Y, before its knowledge_items statement.
+//	mid-decisions:     before the fix, delete_project(P1) froze at its decisions statement of the project_id stage holding Y.
+//	                   After it, decisions is a pre-lock table: P1 parks inside the pre-lock, before any knowledge_items lock,
+//	                   and the second delete completes first. Under the fix ring B's waiting evidence is late-activity_log.
 //	late-activity_log: delete_project(P1) is frozen at its activity_log statement; after any pre-lock, so a
 //	                   pre-lock is exercised with the second delete waiting.
 func TestE979_RingB_DeleteProjectVsDeleteProject(t *testing.T) {
