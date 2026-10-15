@@ -2143,9 +2143,9 @@ func (a *pgDeleteTaskAdapter) WorkspacePrecheck(ctx context.Context) (bool, erro
 // prelockRefRows takes, one table of PGDeleteLockTables at a time and in the order delete_project takes
 // them (pgDeleteProjectAdapter.prelockRefRows), the row locks the reference cleanups below would
 // otherwise take one statement at a time. The cleanups then update rows this transaction already holds,
-// except rows committed after the pre-lock ran. The probes (TestE979_*) stay green with this half
-// removed; what it adds is the id order within one table, for two deletes that scan it through
-// different indexes. That case is unverified and no deterministic probe reaches it. [F1013-23]
+// except rows committed after the pre-lock ran. The TestE979_* probes stay green with this half removed;
+// what it adds is the id order within one table, which TestPGDeleteLocks_RowsOfOneTableLockedInIDOrder
+// pins: its delete_task cell turns red without this half or its ORDER BY. [F1013-23]
 func (a *pgDeleteTaskAdapter) prelockRefRows(ctx context.Context) error {
 	for _, l := range PGDeleteLockTables {
 		if _, err := a.tx.Exec(ctx, l.lockByTaskSQL(), a.id); err != nil {

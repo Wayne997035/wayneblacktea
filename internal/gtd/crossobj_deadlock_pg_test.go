@@ -1,6 +1,7 @@
 package gtd_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -409,4 +410,134 @@ func e979RunRingB(t *testing.T, pk e979Park) {
 	e979CheckRefsNull(t, env, "knowledge_items Y", e979ReadKnowledge, ids.y)
 	e979CheckGone(t, env, "tasks T1 and T2", e979CountTasks, ids.t1, ids.t2)
 	e979CheckGone(t, env, "projects P1 and P2", e979CountProjects, ids.p1, ids.p2)
+}
+
+// [F1013-23] Probe O: the delete pre-locks take the rows of one table in id order. Two deletes that need
+// the same two rows of one pre-locked table must both queue on the lower id; if each could hold one row and
+// wait for the other they would form a cycle (SQLSTATE 40P01). R_hi is inserted before R_lo, so a scan
+// with no ORDER BY meets R_hi first. The holder locks R_lo, the delete starts and parks behind it, and a
+// NOWAIT lock on R_hi from the probe connection says whether the delete already holds R_hi: it does not
+// when the pre-lock takes the rows in id order. The delete_task cell is red without delete_task's pre-lock
+// or its ORDER BY; the delete_project cell is red without delete_project's ORDER BY.
+const (
+	// $1 = the row's id, $2 = the workspace, $3 = the task it points at.
+	e979SeedDecisionTask = `INSERT INTO decisions (id, workspace_id, title, context, decision, rationale, task_id, created_at)
+		VALUES ($1,$2,'d','ctx','x','y',$3,NOW())`
+
+	e979LockHiNoWait = `SELECT id FROM decisions WHERE id = $1 FOR UPDATE NOWAIT`
+	e979UUIDLess     = `SELECT $1::uuid < $2::uuid`
+
+	e979LockNotAvailable = "55P03"
+	e979NoWaitFree       = "ok"
+	e979NoWaitHeld       = "SQLSTATE " + e979LockNotAvailable
+)
+
+// e979OrderCell is one delete under the id-order probe. seed inserts R_hi and then R_lo, and returns the delete.
+type e979OrderCell struct {
+	name string
+	seed func(t *testing.T, env *e979Env, rLo, rHi uuid.UUID) e979Step
+	want e979Outcome
+}
+
+var e979OrderCells = []e979OrderCell{
+	{e979TaskDelete, e979SeedOrderTask, e979Outcome{}},
+	{e979ProjectDelete, e979SeedOrderProject, e979Outcome{n: 1, withCount: true}},
+}
+
+func TestPGDeleteLocks_RowsOfOneTableLockedInIDOrder(t *testing.T) {
+	for _, cell := range e979OrderCells {
+		t.Run(cell.name, func(t *testing.T) { e979RunIDOrder(t, cell) })
+	}
+}
+
+// e979SeedPair inserts the two decisions rows that name owner, R_hi first.
+func e979SeedPair(t *testing.T, env *e979Env, seed string, owner, rLo, rHi uuid.UUID) {
+	t.Helper()
+	e979Exec(t, env, "decisions R_hi", seed, rHi, env.ws, owner)
+	e979Exec(t, env, "decisions R_lo", seed, rLo, env.ws, owner)
+}
+
+// e979SeedOrderTask: both rows carry task_id = K. Project names are unique across workspaces and
+// delete_task leaves its project behind, so the name carries the workspace.
+func e979SeedOrderTask(t *testing.T, env *e979Env, rLo, rHi uuid.UUID) e979Step {
+	t.Helper()
+	q := mustProjectID(t, env.store, "e979-o-q-"+env.ws.String())
+	k := mustTaskID(t, env.store, q, "K")
+	e979SeedPair(t, env, e979SeedDecisionTask, k, rLo, rHi)
+	return e979Step{e979TaskDelete, func(ctx context.Context) e979Outcome {
+		return e979Outcome{err: env.store.DeleteTask(ctx, k, testerActor)}
+	}}
+}
+
+// e979SeedOrderProject: both rows carry project_id = P.
+func e979SeedOrderProject(t *testing.T, env *e979Env, rLo, rHi uuid.UUID) e979Step {
+	t.Helper()
+	p := mustProjectID(t, env.store, "e979-o-p-"+env.ws.String())
+	mustTaskID(t, env.store, p, "T0")
+	e979SeedPair(t, env, e979SeedDecision, p, rLo, rHi)
+	preview := previewDigest(t, env.store, p)
+	return e979Step{e979ProjectDelete, func(ctx context.Context) e979Outcome {
+		n, err := env.store.DeleteProjectExpecting(ctx, p, testerActor, preview)
+		return e979Outcome{n: n, err: err, withCount: true}
+	}}
+}
+
+// e979OrderedIDs returns two fresh ids, the lower first. The lock order is Postgres's, so Postgres is asked
+// whether the Go order agrees instead of assuming it.
+func e979OrderedIDs(t *testing.T, env *e979Env) (lo, hi uuid.UUID) {
+	t.Helper()
+	lo, hi = uuid.New(), uuid.New()
+	if bytes.Compare(lo[:], hi[:]) > 0 {
+		lo, hi = hi, lo
+	}
+	var less bool
+	if err := env.probe.QueryRow(env.ctx, e979UUIDLess, lo, hi).Scan(&less); err != nil || !less {
+		t.Fatalf("probe broken: Postgres does not order %s before %s (less=%v, err=%v)", lo, hi, less, err)
+	}
+	return lo, hi
+}
+
+// e979HoldsHi reports whether the delete holds R_hi. The NOWAIT lock runs on the autocommit probe connection,
+// so it is gone when the statement ends; it is refused with SQLSTATE 55P03 only while somebody else holds the row.
+func e979HoldsHi(env *e979Env, rHi uuid.UUID, broken func(string)) bool {
+	var id uuid.UUID
+	err := env.probe.QueryRow(env.ctx, e979LockHiNoWait, rHi).Scan(&id)
+	var pgErr *pgconn.PgError
+	switch {
+	case err == nil:
+		return false
+	case errors.As(err, &pgErr) && pgErr.Code == e979LockNotAvailable:
+		return true
+	default:
+		broken(fmt.Sprintf("NOWAIT lock on R_hi: %v", err))
+		return false
+	}
+}
+
+func e979RunIDOrder(t *testing.T, cell e979OrderCell) {
+	env := newE979Env(t)
+	rLo, rHi := e979OrderedIDs(t, env)
+	del := cell.seed(t, env, rLo, rHi)
+	hold := e979Hold(t, env, e979LockDecision, rLo)
+	run := e979Start(env.ctx, del)
+	broken := func(msg string) {
+		hold.release(t)
+		t.Logf("%s ended with: %s", del.name, run.collect(t))
+		t.Fatalf("probe broken: %s", msg)
+	}
+	if _, err := f202WaitFor(env.probe, f202WaitsOnPID, hold.pid); err != nil {
+		broken(fmt.Sprintf("%s never waited on the held decisions row: %v", del.name, err))
+	}
+	held := e979HoldsHi(env, rHi, broken)
+	hold.release(t)
+	out := run.collect(t)
+	nowait := e979NoWaitFree
+	if held {
+		nowait = e979NoWaitHeld
+		t.Errorf("%s holds R_hi while waiting for R_lo: rows of one table are not locked in id order", del.name)
+	}
+	t.Logf("E979-O result: cell=%s r_hi_nowait=%s delete=%s", cell.name, nowait, out)
+	if out.err != nil || out.n != cell.want.n {
+		t.Errorf("%s returned %s, want %s", del.name, out, cell.want)
+	}
 }
