@@ -30,6 +30,10 @@ type DeleteTaskAdapter interface {
 	// pre-fix behaviour where a missing / workspace-mismatched task simply
 	// affected 0 rows on the parent DELETE — leaving the deferred Rollback
 	// to close out the empty tx.
+	// When the task exists, the Postgres adapter also locks its row and, table by
+	// table in one fixed order, the reference rows the cleanups below will update
+	// that exist at that moment; a row committed later is taken by the cleanups.
+	// [F202-01] [F1013-23]
 	WorkspacePrecheck(ctx context.Context) (exists bool, err error)
 
 	// CleanupWorkSessionTasks removes work_session_tasks rows referencing
