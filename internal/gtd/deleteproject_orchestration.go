@@ -52,6 +52,9 @@ type DeleteProjectAdapter interface {
 	// LockTaskRows returns the ids of every task under the project, read inside
 	// the transaction. The Postgres adapter also locks those rows (FOR UPDATE,
 	// in id order), so none of them can be moved out until the delete ends.
+	// Before returning, the Postgres adapter also locks, table by table in one fixed
+	// order, the reference rows the cleanups below will update that exist at that
+	// moment; a row committed later is taken by the cleanups. [F1013-23]
 	// The snapshot and every task-reference cleanup below act on exactly this
 	// set, and the orchestration refuses the delete when DeleteTaskRows removes
 	// any other set. [PR #200 SE-R2-01]

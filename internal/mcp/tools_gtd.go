@@ -1962,7 +1962,10 @@ func (s *Server) handleDeleteTask(ctx context.Context, args DeleteTaskArgs) (*mc
 		return refusal, nil
 	}
 
-	if err := s.gtd.DeleteTask(ctx, id, s.auditSessionID(ctx)); err != nil {
+	// [F203-01] The code is spent; a deadlock victim is run again, not handed back for another two-step confirm.
+	if _, err := retryDeadlockVictim("delete_task", func() (struct{}, error) {
+		return struct{}{}, s.gtd.DeleteTask(ctx, id, s.auditSessionID(ctx))
+	}); err != nil {
 		slog.Warn("delete_task: DeleteTask failed", "task_id", id, "err", err)
 		return storeErrorResult("deleting task", err), nil
 	}
@@ -2037,7 +2040,10 @@ func (s *Server) handleDeleteProject(ctx context.Context, args DeleteProjectArgs
 		return refusal, nil
 	}
 
-	deleted, err := s.gtd.DeleteProjectExpecting(ctx, id, s.auditSessionID(ctx), rec.expectedTaskSet)
+	// [F203-01] The code is spent; a deadlock victim is run again, not handed back for another two-step confirm.
+	deleted, err := retryDeadlockVictim("delete_project", func() (int, error) {
+		return s.gtd.DeleteProjectExpecting(ctx, id, s.auditSessionID(ctx), rec.expectedTaskSet)
+	})
 	if errors.Is(err, gtd.ErrProjectTasksChanged) {
 		return mcp.NewToolResultError(
 			"project changed since the preview; call delete_project without confirm to see the current tasks",

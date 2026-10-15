@@ -1292,3 +1292,73 @@ func TestPGSoftDelete_RestoreOtherWorkspaceIsInvisible(t *testing.T) {
 		t.Errorf("tasksRestored = %d, want 0", tasksRestored)
 	}
 }
+
+// derivePGPrelockTables walks the migrated schema (information_schema, as derivePGProjectIDTables does)
+// for every base table in public that has a project_id column and at least one column whose name ends in
+// task_id, and returns table -> its task columns. The pattern is a suffix match, not a list of known
+// names, so the next column of this shape (blocking_task_id, say) is found without anyone remembering to
+// register it. [F1013-24]
+func derivePGPrelockTables(t *testing.T, pool *pgxpool.Pool) map[string][]string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT k.table_name, k.column_name
+		   FROM information_schema.columns k
+		   JOIN information_schema.tables tb
+		     ON tb.table_schema = k.table_schema AND tb.table_name = k.table_name AND tb.table_type = 'BASE TABLE'
+		  WHERE k.table_schema = 'public' AND k.column_name LIKE '%task\_id'
+		    AND EXISTS (SELECT 1 FROM information_schema.columns p
+		                 WHERE p.table_schema = k.table_schema AND p.table_name = k.table_name AND p.column_name = 'project_id')
+		  ORDER BY k.table_name, k.column_name`)
+	if err != nil {
+		t.Fatalf("query information_schema.columns: %v", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]string{}
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			t.Fatalf("scan table_name, column_name: %v", err)
+		}
+		out[table] = append(out[table], column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate information_schema.columns rows: %v", err)
+	}
+	return out
+}
+
+// [F1013-24] Guards the pre-lock list of [F1013-23]. Every table with both a project_id column and a
+// task-reference column can hold rows that a delete_task and a delete_project both need, so it has to be
+// locked ahead of the cleanups (gtd.PGDeleteLockTables). Nothing else notices a table that was added
+// later: red line #9 leaves no foreign key to complain, and the deadlock only shows under an overlap.
+// Derived from the migrated schema, so a new table with both columns turns this red until it is listed.
+func TestPGDeleteLocks_PrelockCoversEveryProjectAndTaskRefTable(t *testing.T) {
+	pool := openTestPgPool(t)
+	derived := derivePGPrelockTables(t, pool)
+
+	tables := make([]string, 0, len(derived))
+	for table := range derived {
+		tables = append(tables, table)
+	}
+	sort.Strings(tables)
+	t.Logf("derived=%v", tables)
+
+	registered := make([]string, 0, len(gtd.PGDeleteLockTables))
+	for _, l := range gtd.PGDeleteLockTables {
+		registered = append(registered, l.Table)
+	}
+	sort.Strings(registered)
+	if diff := tableListDiff(tables, registered); diff != "" {
+		t.Errorf("gtd.PGDeleteLockTables is out of sync with the migrated PG schema "+
+			"(tables with a project_id column and a column ending in task_id): %s — list the missing table "+
+			"with its task column, or drop the entry whose table or column is gone", diff)
+	}
+	// One entry names one task column, so a second task column on a listed table would be left unlocked.
+	for _, l := range gtd.PGDeleteLockTables {
+		if cols, ok := derived[l.Table]; ok && !reflect.DeepEqual(cols, []string{l.TaskColumn}) {
+			t.Errorf("table %s has task columns %v in the migrated schema, gtd.PGDeleteLockTables locks only [%s]",
+				l.Table, cols, l.TaskColumn)
+		}
+	}
+}

@@ -1759,6 +1759,43 @@ type pgDeleteProjectAdapter struct {
 // so a workspace scope can never be present on one and missing on the other.
 const projectTaskIDs = `SELECT id FROM tasks WHERE project_id = $1 AND ($2::uuid IS NULL OR workspace_id = $2)`
 
+// PGDeleteLockTable is a table delete_task and delete_project lock before they clean any reference
+// row. It has a project_id column and a column naming a task, so a delete_task(K) and a
+// delete_project(P) can each need rows of it that the other already holds. [F1013-23]
+type PGDeleteLockTable struct {
+	Table      string // the table
+	TaskColumn string // its column naming a task
+}
+
+// PGDeleteLockTables lists every such table in the order both deletes lock them; the order is the lock
+// order, so a table added or moved here changes it for both. Within a table the rows are locked in id
+// order (ORDER BY is applied before the locking clause, and no statement updates an id), so two deletes
+// that need the same rows of one table take them in the same order too. Both adapters build their SQL
+// from this list, and it is exported so the schema-derived guard
+// (TestPGDeleteLocks_PrelockCoversEveryProjectAndTaskRefTable, [F1013-24]) can fail when a table with
+// both a project_id and a task column is missing from it. SQLite has no counterpart: its single
+// connection already keeps two deletes from interleaving, and TestSQLiteCrossObjectDeletes_ConcurrentEndState
+// [F1013-25] pins that both backends end in the same state.
+var PGDeleteLockTables = []PGDeleteLockTable{
+	{Table: "work_sessions", TaskColumn: "current_task_id"},
+	{Table: "vision_items", TaskColumn: "promoted_task_id"},
+	{Table: "decisions", TaskColumn: "task_id"},
+	{Table: "knowledge_items", TaskColumn: "task_id"},
+}
+
+// lockByTaskSQL locks the rows of l that name the task $1. Only the table and column names of
+// PGDeleteLockTables are spliced in; the value is a parameter. [F1013-23]
+func (l PGDeleteLockTable) lockByTaskSQL() string {
+	return `SELECT id FROM ` + l.Table + ` WHERE ` + l.TaskColumn + ` = $1 ORDER BY id FOR UPDATE`
+}
+
+// lockByTaskSetOrProjectSQL locks the rows of l that name one of the tasks $1 or carry project_id $2,
+// which is the union of what delete_project's task-reference and project_id cleanups update. Only the
+// table and column names of PGDeleteLockTables are spliced in; the values are parameters. [F1013-23]
+func (l PGDeleteLockTable) lockByTaskSetOrProjectSQL() string {
+	return `SELECT id FROM ` + l.Table + ` WHERE ` + l.TaskColumn + ` = ANY($1::uuid[]) OR project_id = $2 ORDER BY id FOR UPDATE`
+}
+
 // execLockedTasks runs a statement taking $1 = the task ids LockTaskRows
 // locked. Every task-reference cleanup uses it instead of re-reading the
 // project's tasks, so a task moved into the project after the lock never has
@@ -1831,6 +1868,9 @@ func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, e
 // first and queue behind one another instead of waiting in a cycle. While the
 // lock is held an update_task that moves one of them out waits until this
 // delete ends.
+//
+// Once the task rows are locked it also locks, table by table (prelockRefRows), the reference rows that match when it runs; a row
+// committed later is taken by the cleanups in their own order, and the MCP delete tools retry that 40P01 (F203-01). [F1013-23] [F203-02]
 // [PR #200 SE-R2-01] [F202-01]
 func (a *pgDeleteProjectAdapter) LockTaskRows(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := a.tx.Query(ctx, projectTaskIDs+` ORDER BY id FOR UPDATE`, a.id, a.s.workspaceID)
@@ -1842,7 +1882,26 @@ func (a *pgDeleteProjectAdapter) LockTaskRows(ctx context.Context) ([]uuid.UUID,
 		return nil, err
 	}
 	a.locked = ids
+	if err := a.prelockRefRows(ctx); err != nil {
+		return nil, err
+	}
 	return ids, nil
+}
+
+// prelockRefRows takes, one table of PGDeleteLockTables at a time, the row locks that the task-reference
+// stage and the project_id stage below would otherwise take in two separate passes over the same tables.
+// Without it delete_project takes every table's task-reference rows first and the project_id rows
+// afterwards, while delete_task takes its rows one table after another: two overlapping deletes can each
+// hold a row the other needs next, and one is aborted with SQLSTATE 40P01. delete_task takes the same
+// tables in the same order (pgDeleteTaskAdapter.prelockRefRows). The statements lock the rows that match when they run; a row
+// committed later is taken by the cleanups in their own order, and the MCP delete tools retry that 40P01 (F203-01). [F1013-23] [F203-02]
+func (a *pgDeleteProjectAdapter) prelockRefRows(ctx context.Context) error {
+	for _, l := range PGDeleteLockTables {
+		if _, err := a.tx.Exec(ctx, l.lockByTaskSetOrProjectSQL(), a.locked, a.id); err != nil {
+			return fmt.Errorf("prelock %s rows: %w", l.Table, err)
+		}
+	}
+	return nil
 }
 
 func (a *pgDeleteProjectAdapter) CleanupWorkSessionTasks(ctx context.Context) error {
@@ -2054,6 +2113,9 @@ func (a *pgDeleteTaskAdapter) BeginTx(ctx context.Context) error {
 // [F202-01] delete_project locks the task row before it cleans any reference
 // row; taking the same row first here keeps both deletes in one order, so a
 // delete_task and a delete_project on the same task queue instead of deadlocking.
+//
+// Once the task row is locked it also locks, table by table (prelockRefRows), the reference rows that match when it runs; a row
+// committed later is taken by the cleanups in their own order, and the MCP delete tools retry that 40P01 (F203-01). [F1013-23] [F203-02]
 func (a *pgDeleteTaskAdapter) WorkspacePrecheck(ctx context.Context) (bool, error) {
 	// [F202-01] The statement below must keep its row lock clause (FOR UPDATE):
 	// without it this is a plain read and the order above is lost.
@@ -2072,7 +2134,25 @@ func (a *pgDeleteTaskAdapter) WorkspacePrecheck(ctx context.Context) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("%w", err) // context added one level up by DeleteTaskOrchestration
 	}
+	if err := a.prelockRefRows(ctx); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+// prelockRefRows takes, one table of PGDeleteLockTables at a time and in the order delete_project takes
+// them (pgDeleteProjectAdapter.prelockRefRows), the row locks the reference cleanups below would
+// otherwise take one statement at a time. The cleanups then update rows this transaction already holds,
+// except rows committed after the pre-lock ran. The TestE979_* probes stay green with this half removed;
+// what it adds is the id order within one table, which TestPGDeleteLocks_RowsOfOneTableLockedInIDOrder
+// pins: its delete_task cell turns red without this half or its ORDER BY. [F1013-23]
+func (a *pgDeleteTaskAdapter) prelockRefRows(ctx context.Context) error {
+	for _, l := range PGDeleteLockTables {
+		if _, err := a.tx.Exec(ctx, l.lockByTaskSQL(), a.id); err != nil {
+			return fmt.Errorf("prelock %s rows: %w", l.Table, err)
+		}
+	}
+	return nil
 }
 
 // CleanupWorkSessionTasks removes join-table rows (was ON DELETE CASCADE on
