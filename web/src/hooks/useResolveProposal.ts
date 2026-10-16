@@ -33,6 +33,8 @@ export function useResolveProposal() {
       void qc.invalidateQueries({ queryKey: ['goals'] })
       void qc.invalidateQueries({ queryKey: ['projects'] })
       void qc.invalidateQueries({ queryKey: ['context', 'today'] })
+      // [F205-16] accepting a task-type proposal creates a task row server-side; ['tasks'] prefix-matches useAllTasks' ['tasks', statusFilter] key.
+      void qc.invalidateQueries({ queryKey: ['tasks'] })
       // [F1003-15] accepting a decision-type proposal creates a Decision row
       // server-side — keep both decision list caches in sync too.
       invalidateDecisionLists(qc)
