@@ -77,6 +77,10 @@ func newSQLiteTaskBackend(t *testing.T) taskBackend {
 			t.Helper()
 			return scanOneString(t, sdb.QueryRowContext(ctx, "SELECT id FROM tasks WHERE title = ?", title).Scan)
 		},
+		taskKind: func(t *testing.T, title string) string {
+			t.Helper()
+			return scanOneString(t, sdb.QueryRowContext(ctx, "SELECT kind FROM tasks WHERE title = ?", title).Scan)
+		},
 		trackTitle: func(*testing.T, string) {},
 	}
 }
@@ -125,4 +129,32 @@ func TestConfirmProposal_TypeTask_SQLite_PayloadRejected_BadRequest(t *testing.T
 
 func TestConfirmProposal_TypeTask_SQLite_CapBoundaries_Accepted(t *testing.T) {
 	runTaskCapBoundaries(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_MaterialisesTasks(t *testing.T) {
+	runBatchTaskMaterialises(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_MixedValidAndInvalid(t *testing.T) {
+	runBatchTaskMixedValidAndInvalid(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_BatchInvalidKind_WarnMode(t *testing.T) {
+	runBatchTaskInvalidKindWarnMode(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_BatchStrict_PerRow(t *testing.T) {
+	runBatchTaskStrictPerRow(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_BatchReject_NoGate(t *testing.T) {
+	runBatchTaskRejectNoGate(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_BatchAlreadyAccepted_Skipped(t *testing.T) {
+	runBatchTaskAlreadyAccepted(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_SQLite_BatchResolveFails_RollsBackTask(t *testing.T) {
+	runBatchTaskResolveFails(t, newSQLiteTaskBackend(t))
 }

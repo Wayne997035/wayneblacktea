@@ -768,24 +768,26 @@ type proposalBatchMeta struct {
 	isTask bool
 	tp     proposal.TaskPayload
 	// isGoalOrProject marks TypeGoal/TypeProject/TypeKnowledge [F184-03],
-	// TypeDecision [F205-01] and TypeConcept proposals when
-	// h.goalProjectAdapter is wired. Unlike the materialise-then-generic-
-	// Resolve pattern TypeTask uses, these five route straight through
+	// TypeDecision [F205-01], TypeConcept and TypeTask proposals when
+	// h.goalProjectAdapter is wired. These six route straight through
 	// proposal.AcceptOrchestration (batchResolveOne returns early for this
 	// flag) because AcceptOrchestration owns its own atomic resolve inside the
-	// transaction — see acceptGoalOrProject's doc comment for why they can't
-	// share the two-step pattern. false with h.goalProjectAdapter nil
-	// reproduces the pre-A1-http legacy resolve-only fallback for
-	// goal/project/knowledge; TypeDecision and TypeConcept set notWired
-	// instead.
+	// transaction — see acceptGoalOrProject's doc comment. false with
+	// h.goalProjectAdapter nil reproduces the pre-A1-http legacy resolve-only
+	// fallback for goal/project/knowledge; TypeDecision, TypeConcept and
+	// TypeTask set notWired instead.
 	isGoalOrProject bool
-	// notWired marks a TypeDecision or TypeConcept proposal seen while
-	// h.goalProjectAdapter is nil [F205-03]. batchResolveOne fails closed on
-	// it — per-row "internal error", never a resolve — because the generic
+	// notWired marks a TypeDecision, TypeConcept or TypeTask proposal seen
+	// while h.goalProjectAdapter is nil [F205-03]. batchResolveOne fails closed
+	// on it — per-row "internal error", never a resolve — because the generic
 	// Resolve at the tail of batchResolveOne would flip the proposal to
-	// accepted with no decisions / concepts row behind it (the M2 data-loss
-	// class lookupFailed documents below).
+	// accepted with no decisions / concepts / tasks row behind it (the M2
+	// data-loss class lookupFailed documents below).
 	notWired bool
+	// warnings carries a TypeTask proposal's non-strict vagueness warnings from
+	// the pre-fetch gate to batchResolveOne, which copies them onto the
+	// success entry (batchConfirmResultEntry.Warnings). nil for every other type.
+	warnings []string
 	// payloadErr is the human-readable decode failure message; empty = ok.
 	// When non-empty the resolve loop reports it as a per-row error and skips
 	// the resolve entirely (same semantics as the singular handler returning
@@ -844,13 +846,7 @@ func (h *ProposalHandler) batchProposalMeta(c echo.Context, ctx context.Context,
 // readable on its own (gocyclo).
 func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) proposalBatchMeta {
 	switch proposal.Type(prop.Type) {
-	case proposal.TypeTask:
-		tp, errMsg := decodeTaskProposalPayload(prop.Payload)
-		if errMsg != "" {
-			return proposalBatchMeta{isTask: true, payloadErr: errMsg}
-		}
-		return proposalBatchMeta{isTask: true, tp: tp}
-	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge, proposal.TypeDecision, proposal.TypeConcept:
+	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge, proposal.TypeDecision, proposal.TypeConcept, proposal.TypeTask:
 		if h.goalProjectAdapter == nil {
 			if proposal.Type(prop.Type) == proposal.TypeDecision {
 				// [F205-03] No resolve-only fallback for TypeDecision: it would
@@ -863,10 +859,21 @@ func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) pro
 				// accept the proposal with no concepts row behind it.
 				return proposalBatchMeta{notWired: true}
 			}
+			if proposal.Type(prop.Type) == proposal.TypeTask { // [F205-13] fail closed: no resolve-only fallback for tasks
+				// Same reasoning for TypeTask: a resolve-only fallback would
+				// accept the proposal with no tasks row behind it.
+				return proposalBatchMeta{notWired: true}
+			}
 			// Legacy fallback: resolve-only, matches pre-A1-http behaviour and
 			// keeps existing callers that don't wire WithGoalProjectAccept
 			// working unchanged.
 			return proposalBatchMeta{}
+		}
+		if proposal.Type(prop.Type) == proposal.TypeTask {
+			// The task gate (decode + strict) sits between the nil-adapter block
+			// above and the shared validate below: it needs the warnings, which
+			// validateGoalProjectPayload's string-only return cannot carry.
+			return batchTaskMeta(prop.Payload)
 		}
 		// Decode-first, same as acceptGoalOrProject's decode-before-tx
 		// pattern: surfaces a specific per-row error instead of a generic one
@@ -880,12 +887,30 @@ func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) pro
 	}
 }
 
+// batchTaskMeta is the batch twin of taskPayloadGate: it decodes a TypeTask
+// payload in warn mode and applies the strict-mode decision HERE, before any
+// transaction, as a per-row payloadErr — a decode failure carries the decoder's
+// text, a strict-mode vagueness failure "vagueness check failed: w1; w2".
+// Otherwise the warnings ride along in the meta for batchResolveOne to copy
+// onto the success entry.
+func batchTaskMeta(payload []byte) proposalBatchMeta {
+	_, warnings, err := proposal.DecodeTaskParams(payload, false)
+	if err != nil {
+		return proposalBatchMeta{isGoalOrProject: true, payloadErr: err.Error()}
+	}
+	if len(warnings) > 0 && validator.StrictModeEnabled() {
+		return proposalBatchMeta{isGoalOrProject: true, payloadErr: "vagueness check failed: " + strings.Join(warnings, "; ")}
+	}
+	return proposalBatchMeta{isGoalOrProject: true, warnings: warnings}
+}
+
 // batchResolveOne resolves a single proposal and materialises the appropriate
-// entity. Task materialises BEFORE Resolve so a Resolve failure never leaves
-// an "accepted" proposal with no backing row; goal/project/knowledge
-// [F184-03], decision [F205-01] and concept route through the atomic
-// proposal.AcceptOrchestration seam below instead (materialise + resolve
-// happen inside one transaction).
+// entity. Goal/project/knowledge [F184-03], decision [F205-01], concept and
+// task route through the atomic proposal.AcceptOrchestration seam below
+// (materialise + resolve happen inside one transaction, so a Resolve failure
+// never leaves an "accepted" proposal with no backing row and never leaves an
+// orphan row either); every other accept falls through to the generic Resolve
+// at the tail.
 //
 //nolint:gocyclo // per-type materialisation branches are inherently complex; each branch calls extracted helpers
 func (h *ProposalHandler) batchResolveOne(
@@ -920,18 +945,20 @@ func (h *ProposalHandler) batchResolveOne(
 		return entry
 	}
 
-	// Goal/project/knowledge [F184-03], decision [F205-01] and concept route
-	// through the same atomic proposal.AcceptOrchestration flow
+	// Goal/project/knowledge [F184-03], decision [F205-01], concept and task
+	// route through the same atomic proposal.AcceptOrchestration flow
 	// acceptGoalOrProject uses (ReadPending → PrepareOutOfBand → BeginTx →
-	// Materialize → ResolveAccepted → Commit). Unlike the
-	// materialise-then-generic-Resolve task type below, AcceptOrchestration
-	// performs its OWN resolve inside the transaction, so this branch returns
-	// directly instead of falling through to the tail h.proposal.Resolve call —
-	// calling Resolve a second time on an already-accepted proposal would
-	// report a spurious "not found or already resolved". The materialised item
-	// (e.g. *db.KnowledgeItem, *db.Decision, *db.Concept) is intentionally
+	// Materialize → ResolveAccepted → Commit). AcceptOrchestration performs its
+	// OWN resolve inside the transaction, so this branch returns directly
+	// instead of falling through to the tail h.proposal.Resolve call — calling
+	// Resolve a second time on an already-accepted proposal would report a
+	// spurious "not found or already resolved". The materialised item (e.g.
+	// *db.KnowledgeItem, *db.Decision, *db.Concept, *db.Task) is intentionally
 	// discarded here (`_`) — unlike the singular acceptGoalOrProject path,
-	// batchConfirmResultEntry has no per-type item field, only OK/Error.
+	// batchConfirmResultEntry has no per-type item field. The one thing a TypeTask
+	// success does surface is its warn-mode warnings (additive field; the front
+	// end does not read it and no MCP tool wraps this endpoint), taken from the
+	// pre-fetch gate's meta.
 	if status == proposal.StatusAccepted && hasMeta && m.isGoalOrProject {
 		if m.payloadErr != "" {
 			entry.Error = m.payloadErr
@@ -953,6 +980,7 @@ func (h *ProposalHandler) batchResolveOne(
 			return entry
 		}
 		entry.OK = true
+		entry.Warnings = m.warnings
 		return entry
 	}
 

@@ -86,6 +86,10 @@ func newPGTaskBackend(t *testing.T) taskBackend {
 			t.Helper()
 			return scanOneString(t, pool.QueryRow(ctx, "SELECT id::text FROM tasks WHERE title = $1", title).Scan)
 		},
+		taskKind: func(t *testing.T, title string) string {
+			t.Helper()
+			return scanOneString(t, pool.QueryRow(ctx, "SELECT kind FROM tasks WHERE title = $1", title).Scan)
+		},
 		trackTitle: func(t *testing.T, title string) {
 			t.Helper()
 			t.Cleanup(func() {
@@ -273,4 +277,32 @@ func TestConfirmProposal_TypeTask_BackendParity(t *testing.T) {
 	if !reflect.DeepEqual(views["sqlite"], views["pg"]) {
 		t.Errorf("task objects differ between backends:\nsqlite: %v\npg:     %v", views["sqlite"], views["pg"])
 	}
+}
+
+func TestConfirmBatch_TypeTask_PG_MaterialisesTasks(t *testing.T) {
+	runBatchTaskMaterialises(t, newPGTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_PG_MixedValidAndInvalid(t *testing.T) {
+	runBatchTaskMixedValidAndInvalid(t, newPGTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_PG_BatchInvalidKind_WarnMode(t *testing.T) {
+	runBatchTaskInvalidKindWarnMode(t, newPGTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_PG_BatchStrict_PerRow(t *testing.T) {
+	runBatchTaskStrictPerRow(t, newPGTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_PG_BatchReject_NoGate(t *testing.T) {
+	runBatchTaskRejectNoGate(t, newPGTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_PG_BatchAlreadyAccepted_Skipped(t *testing.T) {
+	runBatchTaskAlreadyAccepted(t, newPGTaskBackend(t))
+}
+
+func TestConfirmBatch_TypeTask_PG_BatchResolveFails_RollsBackTask(t *testing.T) {
+	runBatchTaskResolveFails(t, newPGTaskBackend(t))
 }

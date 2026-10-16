@@ -80,6 +80,8 @@ type taskBackend struct {
 	taskCount              func(t *testing.T, title string) int
 	taskCountByDescription func(t *testing.T, description string) int
 	taskID                 func(t *testing.T, title string) string
+	// taskKind returns the kind column of the single tasks row with that title.
+	taskKind func(t *testing.T, title string) string
 	// trackTitle registers cleanup of tasks rows by title. A no-op on SQLite
 	// (fresh :memory: DB per test); the PG container is shared.
 	trackTitle func(t *testing.T, title string)
@@ -539,4 +541,211 @@ func runTaskCapBoundaries(t *testing.T, be taskBackend) {
 			requireTaskProposalStatus(t, be, id, proposalAccepted)
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch route: POST /api/proposals/confirm-batch
+// ---------------------------------------------------------------------------
+
+const (
+	batchActionReject    = "reject"
+	batchSkippedText     = "not found or already resolved"
+	proposalRejectedText = string(proposal.StatusRejected)
+)
+
+// taskBatchEntry mirrors the handler's batch result entry including the
+// additive warnings field (the shared batchResultEntry does not carry it).
+type taskBatchEntry struct {
+	ID       string   `json:"id"`
+	OK       bool     `json:"ok"`
+	Skipped  bool     `json:"skipped"`
+	Error    string   `json:"error"`
+	Warnings []string `json:"warnings"`
+}
+
+func decodeTaskBatchEntry(t *testing.T, body []byte, wantID string) taskBatchEntry {
+	t.Helper()
+	var resp struct {
+		Results []taskBatchEntry `json:"results"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("response not valid JSON: %v (body: %s)", err, body)
+	}
+	for _, r := range resp.Results {
+		if r.ID == wantID {
+			return r
+		}
+	}
+	t.Fatalf("no result entry for id %s in response: %s", wantID, body)
+	return taskBatchEntry{}
+}
+
+// requireTaskBatchOK fails unless the entry for id is ok:true with no error, and returns it.
+func requireTaskBatchOK(t *testing.T, rec *httptest.ResponseRecorder, id uuid.UUID) taskBatchEntry {
+	t.Helper()
+	entry := decodeTaskBatchEntry(t, rec.Body.Bytes(), id.String())
+	if !entry.OK || entry.Error != "" || entry.Skipped {
+		t.Errorf("entry %s = %+v, want ok:true with no error", id, entry)
+	}
+	return entry
+}
+
+// requireTaskBatchRefused fails unless the entry for id is ok:false (not skipped) with an error containing every want.
+func requireTaskBatchRefused(t *testing.T, rec *httptest.ResponseRecorder, id uuid.UUID, wants ...string) {
+	t.Helper()
+	entry := decodeTaskBatchEntry(t, rec.Body.Bytes(), id.String())
+	if entry.OK || entry.Skipped {
+		t.Errorf("entry %s = %+v, want ok:false skipped:false", id, entry)
+	}
+	for _, want := range wants {
+		if !strings.Contains(entry.Error, want) {
+			t.Errorf("entry %s error = %q, want substring %q", id, entry.Error, want)
+		}
+	}
+}
+
+// runBatchTaskMaterialises: every valid TypeTask id in the batch is ok:true,
+// writes its own tasks row and is accepted.
+func runBatchTaskMaterialises(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	titles := []string{be.uniqueTitle(t, "batch-1"), be.uniqueTitle(t, "batch-2")}
+	ids := []uuid.UUID{
+		be.create(t, proposal.TypeTask, taskPayloadJSON(t, titles[0], cleanKindTestDescription, taskKindGeneral)),
+		be.create(t, proposal.TypeTask, taskPayloadJSON(t, titles[1], cleanKindTestDescription, taskKindGeneral)),
+	}
+
+	rec := postConfirmBatch(t, h, batchActionAccept, ids...)
+
+	for i, id := range ids {
+		entry := requireTaskBatchOK(t, rec, id)
+		if len(entry.Warnings) != 0 {
+			t.Errorf("entry %s warnings = %q, want none for a clean payload", id, entry.Warnings)
+		}
+		requireCount(t, "tasks rows for "+titles[i], be.taskCount(t, titles[i]), 1)
+		requireTaskProposalStatus(t, be, id, proposalAccepted)
+	}
+}
+
+// runBatchTaskMixedValidAndInvalid: a type-error payload and an over-cap title
+// are per-row errors with the decoder's text, do not block the valid id, and
+// stay pending.
+func runBatchTaskMixedValidAndInvalid(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	validTitle := be.uniqueTitle(t, "mixed-valid")
+	bigTitle := strings.Repeat("a", 501)
+	validID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, validTitle, cleanKindTestDescription, taskKindGeneral))
+	typeErrID := be.create(t, proposal.TypeTask, []byte(`{"title":123}`))
+	bigID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, bigTitle, cleanKindTestDescription, ""))
+
+	rec := postConfirmBatch(t, h, batchActionAccept, validID, typeErrID, bigID)
+
+	requireTaskBatchOK(t, rec, validID)
+	requireTaskBatchRefused(t, rec, typeErrID, taskDecodeFailedText)
+	requireTaskBatchRefused(t, rec, bigID, taskTitleCapText)
+	requireTaskProposalStatus(t, be, typeErrID, proposalPending)
+	requireTaskProposalStatus(t, be, bigID, proposalPending)
+	requireCount(t, "tasks rows of the valid id", be.taskCount(t, validTitle), 1)
+	requireCount(t, "tasks rows of the over-cap id", be.taskCount(t, bigTitle), 0)
+}
+
+// runBatchTaskInvalidKindWarnMode: in warn mode a bogus suggested_kind still
+// materialises the task (kind general) and the entry carries the one warning.
+func runBatchTaskInvalidKindWarnMode(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "batch-bogus")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskBogusKind))
+
+	rec := postConfirmBatch(t, h, batchActionAccept, id)
+
+	entry := requireTaskBatchOK(t, rec, id)
+	if len(entry.Warnings) != 1 || !strings.Contains(entry.Warnings[0], taskBogusKind) {
+		t.Errorf("entry warnings = %q, want exactly one mentioning %q", entry.Warnings, taskBogusKind)
+	}
+	requireCount(t, "tasks rows", be.taskCount(t, title), 1)
+	if got := be.taskKind(t, title); got != taskKindGeneral {
+		t.Errorf("task kind = %q, want %q (an invalid kind falls back)", got, taskKindGeneral)
+	}
+	requireTaskProposalStatus(t, be, id, proposalAccepted)
+}
+
+// runBatchTaskStrictPerRow: under strict mode the same bogus-kind payload is a
+// per-row "vagueness check failed" error with no row and the proposal still
+// pending, while a valid sibling in the same request is accepted.
+func runBatchTaskStrictPerRow(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOn)
+	h := be.newHandler(nil)
+	badTitle := be.uniqueTitle(t, "strict-bad")
+	okTitle := be.uniqueTitle(t, "strict-ok")
+	badID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, badTitle, cleanKindTestDescription, taskBogusKind))
+	okID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, okTitle, cleanKindTestDescription, taskKindGeneral))
+
+	rec := postConfirmBatch(t, h, batchActionAccept, badID, okID)
+
+	requireTaskBatchRefused(t, rec, badID, taskVaguenessFailed, taskBogusKind)
+	requireTaskBatchOK(t, rec, okID)
+	requireCount(t, "tasks rows of the strict-rejected id", be.taskCount(t, badTitle), 0)
+	requireCount(t, "tasks rows of the valid sibling", be.taskCount(t, okTitle), 1)
+	requireTaskProposalStatus(t, be, badID, proposalPending)
+	requireTaskProposalStatus(t, be, okID, proposalAccepted)
+}
+
+// runBatchTaskRejectNoGate: the gate is accept-only. Rejecting a vague payload
+// under strict mode is ok:true, rejects the proposal and writes no row.
+func runBatchTaskRejectNoGate(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOn)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "batch-reject")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, taskWarnVague, taskKindGeneral))
+
+	rec := postConfirmBatch(t, h, batchActionReject, id)
+
+	requireTaskBatchOK(t, rec, id)
+	requireCount(t, "tasks rows", be.taskCount(t, title), 0)
+	requireTaskProposalStatus(t, be, id, proposalRejectedText)
+}
+
+// runBatchTaskAlreadyAccepted: re-accepting an already accepted proposal is a
+// per-row skip that leaves the rows untouched, while a fresh id in the same
+// request still succeeds.
+func runBatchTaskAlreadyAccepted(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	doneTitle := be.uniqueTitle(t, "already")
+	freshTitle := be.uniqueTitle(t, "fresh")
+	doneID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, doneTitle, cleanKindTestDescription, taskKindGeneral))
+	freshID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, freshTitle, cleanKindTestDescription, taskKindGeneral))
+	if first := postConfirm(h, doneID, acceptBody); first.Code != http.StatusOK {
+		t.Fatalf("first accept: want 200, got %d: %s", first.Code, first.Body.String())
+	}
+
+	rec := postConfirmBatch(t, h, batchActionAccept, doneID, freshID)
+
+	entry := decodeTaskBatchEntry(t, rec.Body.Bytes(), doneID.String())
+	if entry.OK || !entry.Skipped || entry.Error != batchSkippedText {
+		t.Errorf("already-accepted entry = %+v, want ok:false skipped:true error:%q", entry, batchSkippedText)
+	}
+	requireTaskBatchOK(t, rec, freshID)
+	requireCount(t, "tasks rows of the already accepted id", be.taskCount(t, doneTitle), 1)
+	requireCount(t, "tasks rows of the fresh id", be.taskCount(t, freshTitle), 1)
+}
+
+// runBatchTaskResolveFails: an injected resolve failure maps to skipped:true,
+// rolls the task insert back and leaves the proposal pending.
+func runBatchTaskResolveFails(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(injectResolveErr(fmt.Errorf("injected: %w", proposal.ErrNotFound)))
+	title := be.uniqueTitle(t, "batch-resolve-fails")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+
+	rec := postConfirmBatch(t, h, batchActionAccept, id)
+
+	entry := decodeTaskBatchEntry(t, rec.Body.Bytes(), id.String())
+	if entry.OK || !entry.Skipped || entry.Error != batchSkippedText {
+		t.Errorf("entry = %+v, want ok:false skipped:true error:%q", entry, batchSkippedText)
+	}
+	requireCount(t, "tasks rows after injected resolve failure", be.taskCount(t, title), 0)
+	requireTaskProposalStatus(t, be, id, proposalPending)
 }

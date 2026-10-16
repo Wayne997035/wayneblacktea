@@ -77,3 +77,32 @@ func TestConfirmProposal_TypeTask_AdapterNotWired_FailsClosed(t *testing.T) {
 		}
 	})
 }
+
+func TestConfirmBatch_TypeTask_AdapterNotWired_FailsClosed(t *testing.T) {
+	// [F205-13] an unwired handler must not resolve a TypeTask proposal in a batch either.
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	taskRow := unwiredProposalRow(proposal.TypeTask, taskPayloadJSON(t, "unwired-task-batch", cleanKindTestDescription, taskKindGeneral))
+	goalRow := unwiredProposalRow(proposal.TypeGoal, mustMarshal(t, map[string]any{"title": "unwired-task-goal", "area": "career"}))
+	store := newFakeProposalStore(taskRow, goalRow)
+
+	rec := postConfirmBatch(t, unwiredHandler(store), batchActionAccept, taskRow.ID, goalRow.ID)
+
+	entry := decodeBatchResultEntry(t, rec.Body.Bytes(), taskRow.ID.String())
+	if entry.OK || entry.Skipped {
+		t.Errorf("task entry = %+v, want ok:false skipped:false", entry)
+	}
+	if entry.Error != "internal error" {
+		t.Errorf("task entry error = %q, want %q", entry.Error, "internal error")
+	}
+	for _, id := range store.resolved {
+		if id == taskRow.ID {
+			t.Errorf("Resolve was called for the unwired task %s", id)
+		}
+	}
+	if store.byID[taskRow.ID].Status != proposalPending {
+		t.Errorf("task proposal status = %q, want still %q", store.byID[taskRow.ID].Status, proposalPending)
+	}
+	// Control, same request: the goal on the same unwired handler still takes
+	// the legacy resolve-only path, so the fail-closed carve-out is per-type.
+	assertBatchResultOK(t, rec.Body.Bytes(), goalRow.ID.String())
+}

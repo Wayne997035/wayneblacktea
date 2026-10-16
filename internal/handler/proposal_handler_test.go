@@ -1046,7 +1046,8 @@ func runBatchConfirmTypeTask(
 	taskStore := &fakeProposalTaskStore{}
 
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).WithTask(taskStore)
+	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).
+		WithGoalProjectAccept(fakeTaskAcceptAdapterFactory(store, taskStore))
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 	body := `{"ids":["` + id.String() + `"],"action":"accept"}`
 	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
@@ -1088,9 +1089,9 @@ func TestProposalHandler_ConfirmBatch_TypeTask_Materialises(t *testing.T) {
 }
 
 // TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload (round-1
-// follow-up GTD 95bd2a09): garbage JSON in payload surfaces "task proposal
-// payload is malformed" as entry.Error, leaves the proposal pending, and
-// inserts no task row.
+// follow-up GTD 95bd2a09): garbage JSON in payload surfaces the shared
+// decoder's "decoding task payload" as entry.Error, leaves the proposal
+// pending, and inserts no task row.
 func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	id := uuid.New()
@@ -1105,7 +1106,7 @@ func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
 	if resp.Results[0].OK {
 		t.Errorf("result.OK = true, want false on malformed payload")
 	}
-	const wantSubstr = "task proposal payload is malformed"
+	const wantSubstr = "decoding task payload"
 	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
 		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
 	}
