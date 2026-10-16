@@ -1268,7 +1268,7 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 // takes. rows is still returned (not swallowed) so tests can assert the
 // exact count directly instead of scraping slog output.
 func (s *Scheduler) markStaleGoalFamilyProposalsPG(ctx context.Context) (rows int64) {
-	if pendingProposalsGoalFamilyTTLDryRun {
+	if pendingProposalsGoalFamilyTTLDryRun { // [F205-19]
 		const countQ = `SELECT COUNT(*) FROM pending_proposals
 WHERE status = 'pending' AND type IN ('goal', 'project', 'concept', 'knowledge', 'playbook')
   AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingGoalFamilyTTLRetention + `'`

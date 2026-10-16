@@ -489,6 +489,54 @@ func TestScheduler_GoalFamilyTTL_Default_MarksStaleRows(t *testing.T) {
 	}
 }
 
+// TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites is the dry-run direction
+// of D-02's "both directions need a case" rule: with
+// pendingProposalsGoalFamilyTTLDryRun explicitly set to true, running the
+// daily prune against a mix of stale (>90d) and fresh (<90d) goal-family rows
+// MUST perform zero UPDATEs and zero DELETEs against any of them. Before the
+// default flip this was the default behaviour; now it is the only test that
+// guards the dry-run branch of markStaleGoalFamilyProposalsPG.
+func TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites(t *testing.T) {
+	// [F205-19] dry-run explicitly on: stale rows are counted only, nothing is written.
+	pool := openSchedulerTestPgPool(t)
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = true
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+
+	now := time.Now().UTC()
+	stale := now.AddDate(0, 0, -95)
+	fresh := now.AddDate(0, 0, -10)
+
+	type row struct {
+		id  uuid.UUID
+		typ string
+	}
+	var rows []row
+	for _, typ := range []string{"goal", "project", "concept", "knowledge", "playbook"} {
+		rows = append(
+			rows,
+			row{seedPendingProposalAt(t, pool, typ, stale), typ},
+			row{seedPendingProposalAt(t, pool, typ, fresh), typ},
+		)
+	}
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	for _, r := range rows {
+		status, reason, resolvedAt := queryProposalStatusReason(t, pool, r.id)
+		if status != pendingStatus {
+			t.Errorf("type=%s id=%s: status = %q, want %q (dry-run must not write)", r.typ, r.id, status, pendingStatus)
+		}
+		if reason != nil {
+			t.Errorf("type=%s id=%s: reason = %q, want nil", r.typ, r.id, *reason)
+		}
+		if resolvedAt != nil {
+			t.Errorf("type=%s id=%s: resolved_at = %v, want nil", r.typ, r.id, *resolvedAt)
+		}
+	}
+}
+
 // TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows is F184-06's
 // primary acceptance test: the explicit-on direction. With
 // pendingProposalsGoalFamilyTTLDryRun explicitly set to false, stale (>90d)
@@ -720,6 +768,54 @@ func TestScheduler_GoalFamilyTTL_SQLite_Default_MarksStaleRows(t *testing.T) {
 	}
 	if fresh.Reason.Valid {
 		t.Errorf("fresh reason = %q, want invalid/nil", fresh.Reason.String)
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_SQLite_DryRunEnabled_NoWrites is the SQLite twin
+// of TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites: with
+// pendingProposalsGoalFamilyTTLDryRun explicitly set to true, the SQLite
+// dispatch passes dryRun=true to the real *sqlite.ProposalStore and a stale
+// goal row stays pending with no reason. It lives in this file for the same
+// reason as TestScheduler_GoalFamilyTTL_SQLite_Default_MarksStaleRows (the
+// switch is unexported to the sqlite package).
+func TestScheduler_GoalFamilyTTL_SQLite_DryRunEnabled_NoWrites(t *testing.T) {
+	// Dry-run explicitly on: the SQLite store must receive dryRun=true and write nothing.
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = true
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+
+	ctx := context.Background()
+	d, err := sqlite.Open(ctx, ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := sqlite.NewProposalStore(d)
+
+	now := time.Now().UTC()
+	staleID := uuid.New()
+	if err := store.ImportProposal(ctx, db.PendingProposal{
+		ID:        staleID,
+		Type:      "goal",
+		Payload:   []byte(`{}`),
+		Status:    pendingStatus,
+		CreatedAt: pgtype.Timestamptz{Time: now.AddDate(0, 0, -95), Valid: true},
+	}); err != nil {
+		t.Fatalf("seed SQLite goal-family proposal: %v", err)
+	}
+
+	sc := &Scheduler{pendingProposalsPruneSQLite: store}
+	sc.runDailyPendingProposalsPrune()
+
+	got, err := store.Get(ctx, staleID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != pendingStatus {
+		t.Errorf("status = %q, want %q (dry-run must not write)", got.Status, pendingStatus)
+	}
+	if got.Reason.Valid {
+		t.Errorf("reason = %q, want invalid/nil", got.Reason.String)
 	}
 }
 
