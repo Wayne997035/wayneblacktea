@@ -754,7 +754,8 @@ func TestProposalHandler_ListPendingProposals(t *testing.T) {
 
 // ---- TASK 3: TypeTask materialise + validator tests ----
 
-// fakeProposalTaskStore is the narrow fake for proposalTaskStore.
+// fakeProposalTaskStore records the gtd.CreateTaskParams the fake accept
+// adapter materialises for a TypeTask proposal.
 type fakeProposalTaskStore struct {
 	mu        sync.Mutex
 	created   []gtd.CreateTaskParams
@@ -829,6 +830,7 @@ func confirmTaskProposal(
 // TestConfirmProposal_TypeTask_RunsVagueness_WarnMode: warn mode (default env)
 // returns 200 with warnings in body AND task is materialised.
 func TestConfirmProposal_TypeTask_RunsVagueness_WarnMode(t *testing.T) {
+	// [F205-14] the legacy two-step TypeTask accept path is deleted; this case now runs on the seam via a fake adapter.
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	id := uuid.New()
 	prop := makeTaskProposal(id, "Add audit log", vagueDescriptionFixture, "general")

@@ -517,7 +517,7 @@ func (h *AutologHandler) autoCreateTaskFromClassifier(
 // shared by the HTTP path (this file) and the MCP twin (we re-implement the
 // same predicate there because the mcp package can't import handler). The
 // vagueness check uses field "description" + KindGeneral to match the
-// confirm-proposal handler at acceptTask (internal/handler/proposal_handler.go).
+// confirm-proposal task gate (taskPayloadGate in internal/handler/proposal_handler.go).
 func shouldAutoAccept(confidence float64, description string) bool {
 	if confidence < ai.ClassifierAutoAcceptThreshold {
 		return false
