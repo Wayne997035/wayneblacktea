@@ -78,6 +78,10 @@ func TestConfirmProposal_TypeTask_AdapterNotWired_FailsClosed(t *testing.T) {
 	})
 }
 
+// taskBatchInternalError is the per-row error text a batch entry carries when
+// the accept could not run (here: no accept adapter wired).
+const taskBatchInternalError = "internal error"
+
 func TestConfirmBatch_TypeTask_AdapterNotWired_FailsClosed(t *testing.T) {
 	// [F205-13] an unwired handler must not resolve a TypeTask proposal in a batch either.
 	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
@@ -91,8 +95,8 @@ func TestConfirmBatch_TypeTask_AdapterNotWired_FailsClosed(t *testing.T) {
 	if entry.OK || entry.Skipped {
 		t.Errorf("task entry = %+v, want ok:false skipped:false", entry)
 	}
-	if entry.Error != "internal error" {
-		t.Errorf("task entry error = %q, want %q", entry.Error, "internal error")
+	if entry.Error != taskBatchInternalError {
+		t.Errorf("task entry error = %q, want %q", entry.Error, taskBatchInternalError)
 	}
 	for _, id := range store.resolved {
 		if id == taskRow.ID {
