@@ -400,8 +400,11 @@ tasks:
       # goal/project/concept/knowledge/playbook >90d -> rejected) run only inside the
       # server's scheduler.runDailyPendingProposalsPrune at 03:00 Asia/Taipei, not
       # here; this Taskfile target lets operators force the delete cleanup on demand.
+      # It deletes the same rows as the scheduler's DELETE, including that DELETE's
+      # exclusion of decision-outcome-review task rows (kept permanently).
+      # [F205-20] keep scheduler:decision_outcome_review task rows, same exclusion as the scheduler DELETE
       - |
-        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM pending_proposals WHERE (status IN ('accepted','rejected') AND resolved_at < NOW() - INTERVAL '90 days') OR (status = 'pending' AND created_at < NOW() - INTERVAL '180 days' AND type = 'decision');"
+        psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM pending_proposals WHERE (status IN ('accepted','rejected') AND resolved_at < NOW() - INTERVAL '90 days' AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review')) OR (status = 'pending' AND created_at < NOW() - INTERVAL '180 days' AND type = 'decision');"
     dir: ..
 
   migrate-down:
