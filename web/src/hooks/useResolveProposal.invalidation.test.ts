@@ -148,4 +148,22 @@ describe('useConfirmBatchProposals invalidations', () => {
     expect(calledKeys).toContain(JSON.stringify(['decisions']))
     expect(calledKeys).toContain(JSON.stringify(['decisions-feed']))
   })
+
+  it("[F205-17] marks a cached ['tasks', filter] list query invalidated on success", async () => {
+    const { Wrapper, queryClient } = makeWrapper()
+    queryClient.setQueryData(['tasks', 'active'], [])
+    expect(queryClient.getQueryState(['tasks', 'active'])?.isInvalidated).toBe(false)
+
+    apiFetchMock.mockResolvedValueOnce({ results: [{ id: 'p-1', ok: true }] })
+
+    const { result } = renderHook(() => useConfirmBatchProposals(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ ids: ['p-1'], action: 'accept' })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(queryClient.getQueryState(['tasks', 'active'])?.isInvalidated).toBe(true)
+  })
 })
