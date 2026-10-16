@@ -14,6 +14,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -145,11 +146,18 @@ func (f *fakeProposalLearningStore) LearningStats(_ context.Context) (*learning.
 // materialises nothing), and ResolveAccepted resolves through the fake store.
 // A Materialize error therefore aborts the accept before Resolve — the
 // "materialise first, Resolve NOT called" property these cases assert.
+//
+// TypeTask materialises through tasks (when set): the payload goes through
+// proposal.DecodeTaskParams exactly like the real adapters, the resulting
+// gtd.CreateTaskParams are recorded in the fake task store, and the return
+// value has the real adapters' contract (a *db.Task, or the {"task",
+// "warnings"} map when the payload raised warnings).
 type fakeAcceptAdapter struct {
 	proposal.BaseAcceptAdapter
 	id       uuid.UUID
 	store    *fakeProposalStore
 	learning *fakeProposalLearningStore
+	tasks    *fakeProposalTaskStore
 }
 
 func (a *fakeAcceptAdapter) ReadPending(ctx context.Context) (*db.PendingProposal, error) {
@@ -159,6 +167,9 @@ func (a *fakeAcceptAdapter) ReadPending(ctx context.Context) (*db.PendingProposa
 func (a *fakeAcceptAdapter) BeginTx(context.Context) error { return nil }
 
 func (a *fakeAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, _ any) (any, error) {
+	if proposal.Type(prop.Type) == proposal.TypeTask {
+		return a.materializeTask(ctx, prop)
+	}
 	if proposal.Type(prop.Type) != proposal.TypeConcept {
 		return nil, nil
 	}
@@ -171,6 +182,23 @@ func (a *fakeAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingPro
 		return nil, err
 	}
 	return concept, nil
+}
+
+// materializeTask is the fake TypeTask arm: same decode (with the server's real
+// strict setting) and same return contract as the PG and SQLite adapters.
+func (a *fakeAcceptAdapter) materializeTask(ctx context.Context, prop *db.PendingProposal) (any, error) {
+	params, warnings, err := proposal.DecodeTaskParams(prop.Payload, validator.StrictModeEnabled())
+	if err != nil {
+		return nil, err
+	}
+	task, err := a.tasks.CreateTask(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if len(warnings) > 0 {
+		return map[string]any{"task": task, "warnings": warnings}, nil
+	}
+	return task, nil
 }
 
 func (a *fakeAcceptAdapter) ResolveAccepted(ctx context.Context) (*db.PendingProposal, error) {
@@ -186,6 +214,16 @@ func (a *fakeAcceptAdapter) Rollback(context.Context) {}
 func fakeAcceptAdapterFactory(store *fakeProposalStore, learning *fakeProposalLearningStore) func(uuid.UUID) proposal.AcceptAdapter {
 	return func(id uuid.UUID) proposal.AcceptAdapter {
 		return &fakeAcceptAdapter{id: id, store: store, learning: learning}
+	}
+}
+
+// fakeTaskAcceptAdapterFactory is the WithGoalProjectAccept argument that builds
+// a fakeAcceptAdapter over store and taskStore for each accept call, so
+// TypeTask cases written against the fakes keep their intent now that TypeTask
+// accept runs through proposal.AcceptOrchestration.
+func fakeTaskAcceptAdapterFactory(store *fakeProposalStore, taskStore *fakeProposalTaskStore) func(uuid.UUID) proposal.AcceptAdapter {
+	return func(id uuid.UUID) proposal.AcceptAdapter {
+		return &fakeAcceptAdapter{id: id, store: store, tasks: taskStore}
 	}
 }
 
@@ -779,7 +817,8 @@ func confirmTaskProposal(
 ) (code int, body map[string]any, raw string) {
 	t.Helper()
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).WithTask(taskStore)
+	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).
+		WithGoalProjectAccept(fakeTaskAcceptAdapterFactory(store, taskStore))
 	e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 	rec := performRequest(e, http.MethodPost, "/api/proposals/"+id.String()+"/confirm", `{"action":"accept"}`)
 	raw = rec.Body.String()

@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sort"
 	"testing"
@@ -77,13 +78,19 @@ func newPGTaskBackend(t *testing.T) taskBackend {
 			t.Helper()
 			return scanOneInt(t, pool.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE title = $1", title).Scan)
 		},
+		taskCountByDescription: func(t *testing.T, description string) int {
+			t.Helper()
+			return scanOneInt(t, pool.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE description = $1", description).Scan)
+		},
 		taskID: func(t *testing.T, title string) string {
 			t.Helper()
 			return scanOneString(t, pool.QueryRow(ctx, "SELECT id::text FROM tasks WHERE title = $1", title).Scan)
 		},
 		trackTitle: func(t *testing.T, title string) {
 			t.Helper()
-			t.Cleanup(func() { exec(t, "DELETE FROM tasks WHERE title = $1", title) })
+			t.Cleanup(func() {
+				exec(t, "DELETE FROM tasks WHERE title = $1", title)
+			})
 		},
 	}
 }
@@ -164,5 +171,106 @@ func requireCreatedShape(t *testing.T, created any, title string, wantWarnings [
 	}
 	if warnings, _ := m["warnings"].([]string); !reflect.DeepEqual(warnings, wantWarnings) {
 		t.Errorf(`created["warnings"] = %#v, want %q`, m["warnings"], wantWarnings)
+	}
+}
+
+func TestConfirmProposal_TypeTask_PG_MaterialisesTasksRow(t *testing.T) {
+	runTaskMaterialises(t, newPGTaskBackend(t))
+}
+
+// TestConfirmProposal_TypeTask_PG_TypeError_BadRequest: {"title":123} is valid
+// jsonb (Postgres rejects malformed JSON at INSERT, so a type error is the PG
+// stand-in for "malformed") that the decoder refuses.
+func TestConfirmProposal_TypeTask_PG_TypeError_BadRequest(t *testing.T) {
+	runTaskBadPayload(t, newPGTaskBackend(t), func(string) []byte { return []byte(`{"title":123}`) }, taskDecodeFailedText)
+}
+
+func TestConfirmProposal_TypeTask_PG_WarnMode_StillCreates(t *testing.T) {
+	runTaskWarnMode(t, newPGTaskBackend(t), taskWarnVague, taskKindGeneral, taskVagueWarnings)
+}
+
+func TestConfirmProposal_TypeTask_PG_InvalidKind_WarnMode(t *testing.T) {
+	runTaskWarnMode(t, newPGTaskBackend(t), cleanKindTestDescription, taskBogusKind, taskBogusKindWarning)
+}
+
+func TestConfirmProposal_TypeTask_PG_StrictMode_BadRequest(t *testing.T) {
+	runTaskStrictMode(t, newPGTaskBackend(t), taskWarnVague, taskKindGeneral, taskVagueWarnings)
+}
+
+func TestConfirmProposal_TypeTask_PG_InvalidKind_StrictMode(t *testing.T) {
+	runTaskStrictMode(t, newPGTaskBackend(t), cleanKindTestDescription, taskBogusKind, taskBogusKindWarning)
+}
+
+func TestConfirmProposal_TypeTask_PG_StrictMode_CleanStillCreates(t *testing.T) {
+	runTaskStrictCleanStillCreates(t, newPGTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_PG_ResolveFails_RollsBackTask(t *testing.T) {
+	runTaskResolveFails(t, newPGTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_PG_DoubleAccept_Conflict(t *testing.T) {
+	runTaskDoubleAccept(t, newPGTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_PG_PayloadRejected_BadRequest(t *testing.T) {
+	runTaskPayloadRejected(t, newPGTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_PG_CapBoundaries_Accepted(t *testing.T) {
+	runTaskCapBoundaries(t, newPGTaskBackend(t))
+}
+
+// TestConfirmProposal_TypeTask_BackendParity accepts the same clean TypeTask
+// payload on each backend and compares the `task` objects the two responses
+// carry: the same 21 keys and equal values for every field both dialects store
+// identically. Ignored: id, title (unique per run), created_at, updated_at (the
+// timestamp format differs per dialect) and commit_shas (null on SQLite, [] on
+// PG — a pre-existing divergence outside this change). The PG subtest skips
+// under -short, and then there is nothing to compare.
+func TestConfirmProposal_TypeTask_BackendParity(t *testing.T) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	backends := []struct {
+		name string
+		open func(*testing.T) taskBackend
+	}{
+		{"sqlite", newSQLiteTaskBackend},
+		{"pg", newPGTaskBackend},
+	}
+	views := map[string]map[string]any{}
+	for _, b := range backends {
+		t.Run(b.name, func(t *testing.T) {
+			be := b.open(t)
+			h := be.newHandler(nil)
+			title := be.uniqueTitle(t, "parity-http")
+			id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+
+			rec := postConfirm(h, id, acceptBody)
+
+			requireTaskResponse(t, rec, taskWant{
+				ID: be.taskID(t, title), Title: title, Description: cleanKindTestDescription, Kind: taskKindGeneral,
+			})
+			var resp struct {
+				Task map[string]any `json:"task"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("response is not valid JSON: %v", err)
+			}
+			view := map[string]any{}
+			for k, v := range resp.Task {
+				switch k {
+				case "id", "title", "created_at", "updated_at", "commit_shas":
+				default:
+					view[k] = v
+				}
+			}
+			views[b.name] = view
+		})
+	}
+	if len(views) < len(backends) {
+		t.Skipf("only %d of %d backends ran (PG skips under -short): nothing to compare", len(views), len(backends))
+	}
+	if !reflect.DeepEqual(views["sqlite"], views["pg"]) {
+		t.Errorf("task objects differ between backends:\nsqlite: %v\npg:     %v", views["sqlite"], views["pg"])
 	}
 }

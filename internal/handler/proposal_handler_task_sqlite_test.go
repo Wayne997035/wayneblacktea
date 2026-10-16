@@ -37,9 +37,8 @@ func newSQLiteTaskBackend(t *testing.T) taskBackend {
 	}
 	newAdapter := func(id uuid.UUID) proposal.AcceptAdapter { return wbtsqlite.NewAcceptAdapter(id, deps) }
 	return taskBackend{
-		name:           "sqlite",
-		rawJSONPayload: true,
-		newAdapter:     newAdapter,
+		name:       "sqlite",
+		newAdapter: newAdapter,
 		newHandler: func(wrap func(proposal.AcceptAdapter) proposal.AcceptAdapter) *handler.ProposalHandler {
 			return handler.NewProposalHandler(propStore, &fakeProposalLearningStore{}).
 				WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
@@ -70,10 +69,60 @@ func newSQLiteTaskBackend(t *testing.T) taskBackend {
 			t.Helper()
 			return scanOneInt(t, sdb.QueryRowContext(ctx, "SELECT count(*) FROM tasks WHERE title = ?", title).Scan)
 		},
+		taskCountByDescription: func(t *testing.T, description string) int {
+			t.Helper()
+			return scanOneInt(t, sdb.QueryRowContext(ctx, "SELECT count(*) FROM tasks WHERE description = ?", description).Scan)
+		},
 		taskID: func(t *testing.T, title string) string {
 			t.Helper()
 			return scanOneString(t, sdb.QueryRowContext(ctx, "SELECT id FROM tasks WHERE title = ?", title).Scan)
 		},
 		trackTitle: func(*testing.T, string) {},
 	}
+}
+
+func TestConfirmProposal_TypeTask_SQLite_MaterialisesTasksRow(t *testing.T) {
+	runTaskMaterialises(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_SQLite_MissingTitle_BadRequest(t *testing.T) {
+	runTaskBadPayload(t, newSQLiteTaskBackend(t), func(description string) []byte {
+		return mustMarshal(t, map[string]any{"description": description})
+	}, taskMissingTitleText)
+}
+
+func TestConfirmProposal_TypeTask_SQLite_WarnMode_StillCreates(t *testing.T) {
+	runTaskWarnMode(t, newSQLiteTaskBackend(t), taskWarnVague, taskKindGeneral, taskVagueWarnings)
+}
+
+func TestConfirmProposal_TypeTask_SQLite_InvalidKind_WarnMode(t *testing.T) {
+	runTaskWarnMode(t, newSQLiteTaskBackend(t), cleanKindTestDescription, taskBogusKind, taskBogusKindWarning)
+}
+
+func TestConfirmProposal_TypeTask_SQLite_StrictMode_BadRequest(t *testing.T) {
+	runTaskStrictMode(t, newSQLiteTaskBackend(t), taskWarnVague, taskKindGeneral, taskVagueWarnings)
+}
+
+func TestConfirmProposal_TypeTask_SQLite_InvalidKind_StrictMode(t *testing.T) {
+	runTaskStrictMode(t, newSQLiteTaskBackend(t), cleanKindTestDescription, taskBogusKind, taskBogusKindWarning)
+}
+
+func TestConfirmProposal_TypeTask_SQLite_StrictMode_CleanStillCreates(t *testing.T) {
+	runTaskStrictCleanStillCreates(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_SQLite_ResolveFails_RollsBackTask(t *testing.T) {
+	runTaskResolveFails(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_SQLite_DoubleAccept_Conflict(t *testing.T) {
+	runTaskDoubleAccept(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_SQLite_PayloadRejected_BadRequest(t *testing.T) {
+	runTaskPayloadRejected(t, newSQLiteTaskBackend(t))
+}
+
+func TestConfirmProposal_TypeTask_SQLite_CapBoundaries_Accepted(t *testing.T) {
+	runTaskCapBoundaries(t, newSQLiteTaskBackend(t))
 }

@@ -64,9 +64,6 @@ var taskJSONKeys = []string{
 // taskBackend is one real DB stack behind a real ProposalHandler.
 type taskBackend struct {
 	name string
-	// rawJSONPayload reports whether the proposals table accepts non-JSON
-	// payload bytes (SQLite TEXT does; Postgres jsonb rejects them at INSERT).
-	rawJSONPayload bool
 	// newAdapter builds one fresh real proposal.AcceptAdapter for a proposal id.
 	newAdapter func(id uuid.UUID) proposal.AcceptAdapter
 	// newHandler builds the handler over newAdapter. wrap, when non-nil, wraps
@@ -77,9 +74,12 @@ type taskBackend struct {
 	create func(t *testing.T, typ proposal.Type, payload []byte) uuid.UUID
 	// status returns the proposal row's current status.
 	status func(t *testing.T, id uuid.UUID) string
-	// taskCount counts tasks rows by exact title; taskID returns the id of the single row with that title.
-	taskCount func(t *testing.T, title string) int
-	taskID    func(t *testing.T, title string) string
+	// taskCount counts tasks rows by exact title; taskCountByDescription the same
+	// by exact description (for payloads that have no usable title); taskID
+	// returns the id of the single row with that title.
+	taskCount              func(t *testing.T, title string) int
+	taskCountByDescription func(t *testing.T, description string) int
+	taskID                 func(t *testing.T, title string) string
 	// trackTitle registers cleanup of tasks rows by title. A no-op on SQLite
 	// (fresh :memory: DB per test); the PG container is shared.
 	trackTitle func(t *testing.T, title string)
@@ -282,7 +282,7 @@ func requireTaskProposalStatus(t *testing.T, be taskBackend, id uuid.UUID, want 
 	}
 }
 
-// requireTaskErrorBody fails unless rec is a 400 whose `error` contains wantMsg.
+// requireTaskBadRequest fails unless rec is a 400 whose body contains wantMsg.
 func requireTaskBadRequest(t *testing.T, rec *httptest.ResponseRecorder, wantMsg string) {
 	t.Helper()
 	if rec.Code != http.StatusBadRequest {
@@ -293,5 +293,250 @@ func requireTaskBadRequest(t *testing.T, rec *httptest.ResponseRecorder, wantMsg
 	}
 }
 
-// errTaskInjectedBoom is the arbitrary store error whose text must never reach the client.
-var errTaskInjectedBoom = errors.New(errBoomText)
+// ---------------------------------------------------------------------------
+// Single route: POST /api/proposals/:id/confirm
+// ---------------------------------------------------------------------------
+
+// runTaskMaterialises: a clean accept writes exactly one tasks row, resolves
+// the proposal and returns the complete task with no warnings key — identically
+// on both backends.
+func runTaskMaterialises(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "task")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+
+	rec := postConfirm(h, id, acceptBody)
+
+	requireCount(t, "tasks rows", be.taskCount(t, title), 1)
+	requireTaskResponse(t, rec, taskWant{
+		ID: be.taskID(t, title), Title: title, Description: cleanKindTestDescription, Kind: taskKindGeneral,
+	})
+	requireNoWarningsKey(t, rec.Body.Bytes())
+	requireTaskProposalStatus(t, be, id, proposalAccepted)
+}
+
+// runTaskBadPayload: a payload the gate refuses is a 400 with the decoder's
+// text, never opens the transaction, writes no row and leaves the proposal
+// pending. The tasks-row count is by description because these payloads have no
+// usable title; description is unique per call.
+func runTaskBadPayload(t *testing.T, be taskBackend, payload func(description string) []byte, wantMsg string) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	description := cleanKindTestDescription + " " + uuid.NewString()
+	id := be.create(t, proposal.TypeTask, payload(description))
+
+	rec := postConfirm(h, id, acceptBody)
+
+	requireTaskBadRequest(t, rec, wantMsg)
+	requireCount(t, "tasks rows", be.taskCountByDescription(t, description), 0)
+	requireTaskProposalStatus(t, be, id, proposalPending)
+}
+
+// runTaskWarnMode: in warn mode a payload that raises warnings still creates
+// the task and surfaces the warnings next to it. For the vague description the
+// real adapters return the {"task","warnings"} map, so a handler that only
+// recognised *db.Task would drop `task` here.
+func runTaskWarnMode(t *testing.T, be taskBackend, description, kind string, wantWarnings []string) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "warn")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, description, kind))
+
+	rec := postConfirm(h, id, acceptBody)
+
+	requireCount(t, "tasks rows", be.taskCount(t, title), 1)
+	requireTaskResponse(t, rec, taskWant{ID: be.taskID(t, title), Title: title, Description: description, Kind: taskKindGeneral})
+	requireResponseWarnings(t, rec.Body.Bytes(), wantWarnings)
+	requireTaskProposalStatus(t, be, id, proposalAccepted)
+}
+
+// runTaskStrictMode: under WBT_STRICT_VAGUENESS=true the same payloads are a
+// 400 whose body is exactly {"error":"vagueness check failed","warnings":[...]},
+// decided BEFORE the transaction: no row, proposal still pending.
+func runTaskStrictMode(t *testing.T, be taskBackend, description, kind string, wantWarnings []string) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOn)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "strict")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, description, kind))
+
+	rec := postConfirm(h, id, acceptBody)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v (body: %s)", err, rec.Body.String())
+	}
+	warnings := make([]any, len(wantWarnings))
+	for i, w := range wantWarnings {
+		warnings[i] = w
+	}
+	if want := map[string]any{"error": taskVaguenessFailed, "warnings": warnings}; !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v", got, want)
+	}
+	requireCount(t, "tasks rows", be.taskCount(t, title), 0)
+	requireTaskProposalStatus(t, be, id, proposalPending)
+}
+
+// runTaskStrictCleanStillCreates is the negative control of runTaskStrictMode:
+// the strict 400 is not blanket — a clean payload is still accepted under strict.
+func runTaskStrictCleanStillCreates(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOn)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "strict-clean")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+
+	rec := postConfirm(h, id, acceptBody)
+
+	requireCount(t, "tasks rows", be.taskCount(t, title), 1)
+	requireTaskResponse(t, rec, taskWant{
+		ID: be.taskID(t, title), Title: title, Description: cleanKindTestDescription, Kind: taskKindGeneral,
+	})
+	requireTaskProposalStatus(t, be, id, proposalAccepted)
+}
+
+// runTaskResolveFails: when the resolve step fails after the task insert, the
+// whole transaction rolls back. The pre-seam design left an orphan tasks row here.
+func runTaskResolveFails(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	t.Run("a concurrent resolver (ErrNotFound) gives 409 and no orphan task", func(t *testing.T) {
+		h := be.newHandler(injectResolveErr(fmt.Errorf("injected: %w", proposal.ErrNotFound)))
+		title := be.uniqueTitle(t, "resolve-race")
+		id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+
+		rec := postConfirm(h, id, acceptBody)
+
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("want 409, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), taskAlreadyDone) {
+			t.Errorf("body = %s, want substring %q", rec.Body.String(), taskAlreadyDone)
+		}
+		requireCount(t, "tasks rows after injected resolve failure", be.taskCount(t, title), 0)
+		requireTaskProposalStatus(t, be, id, proposalPending)
+	})
+	t.Run("an unexpected store error gives 500 without leaking its text", func(t *testing.T) {
+		h := be.newHandler(injectResolveErr(errors.New(errBoomText)))
+		title := be.uniqueTitle(t, "resolve-boom")
+		id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+
+		rec := postConfirm(h, id, acceptBody)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := strings.TrimSpace(rec.Body.String()); got != internalErrorBody {
+			t.Errorf("body = %s, want exactly %s (no raw error text)", got, internalErrorBody)
+		}
+		requireCount(t, "tasks rows after injected resolve failure", be.taskCount(t, title), 0)
+		requireTaskProposalStatus(t, be, id, proposalPending)
+	})
+}
+
+// runTaskDoubleAccept: the second accept of the same proposal is a 409 and
+// writes nothing, while an unrelated pending proposal still accepts.
+func runTaskDoubleAccept(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	h := be.newHandler(nil)
+	title := be.uniqueTitle(t, "double")
+	id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, title, cleanKindTestDescription, taskKindGeneral))
+	other := be.uniqueTitle(t, "double-other")
+	otherID := be.create(t, proposal.TypeTask, taskPayloadJSON(t, other, cleanKindTestDescription, taskKindGeneral))
+
+	first := postConfirm(h, id, acceptBody)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first accept: want 200, got %d: %s", first.Code, first.Body.String())
+	}
+	rec := postConfirm(h, id, acceptBody)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("second accept: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), taskAlreadyDone) {
+		t.Errorf("body = %s, want substring %q", rec.Body.String(), taskAlreadyDone)
+	}
+	requireCount(t, "tasks rows after second accept", be.taskCount(t, title), 1)
+
+	if again := postConfirm(h, otherID, acceptBody); again.Code != http.StatusOK {
+		t.Fatalf("unrelated proposal: want 200, got %d: %s", again.Code, again.Body.String())
+	}
+	requireCount(t, "tasks rows of the unrelated proposal", be.taskCount(t, other), 1)
+}
+
+// runTaskPayloadRejected: every payload the decoder refuses is a 400 with the
+// decoder's text, no row, and the proposal stays pending. The title caps are in
+// BYTES (501 ASCII bytes and 167 CJK characters = 501 bytes both exceed 500).
+func runTaskPayloadRejected(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	title501 := strings.Repeat("a", 501)
+	titleCJK501 := strings.Repeat("決", 167)
+	withTitle := func(title string) func(string) []byte {
+		return func(description string) []byte { return taskPayloadJSON(t, title, description, "") }
+	}
+	cases := []struct {
+		name    string
+		payload func(description string) []byte
+		title   string // non-empty: count rows by this title; empty: by the unique description
+		wantMsg string
+	}{
+		{
+			name:    "missing title",
+			payload: func(description string) []byte { return mustMarshal(t, map[string]any{"description": description}) },
+			wantMsg: taskMissingTitleText,
+		},
+		{name: "title 501 ASCII bytes", payload: withTitle(title501), title: title501, wantMsg: taskTitleCapText},
+		{name: "title 167 CJK chars (501 bytes)", payload: withTitle(titleCJK501), title: titleCJK501, wantMsg: taskTitleCapText},
+		{name: "payload is a JSON array", payload: func(string) []byte { return []byte(`[]`) }, wantMsg: taskDecodeFailedText},
+	}
+	// Raw non-JSON bytes (`{bad json`) cannot be stored for a TypeTask on EITHER
+	// backend: Postgres jsonb refuses them at INSERT and SQLite's partial index
+	// on type='task' (migration 000085, json_extract) raises "malformed JSON".
+	// That case therefore lives in the fake-store test
+	// TestConfirmProposal_TypeTask_MalformedPayload.
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := be.newHandler(nil)
+			description := cleanKindTestDescription + " " + uuid.NewString()
+			id := be.create(t, proposal.TypeTask, tc.payload(description))
+
+			rec := postConfirm(h, id, acceptBody)
+
+			requireTaskBadRequest(t, rec, tc.wantMsg)
+			if tc.title != "" {
+				requireCount(t, "tasks rows by title", be.taskCount(t, tc.title), 0)
+			} else {
+				requireCount(t, "tasks rows by description", be.taskCountByDescription(t, description), 0)
+			}
+			requireTaskProposalStatus(t, be, id, proposalPending)
+		})
+	}
+}
+
+// runTaskCapBoundaries is the negative control of runTaskPayloadRejected: the
+// 400 is cap-driven, not blanket. A title of exactly 500 bytes, and one of 498
+// bytes made of multi-byte characters, are accepted.
+func runTaskCapBoundaries(t *testing.T, be taskBackend) {
+	t.Setenv("WBT_STRICT_VAGUENESS", taskStrictOff)
+	cjk498 := strings.Repeat("決", 166)
+	be.trackTitle(t, cjk498)
+	cases := []struct{ name, title string }{
+		{"title exactly 500 bytes", be.titleOfBytes(t, "cap", 500)},
+		{"title 166 CJK chars (498 bytes)", cjk498},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := be.newHandler(nil)
+			id := be.create(t, proposal.TypeTask, taskPayloadJSON(t, tc.title, cleanKindTestDescription, ""))
+
+			rec := postConfirm(h, id, acceptBody)
+
+			requireCount(t, "tasks rows", be.taskCount(t, tc.title), 1)
+			requireTaskResponse(t, rec, taskWant{
+				ID: be.taskID(t, tc.title), Title: tc.title, Description: cleanKindTestDescription, Kind: taskKindGeneral,
+			})
+			requireTaskProposalStatus(t, be, id, proposalAccepted)
+		})
+	}
+}
