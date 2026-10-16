@@ -78,6 +78,33 @@ func TestPgAcceptAdapter_MaterializeDecision_NilDecisionStore(t *testing.T) {
 	}
 }
 
+// TestPgAcceptAdapter_TypeTask_MaterializeTask_NilGTDStore guards
+// pgAcceptAdapter.materializeTask: deleting its nil-store guard lets
+// a.deps.GTD.WithTx(a.tx) run on a nil *gtd.Store, which dereferences s.q and
+// panics. The payload carries a clean description so the decode that runs
+// before the guard passes under any WBT_STRICT_VAGUENESS value (a vague
+// payload under a strict environment would fail earlier, on the decode).
+func TestPgAcceptAdapter_TypeTask_MaterializeTask_NilGTDStore(t *testing.T) {
+	// [F205-15] nil-store guard of the PG adapter's task materialisation.
+	a := &pgAcceptAdapter{deps: PgAcceptDeps{GTD: nil}}
+	payload, err := json.Marshal(map[string]any{
+		"title":       "task title",
+		"description": "Add slog.Info audit row to confirm_proposal at internal/handler/proposal_handler.go:240 with proposal_id",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	prop := &db.PendingProposal{Payload: payload}
+
+	_, err = a.materializeTask(context.Background(), prop)
+	if err == nil {
+		t.Fatal("materializeTask: want error for nil GTD store, got nil (would have panicked on WithTx)")
+	}
+	if !strings.Contains(err.Error(), "gtd store") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "gtd store")
+	}
+}
+
 func TestPgAcceptAdapter_MaterializeConcept_NilLearningStore(t *testing.T) {
 	a := &pgAcceptAdapter{deps: PgAcceptDeps{Learning: nil}}
 	payload, err := json.Marshal(map[string]any{"title": "concept title", "content": "concept content"})
