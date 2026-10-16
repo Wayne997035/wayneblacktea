@@ -389,17 +389,17 @@ tasks:
     dir: ..
 
   pending-proposals-prune:
-    desc: "Prune pending_proposals: resolved >90d + stale pending decision >180d"
+    desc: "Prune pending_proposals (delete steps only): resolved >90d + stale pending decision >180d"
     dotenv: ['../.env.local']
     preconditions:
       - sh: test -n "{{.DATABASE_URL}}"
         msg: "DATABASE_URL is not set — add it to .env or export it"
     cmds:
-      # 90-day TTL for accepted/rejected; 180-day TTL for stale pending decision rows.
-      # Other pending types (goal/project/concept/…) represent unresolved user intent
-      # and are NOT touched. Backed by scheduler.runDailyPendingProposalsPrune which
-      # runs at 03:00 Asia/Taipei when the server is up; this Taskfile target lets
-      # operators force the cleanup on demand.
+      # Delete steps only: 90-day TTL for accepted/rejected; 180-day TTL for stale
+      # pending decision rows. The marking steps (pending task >30d and pending
+      # goal/project/concept/knowledge/playbook >90d -> rejected) run only inside the
+      # server's scheduler.runDailyPendingProposalsPrune at 03:00 Asia/Taipei, not
+      # here; this Taskfile target lets operators force the delete cleanup on demand.
       - |
         psql "{{.DATABASE_URL}}" -v ON_ERROR_STOP=1 -c "DELETE FROM pending_proposals WHERE (status IN ('accepted','rejected') AND resolved_at < NOW() - INTERVAL '90 days') OR (status = 'pending' AND created_at < NOW() - INTERVAL '180 days' AND type = 'decision');"
     dir: ..
