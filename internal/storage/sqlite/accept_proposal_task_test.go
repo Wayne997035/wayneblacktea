@@ -87,12 +87,11 @@ func (f taskAcceptFixture) taskRows(ctx context.Context, t *testing.T, title str
 func TestSqliteAcceptAdapter_TypeTask_Materialises(t *testing.T) {
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	cases := []struct {
-		name       string
-		commit     bool
-		wantInRows int
+		name   string
+		commit bool
 	}{
-		{name: "commit_makes_row_visible", commit: true, wantInRows: 1},
-		{name: "rollback_leaves_no_row", commit: false, wantInRows: 0},
+		{name: "commit_makes_row_visible", commit: true},
+		{name: "rollback_leaves_no_row", commit: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,10 +112,7 @@ func TestSqliteAcceptAdapter_TypeTask_Materialises(t *testing.T) {
 				fx.adapter.Rollback(ctx)
 				t.Fatalf("created = %T, want *db.Task", created)
 			}
-			if task.Title != title || task.Description.String != taskCleanDesc || task.Kind != "general" ||
-				task.Status != "pending" || task.Priority != 3 || task.Area != "unsorted" {
-				t.Errorf("unexpected task read-back: %+v", task)
-			}
+			requireCleanTaskReadBack(t, task, title)
 
 			if tc.commit {
 				if err := fx.adapter.Commit(ctx); err != nil {
@@ -125,17 +121,39 @@ func TestSqliteAcceptAdapter_TypeTask_Materialises(t *testing.T) {
 			} else {
 				fx.adapter.Rollback(ctx)
 			}
-			if got := fx.taskRows(ctx, t, title); got != tc.wantInRows {
-				t.Errorf("tasks rows for %q = %d, want %d", title, got, tc.wantInRows)
-			}
-			_, getErr := fx.gtd.GetTaskByID(ctx, task.ID)
-			if tc.commit && getErr != nil {
-				t.Errorf("GetTaskByID after commit: %v", getErr)
-			}
-			if !tc.commit && !errors.Is(getErr, gtd.ErrNotFound) {
-				t.Errorf("GetTaskByID after rollback = %v, want gtd.ErrNotFound", getErr)
-			}
+			fx.requireRowState(ctx, t, task, tc.commit)
 		})
+	}
+}
+
+// requireCleanTaskReadBack fails unless task is the clean "general" task the
+// fixture inserted, as the tx read-back returns it.
+func requireCleanTaskReadBack(t *testing.T, task *db.Task, title string) {
+	t.Helper()
+	if task.Title != title || task.Description.String != taskCleanDesc || task.Kind != "general" ||
+		task.Status != "pending" || task.Priority != 3 || task.Area != "unsorted" {
+		t.Errorf("unexpected task read-back: %+v", task)
+	}
+}
+
+// requireRowState checks what the finished tx left behind, through the pooled
+// connection (so it can only run once the tx is committed or rolled back): a
+// committed task is visible by title and id, a rolled-back one is gone.
+func (f taskAcceptFixture) requireRowState(ctx context.Context, t *testing.T, task *db.Task, committed bool) {
+	t.Helper()
+	wantRows := 0
+	if committed {
+		wantRows = 1
+	}
+	if got := f.taskRows(ctx, t, task.Title); got != wantRows {
+		t.Errorf("tasks rows for %q = %d, want %d", task.Title, got, wantRows)
+	}
+	_, getErr := f.gtd.GetTaskByID(ctx, task.ID)
+	if committed && getErr != nil {
+		t.Errorf("GetTaskByID after commit: %v", getErr)
+	}
+	if !committed && !errors.Is(getErr, gtd.ErrNotFound) {
+		t.Errorf("GetTaskByID after rollback = %v, want gtd.ErrNotFound", getErr)
 	}
 }
 
