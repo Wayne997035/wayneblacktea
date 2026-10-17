@@ -176,6 +176,19 @@ const (
 	pendingProposalsPendingGoalFamilyTTLRetention = "90 days"
 )
 
+// pendingProposalsPruneKeepReviewTasks is the clause that keeps
+// 'scheduler:decision_outcome_review' task rows out of the resolved-row DELETE
+// (F197-L1) and is the single source for that exclusion: the manual
+// `pending-proposals-prune` target in build/Taskfile.yml and the SQLite prune in
+// internal/storage/sqlite/proposal.go each carry a literal copy that Go cannot
+// reference, and TestPendingProposalsPruneExclusion_MatchesTaskfileAndSQLite
+// fails when either copy drifts from this text. The leading AND is part of the
+// constant on purpose: a copy that says OR NOT (...) is a different, far more
+// destructive DELETE. [F204-05]
+const (
+	pendingProposalsPruneKeepReviewTasks = "AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review')"
+)
+
 // pendingProposalsResolvedRetentionDuration / *DecisionRetentionDuration /
 // *TaskRetentionDuration are time.Duration equivalents of the 3 PG
 // interval-literal constants above, used by the SQLite adapter path (SQLite
@@ -1217,7 +1230,7 @@ WHERE status = 'pending' AND type = 'task'
 	// row — permanently exempting it from this DELETE instead of just this one.
 	const q = `DELETE FROM pending_proposals
 WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` + pendingProposalsResolvedRetention + `'
-       AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review'))
+       ` + pendingProposalsPruneKeepReviewTasks + `)
    OR (status = 'pending' AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingDecisionRetention + `' AND type = 'decision')`
 	tag, err := s.disciplinePool.Exec(ctx, q)
 	if err != nil {
