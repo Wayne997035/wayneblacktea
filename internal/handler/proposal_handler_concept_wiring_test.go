@@ -14,9 +14,10 @@ import (
 // with no concepts row behind it, and Resolve only matches status='pending',
 // so that loss is permanent. The old two-step concept path is gone together
 // with the handler's learning dependency (NewProposalHandler takes only the
-// proposal store). These cases need no DB: a fake proposal store records every
-// Resolve call, and "zero Resolve calls" is the assertion. The helpers
-// (unwiredProposalRow, postConfirm, ...) come from
+// proposal store, [F204-03]: a second argument no longer compiles here or in
+// any other handler test). These cases need no DB: a fake proposal store
+// records every Resolve call, and "zero Resolve calls" is the assertion. The
+// helpers (unwiredProposalRow, postConfirm, ...) come from
 // proposal_handler_decision_wiring_test.go and the decision suite.
 
 func TestConfirmProposal_TypeConcept_AdapterNotWired_FailsClosed(t *testing.T) {

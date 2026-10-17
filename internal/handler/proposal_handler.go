@@ -79,10 +79,11 @@ type ProposalHandler struct {
 }
 
 // NewProposalHandler creates a ProposalHandler over the list/resolve store p.
-// It takes no concept or knowledge store: every accept that materialises a row
-// goes through the adapter wired with WithGoalProjectAccept. Accepting a
-// decision, concept or task proposal fails with 500 unless WithGoalProjectAccept
-// is also used: those three types have no resolve-only fallback.
+// [F204-03] It takes no concept or knowledge store: every accept that
+// materialises a row goes through the adapter wired with
+// WithGoalProjectAccept. Accepting a decision, concept or task proposal fails
+// with 500 unless WithGoalProjectAccept is also used: those three types have no
+// resolve-only fallback.
 func NewProposalHandler(p proposalListStore) *ProposalHandler {
 	return &ProposalHandler{proposal: p}
 }
