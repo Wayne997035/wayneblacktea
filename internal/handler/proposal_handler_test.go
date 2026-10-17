@@ -1002,7 +1002,20 @@ func TestConfirmProposal_TypeTask_EmptyKind_NoWarning(t *testing.T) {
 	}
 }
 
-// TestConfirmProposal_TypeTask_MalformedPayload: malformed JSON → 400, no task.
+// requireNoJSONDecoderLeak fails when s carries encoding/json's own wording —
+// the Go struct field and type names or the offending input character — which
+// a 400 body must never expose. [F204-04]
+func requireNoJSONDecoderLeak(t *testing.T, s string) {
+	t.Helper()
+	for _, leak := range []string{"Go struct field", "invalid character"} {
+		if strings.Contains(s, leak) {
+			t.Errorf("400 body leaks encoding/json text %q: %s", leak, s)
+		}
+	}
+}
+
+// TestConfirmProposal_TypeTask_MalformedPayload: malformed JSON → 400 carrying
+// only "decoding task payload: malformed JSON", no task. [F204-04]
 func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 	id := uuid.New()
 	prop := db.PendingProposal{
@@ -1014,10 +1027,15 @@ func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 	store := newFakeProposalStore(prop)
 	taskStore := &fakeProposalTaskStore{}
 
-	code, _, raw := confirmTaskProposal(t, store, taskStore, id)
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
 	if code != http.StatusBadRequest {
 		t.Errorf("want 400, got %d: %s", code, raw)
 	}
+	const wantErr = "decoding task payload: malformed JSON"
+	if got, _ := body["error"].(string); got != wantErr {
+		t.Errorf("error = %q, want %q (body: %s)", got, wantErr, raw)
+	}
+	requireNoJSONDecoderLeak(t, raw)
 	if len(taskStore.snapshot()) != 0 {
 		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
 	}
@@ -1091,9 +1109,10 @@ func TestProposalHandler_ConfirmBatch_TypeTask_Materialises(t *testing.T) {
 }
 
 // TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload (round-1
-// follow-up GTD 95bd2a09): garbage JSON in payload surfaces the shared
-// decoder's "decoding task payload" as entry.Error, leaves the proposal
-// pending, and inserts no task row.
+// follow-up GTD 95bd2a09): garbage JSON in payload surfaces only
+// "decoding task payload: malformed JSON" as entry.Error [F204-04] (never
+// encoding/json's own text), leaves the proposal pending, and inserts no task
+// row.
 func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	id := uuid.New()
@@ -1108,10 +1127,11 @@ func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
 	if resp.Results[0].OK {
 		t.Errorf("result.OK = true, want false on malformed payload")
 	}
-	const wantSubstr = "decoding task payload"
-	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
-		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
+	const wantErr = "decoding task payload: malformed JSON"
+	if resp.Results[0].Error != wantErr {
+		t.Errorf("entry.Error = %q, want %q", resp.Results[0].Error, wantErr)
 	}
+	requireNoJSONDecoderLeak(t, resp.Results[0].Error)
 	if len(taskStore.snapshot()) != 0 {
 		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
 	}

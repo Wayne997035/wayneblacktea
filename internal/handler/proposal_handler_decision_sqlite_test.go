@@ -314,7 +314,7 @@ func rejectedDecisionPayloads(t *testing.T, be decisionBackend) []rejectedPayloa
 	alts := be.uniqueTitle(t, "alts-51")
 	alt := be.uniqueTitle(t, "alt-101")
 	cases := []rejectedPayloadCase{
-		{name: "title has the wrong JSON type", payload: []byte(`{"title":123}`), wantMsg: "decoding decision payload"},
+		{name: "title has the wrong JSON type", payload: []byte(`{"title":123}`), wantMsg: "decoding decision payload: malformed JSON"},
 		{name: "title missing", payload: []byte(`{"decision":"d"}`), wantMsg: "decision payload missing title"},
 		{name: "title empty", payload: []byte(`{"title":""}`), wantMsg: "decision payload missing title"},
 		{name: "title 513 bytes", title: title513, payload: pl(title513, noop), wantMsg: "decision title exceeds 512 bytes"},
@@ -337,14 +337,17 @@ func rejectedDecisionPayloads(t *testing.T, be decisionBackend) []rejectedPayloa
 		},
 	}
 	if be.rawJSONPayload {
-		cases = append(cases, rejectedPayloadCase{name: "malformed JSON", payload: []byte(`{bad json`), wantMsg: "decoding decision payload"})
+		cases = append(cases, rejectedPayloadCase{
+			name: "malformed JSON", payload: []byte(`{bad json`), wantMsg: "decoding decision payload: malformed JSON",
+		})
 	}
 	return cases
 }
 
 // runDecisionPayloadRejected is AC-5: every over-cap or malformed payload is a
-// 400 carrying the decoder's message, writes nothing, and leaves the proposal
-// pending.
+// 400 carrying the decoder's message (a JSON syntax or type error is collapsed
+// to "<prefix>: malformed JSON", never encoding/json's own text [F204-04]),
+// writes nothing, and leaves the proposal pending.
 func runDecisionPayloadRejected(t *testing.T, be decisionBackend) {
 	h := be.newHandler(nil)
 	for _, tc := range rejectedDecisionPayloads(t, be) {
@@ -359,6 +362,7 @@ func runDecisionPayloadRejected(t *testing.T, be decisionBackend) {
 			if !strings.Contains(rec.Body.String(), tc.wantMsg) {
 				t.Errorf("body = %s, want substring %q", rec.Body.String(), tc.wantMsg)
 			}
+			requireNoJSONDecoderLeak(t, rec.Body.String())
 			requireCount(t, "decisions rows", be.decisionCount(t, tc.title), 0)
 			requireStatus(t, be, id, proposalPending)
 		})

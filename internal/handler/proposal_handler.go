@@ -436,6 +436,27 @@ func acceptPayloadGate(t proposal.Type, payload []byte) (warnings []string, badR
 	return nil, nil
 }
 
+// publicDecodeErr turns a payload decode error into text that is safe to put
+// in a 400 body. encoding/json errors (*json.SyntaxError,
+// *json.UnmarshalTypeError) carry Go struct field and type names and the
+// offending input character, so they collapse to "<prefix>: malformed JSON",
+// where <prefix> is the text before the first ": " in err.Error() ("decoding
+// task payload" for "decoding task payload: invalid character ..."); a JSON
+// error with no such prefix becomes "proposal payload is malformed". Any other
+// error is one of the decoders' own validation messages ("task payload missing
+// title", ...) and is returned unchanged. [F204-04]
+func publicDecodeErr(err error) string {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	if errors.As(err, &syn) || errors.As(err, &typ) {
+		if prefix, _, ok := strings.Cut(err.Error(), ": "); ok {
+			return prefix + ": malformed JSON"
+		}
+		return "proposal payload is malformed"
+	}
+	return err.Error()
+}
+
 // taskPayloadGate decodes a TypeTask payload in warn mode (the adapter
 // re-decodes inside the transaction with the server's real strict setting) and
 // applies the strict-mode decision HERE, so a vague payload is a 400 carrying
@@ -444,7 +465,7 @@ func acceptPayloadGate(t proposal.Type, payload []byte) (warnings []string, badR
 func taskPayloadGate(payload []byte) (warnings []string, badRequest any) {
 	_, warnings, err := proposal.DecodeTaskParams(payload, false)
 	if err != nil {
-		return nil, errResp(err.Error())
+		return nil, errResp(publicDecodeErr(err))
 	}
 	if len(warnings) > 0 && validator.StrictModeEnabled() {
 		return nil, map[string]any{
@@ -537,11 +558,13 @@ func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 	case proposal.TypeDecision:
 		// [F205-01] proposal.DecodeDecisionParams is the single decoder for
 		// TypeDecision (the old handler-local one had no length caps). Its
-		// error text is already specific ("decision payload missing title",
-		// "decision title exceeds 512 bytes", ...) so it is surfaced verbatim,
-		// same choice as TypeKnowledge above.
+		// validation text is already specific ("decision payload missing
+		// title", "decision title exceeds 512 bytes", ...) so it is surfaced
+		// verbatim, same choice as TypeKnowledge above — except a JSON
+		// syntax/type error, which publicDecodeErr collapses so encoding/json's
+		// own wording never reaches the client. [F204-04]
 		if _, err := proposal.DecodeDecisionParams(payload); err != nil {
-			return err.Error()
+			return publicDecodeErr(err)
 		}
 	case proposal.TypeConcept:
 		// The handler's own decodeConceptCandidatePayload stays the gate: it is
@@ -750,13 +773,13 @@ func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) pro
 // batchTaskMeta is the batch twin of taskPayloadGate: it decodes a TypeTask
 // payload in warn mode and applies the strict-mode decision HERE, before any
 // transaction, as a per-row payloadErr — a decode failure carries the decoder's
-// text, a strict-mode vagueness failure "vagueness check failed: w1; w2".
-// Otherwise the warnings ride along in the meta for batchResolveOne to copy
-// onto the success entry.
+// text through publicDecodeErr, a strict-mode vagueness failure "vagueness
+// check failed: w1; w2". Otherwise the warnings ride along in the meta for
+// batchResolveOne to copy onto the success entry.
 func batchTaskMeta(payload []byte) proposalBatchMeta {
 	_, warnings, err := proposal.DecodeTaskParams(payload, false)
 	if err != nil {
-		return proposalBatchMeta{isGoalOrProject: true, payloadErr: err.Error()}
+		return proposalBatchMeta{isGoalOrProject: true, payloadErr: publicDecodeErr(err)}
 	}
 	if len(warnings) > 0 && validator.StrictModeEnabled() {
 		return proposalBatchMeta{isGoalOrProject: true, payloadErr: "vagueness check failed: " + strings.Join(warnings, "; ")}
