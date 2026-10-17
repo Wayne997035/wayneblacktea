@@ -250,14 +250,18 @@ func DecodeTaskParams(payload []byte, strict bool) (gtd.CreateTaskParams, []stri
 
 	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
 	// of silently coercing it (GTD f457740e / [F0902-54]) — merged first so
-	// strict mode fails on it like any other vagueness warning. Not yet
-	// production-reachable for TypeTask (see doc comment above).
+	// strict mode fails on it like any other vagueness warning. [F204-02]
+	// Reached in production by the HTTP accept gates
+	// (taskPayloadGate and batchTaskMeta in internal/handler/proposal_handler.go)
+	// and by both adapters' materializeTask (internal/proposal/accept_pg.go,
+	// internal/storage/sqlite/accept_proposal.go).
 	//
 	// [GTD c761ba5c] The lockstep this comment used to only assert is now
 	// enforced: the warning text is bounded and neutralised inside
 	// ResolveTaskKind, so all four call sites get it by construction rather
-	// than by each remembering to. Wiring this seam to production therefore
-	// cannot reintroduce the forged-marker escape on its own.
+	// than by each remembering to. This seam is wired to production, and the
+	// forged-marker escape stays closed because every call site gets the
+	// bounded, neutralised warning from ResolveTaskKind.
 	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
 	warnings := validator.CheckTaskInput(tp.Description, kind)
 	if kindWarning != "" {
