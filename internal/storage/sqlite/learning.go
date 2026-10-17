@@ -507,6 +507,27 @@ func (s *LearningStore) conceptByID(ctx context.Context, id uuid.UUID) (*db.Conc
 	return &c, nil
 }
 
+// conceptByIDTx re-reads a concepts row via the still-open tx, mirroring
+// conceptByID's query but scanning through tx instead of s.db.conn. SQLite
+// serialises all access through a single pooled connection (db.go's
+// SetMaxOpenConns(1)) and the accept transaction is holding it, so the
+// s.db.conn read conceptByID does would deadlock — same constraint
+// KnowledgeStore.getByIDTx and DecisionStore.decisionByIDTx document.
+func (s *LearningStore) conceptByIDTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (*db.Concept, error) {
+	const q = `SELECT ` + conceptsSelectCols + ` FROM concepts
+		WHERE id = ?1
+		  AND (?2 IS NULL OR workspace_id = ?2)
+		LIMIT 1`
+	c, err := scanConcept(tx.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg()).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, learning.ErrNotFound
+	}
+	if err != nil {
+		return nil, errWrap("conceptByIDTx", err)
+	}
+	return &c, nil
+}
+
 // SoftPruneDecayed implements decay.PrunerStore for the SQLite concepts table.
 // It sets archived_at=NOW() on concepts that are:
 //   - not already archived (archived_at IS NULL)

@@ -837,10 +837,7 @@ func wireHandlers(
 	wsOverviewH := handler.NewWorkspaceOverviewHandler(stores.Workspace(), stores.GTD(), stores.Decision(), stores.Session())
 	decH := handler.NewDecisionHandler(stores.Decision())
 	knowledgeH := handler.NewKnowledgeHandler(stores.Knowledge(), stores.Proposal())
-	proposalH := handler.NewProposalHandler(stores.Proposal(), stores.Learning()).
-		WithDecision(stores.Decision()).
-		WithKnowledge(stores.Knowledge()).
-		WithTask(stores.GTD()).
+	proposalH := handler.NewProposalHandler(stores.Proposal()).
 		WithGoalProjectAccept(buildGoalProjectAcceptAdapter(stores))
 	searchH := handler.NewSearchHandler(stores.Knowledge(), stores.Decision(), stores.GTD())
 	learningH := handler.NewLearningHandler(

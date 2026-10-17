@@ -328,20 +328,30 @@ Asia/Taipei via the scheduler.
 cd build && task discipline-prune
 ```
 
-### `pending_proposals` — 90 / 180-day dual TTL
+### `pending_proposals` — per-status TTL (30 / 90 / 180 days)
 
 The auto-decision-proposer middleware can fill the queue with up to one row
-per mutating tool call. Two retention rules, both enforced by a single nightly
-DELETE at 03:00 Asia/Taipei (offset from the 23:00 cluster to spread DB load):
+per mutating tool call. The nightly job at 03:00 Asia/Taipei (offset from the
+23:00 cluster to spread DB load) first marks stale pending rows `rejected`,
+then runs a single DELETE for the rows past their delete retention:
 
-| Status                      | Retention | Rationale                                                    |
-|-----------------------------|-----------|--------------------------------------------------------------|
-| `accepted` / `rejected`     | 90 days   | User has acted; keep ~1 quarter for audit, then drop         |
-| `pending` & `type=decision` | 180 days  | Auto-proposer noise — stale pending decisions are obsolete   |
-| `pending` & other types     | NEVER     | Goal/project/concept etc. = unresolved user intent; keep all |
+| Status                                                              | Retention                     | Rationale                                                                  |
+|---------------------------------------------------------------------|-------------------------------|----------------------------------------------------------------------------|
+| `accepted` / `rejected`                                             | 90 days, then deleted         | User has acted; keep ~1 quarter for audit, then drop (exception below)     |
+| `pending` & `type=decision`                                         | 180 days, then deleted        | Auto-proposer noise — stale pending decisions are obsolete                 |
+| `pending` & `type=task`                                             | 30 days, then marked `rejected` (reason `ttl-expired-30d`) | Low-signal task candidates; the marked row ages out via the 90-day rule |
+| `pending` & `type` in goal / project / concept / knowledge / playbook | 90 days, then marked `rejected` (reason `ttl-expired-90d`) | Keeps the queue bounded; the marked row ages out via the 90-day rule |
+
+The 90-day rule never deletes `type=task` rows whose
+`proposed_by='scheduler:decision_outcome_review'`: the decision-outcome
+dedup treats an existing row as "already proposed", so those rows are kept
+permanently (see the DELETE in `runDailyPendingProposalsPrunePG`,
+`internal/scheduler/scheduler.go`). The `reason` values are
+`pendingProposalsTaskTTLReason` / `pendingProposalsGoalFamilyTTLReason` in
+the same file.
 
 ```bash
-# Force on-demand prune (alternative to scheduler trigger):
+# Force on-demand prune (delete steps only; marking runs in the nightly job):
 cd build && task pending-proposals-prune
 ```
 

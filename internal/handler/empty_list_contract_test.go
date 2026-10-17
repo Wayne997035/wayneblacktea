@@ -139,7 +139,7 @@ func TestEmptyListContract_HTTP(t *testing.T) {
 			name: "ListPendingProposals",
 			run: func(t *testing.T) *httptest.ResponseRecorder {
 				e := newEcho()
-				h := handler.NewProposalHandler(newFakeProposalStore(), &fakeProposalLearningStore{})
+				h := handler.NewProposalHandler(newFakeProposalStore())
 				e.GET("/api/proposals/pending", h.ListPendingProposals)
 				return performRequest(e, http.MethodGet, "/api/proposals/pending", "")
 			},
@@ -149,7 +149,7 @@ func TestEmptyListContract_HTTP(t *testing.T) {
 			name: "ListProposals",
 			run: func(t *testing.T) *httptest.ResponseRecorder {
 				e := newEcho()
-				h := handler.NewProposalHandler(newFakeProposalStore(), &fakeProposalLearningStore{})
+				h := handler.NewProposalHandler(newFakeProposalStore())
 				e.GET("/api/proposals", h.ListProposals)
 				return performRequest(e, http.MethodGet, "/api/proposals", "")
 			},

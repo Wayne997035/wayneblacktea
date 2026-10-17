@@ -366,9 +366,9 @@ const invalidKindDecodeTestDescription = "Fix kind coercion at internal/handler/
 
 // TestDecodeTaskParams_InvalidKind (GTD f457740e / [F0902-54]): DecodeTaskParams
 // is the A1-seam copy of the same kind-coercion logic the other 3 call sites
-// share — not yet production-reachable for TypeTask (see doc comment on
-// DecodeTaskParams), but must stay in lockstep so wiring this seam later
-// (A1-seam follow-up, GTD 6d960dce / 1fa9889c) doesn't reintroduce the bug
+// share — reached in production for TypeTask by the HTTP accept gates and both
+// adapters' materializeTask, and must stay in lockstep with them so a change
+// here doesn't reintroduce the bug
 // that previously discarded an invalid suggested_kind silently. Table-driven
 // (gocyclo) — mutation check: blank ResolveTaskKind's warning line and the
 // "bogus kind" rows below fail red while "empty kind" stays green.

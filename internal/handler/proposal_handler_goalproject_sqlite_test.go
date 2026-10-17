@@ -39,7 +39,7 @@ func openGoalProjectSQLiteHandler(t *testing.T) (*handler.ProposalHandler, *wbts
 		Learning: learningStore,
 		Decision: decisionStore,
 	}
-	h := handler.NewProposalHandler(propStore, learningStore).
+	h := handler.NewProposalHandler(propStore).
 		WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 			return wbtsqlite.NewAcceptAdapter(id, deps)
 		})

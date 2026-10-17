@@ -114,15 +114,13 @@ func openSchedulerTestPgPool(t *testing.T) *pgxpool.Pool {
 //   - resolved (accepted/rejected) rows older than 90 days are deleted
 //   - pending decision rows older than 180 days are deleted
 //   - pending goal/concept rows older than 180d (and thus also >90d, F184-06's
-//     own window) are KEPT — status is asserted, not just row existence, so
-//     this test actually proves pendingProposalsGoalFamilyTTLDryRun's
-//     checked-in default (true) performs zero writes against them, not
-//     merely that the row survives (which a status-blind existence check
-//     would pass even if the row had been silently marked rejected — see
-//     F184-06/F184-07's own dispatch note on this exact test). Before
-//     F184-06 these types had NO code path touching them at all; now they
-//     are counted-but-not-written by design, and this assertion is what
-//     pins "not written" specifically, not merely "not deleted".
+//     own window) are marked rejected and KEPT — status is asserted, not just
+//     row existence, so this test proves pendingProposalsGoalFamilyTTLDryRun's
+//     hard-coded value (false) actually marks them, not merely that the row
+//     survives (which a status-blind existence check would pass even if the
+//     row had been left pending). The mark step runs before the DELETE and
+//     sets resolved_at = NOW(), so the 90-day resolved-row DELETE cannot
+//     touch them in the same run; they age out on a later run.
 //   - in-window rows are KEPT (status untouched)
 func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.T) {
 	pool := openSchedulerTestPgPool(t)
@@ -157,12 +155,12 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 		{uuid.New(), "decision", pendingStatus, pendingDecision200, nil, false, "", "pending decision >180d"},
 		{uuid.New(), "decision", pendingStatus, pendingDecision30, nil, true, pendingStatus, "pending decision <180d"},
 		{
-			uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, pendingStatus,
-			"pending goal >180d (F184-06 dry-run default: counted, not written)",
+			uuid.New(), "goal", pendingStatus, pendingGoal400, nil, true, rejectedStatus,
+			"pending goal >180d (F184-06 default: marked rejected, kept)",
 		},
 		{
-			uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, pendingStatus,
-			"pending concept >180d (F184-06 dry-run default: counted, not written)",
+			uuid.New(), "concept", pendingStatus, pendingGoal400, nil, true, rejectedStatus,
+			"pending concept >180d (F184-06 default: marked rejected, kept)",
 		},
 	}
 
@@ -206,7 +204,7 @@ func TestScheduler_DailyPendingProposalsPrune_DeletesOnlyExpiredRows(t *testing.
 				t.Fatalf("status %s: %v", s.label, err)
 			}
 			if gotStatus != s.wantStatus {
-				t.Errorf("%s: status = %q, want %q (must not be silently written)", s.label, gotStatus, s.wantStatus)
+				t.Errorf("%s: status = %q, want %q (kept row must end in the expected status)", s.label, gotStatus, s.wantStatus)
 			}
 		}
 	}
@@ -430,16 +428,81 @@ func queryProposalStatusReason(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) (
 	return status, reason, resolvedAt
 }
 
-// TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites is F184-07's primary
-// acceptance test: with pendingProposalsGoalFamilyTTLDryRun left completely
-// untouched (its checked-in default, true — no test setup manipulates it),
+// TestScheduler_GoalFamilyTTL_Default_MarksStaleRows is the "completely
+// unconfigured" acceptance test after the default flip (GTD c0a6c408, decision
+// f84ce602): with pendingProposalsGoalFamilyTTLDryRun left completely
+// untouched (its hard-coded value, false — no test setup manipulates it),
 // running the daily prune against a mix of stale (>90d) and fresh (<90d)
-// goal-family rows MUST perform zero UPDATEs and zero DELETEs against any of
-// them. This is the "completely unconfigured" case, not "explicitly turned
-// off" — see TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows for
-// the explicit-on direction.
-func TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites(t *testing.T) {
+// goal-family rows MUST mark every stale row status='rejected',
+// reason='ttl-expired-90d', resolved_at set, and leave every fresh row
+// untouched. See TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows
+// for the explicit-off direction and
+// TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites for the dry-run
+// direction.
+func TestScheduler_GoalFamilyTTL_Default_MarksStaleRows(t *testing.T) {
+	// [F205-18] default is false: no setup touches the switch, stale rows get marked.
 	pool := openSchedulerTestPgPool(t)
+	now := time.Now().UTC()
+	stale := now.AddDate(0, 0, -95)
+	fresh := now.AddDate(0, 0, -10)
+
+	type row struct {
+		id        uuid.UUID
+		typ       string
+		wantStale bool
+	}
+	var rows []row
+	for _, typ := range []string{"goal", "project", "concept", "knowledge", "playbook"} {
+		rows = append(
+			rows,
+			row{seedPendingProposalAt(t, pool, typ, stale), typ, true},
+			row{seedPendingProposalAt(t, pool, typ, fresh), typ, false},
+		)
+	}
+
+	sc := &Scheduler{disciplinePool: pool}
+	sc.runDailyPendingProposalsPrune()
+
+	for _, r := range rows {
+		status, reason, resolvedAt := queryProposalStatusReason(t, pool, r.id)
+		if r.wantStale {
+			if status != rejectedStatus {
+				t.Errorf("type=%s id=%s (stale): status = %q, want %q (default must mark)", r.typ, r.id, status, rejectedStatus)
+			}
+			if reason == nil || *reason != pendingProposalsGoalFamilyTTLReason {
+				t.Errorf("type=%s id=%s (stale): reason = %v, want %q", r.typ, r.id, reason, pendingProposalsGoalFamilyTTLReason)
+			}
+			if resolvedAt == nil {
+				t.Errorf("type=%s id=%s (stale): resolved_at = nil, want NOW()-ish", r.typ, r.id)
+			}
+			continue
+		}
+		if status != pendingStatus {
+			t.Errorf("type=%s id=%s (fresh): status = %q, want %q (must not be touched)", r.typ, r.id, status, pendingStatus)
+		}
+		if reason != nil {
+			t.Errorf("type=%s id=%s (fresh): reason = %q, want nil", r.typ, r.id, *reason)
+		}
+		if resolvedAt != nil {
+			t.Errorf("type=%s id=%s (fresh): resolved_at = %v, want nil", r.typ, r.id, *resolvedAt)
+		}
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites is the dry-run direction
+// of D-02's "both directions need a case" rule: with
+// pendingProposalsGoalFamilyTTLDryRun explicitly set to true, running the
+// daily prune against a mix of stale (>90d) and fresh (<90d) goal-family rows
+// MUST perform zero UPDATEs and zero DELETEs against any of them. Before the
+// default flip this was the default behaviour; now it is the only test that
+// guards the dry-run branch of markStaleGoalFamilyProposalsPG.
+func TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites(t *testing.T) {
+	// [F205-19] dry-run explicitly on: stale rows are counted only, nothing is written.
+	pool := openSchedulerTestPgPool(t)
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = true
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+
 	now := time.Now().UTC()
 	stale := now.AddDate(0, 0, -95)
 	fresh := now.AddDate(0, 0, -10)
@@ -463,7 +526,7 @@ func TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites(t *testing.T) {
 	for _, r := range rows {
 		status, reason, resolvedAt := queryProposalStatusReason(t, pool, r.id)
 		if status != pendingStatus {
-			t.Errorf("type=%s id=%s: status = %q, want %q (dry-run default must not write)", r.typ, r.id, status, pendingStatus)
+			t.Errorf("type=%s id=%s: status = %q, want %q (dry-run must not write)", r.typ, r.id, status, pendingStatus)
 		}
 		if reason != nil {
 			t.Errorf("type=%s id=%s: reason = %q, want nil", r.typ, r.id, *reason)
@@ -541,6 +604,8 @@ func TestScheduler_GoalFamilyTTL_DryRunDisabled_MarksStaleRows(t *testing.T) {
 // printing a constant 0 would pass every other acceptance criterion.
 func TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows(t *testing.T) {
 	pool := openSchedulerTestPgPool(t)
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
 	ctx := context.Background()
 	now := time.Now().UTC()
 	stale := now.AddDate(0, 0, -95)
@@ -560,7 +625,8 @@ func TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows(t *testing.T) {
 
 	sc := &Scheduler{disciplinePool: pool}
 
-	// Dry-run (default true): count only, must equal 3, zero writes.
+	// Dry-run (explicitly on): count only, must equal 3, zero writes.
+	pendingProposalsGoalFamilyTTLDryRun = true
 	gotRows := sc.markStaleGoalFamilyProposalsPG(ctx)
 	if gotRows != 3 {
 		t.Errorf("dry-run rows = %d, want 3", gotRows)
@@ -580,9 +646,7 @@ func TestScheduler_GoalFamilyTTL_DryRunCount_MatchesActualRows(t *testing.T) {
 
 	// Explicit off: the same 3 rows must actually get marked; the 2
 	// non-matching rows must still be untouched.
-	prev := pendingProposalsGoalFamilyTTLDryRun
 	pendingProposalsGoalFamilyTTLDryRun = false
-	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
 	gotRows = sc.markStaleGoalFamilyProposalsPG(ctx)
 	if gotRows != 3 {
 		t.Errorf("real-mark rows = %d, want 3", gotRows)
@@ -640,9 +704,10 @@ func TestScheduler_GoalFamilyTTL_DoesNotTouchTaskOrDecision(t *testing.T) {
 	}
 }
 
-// TestScheduler_GoalFamilyTTL_SQLite_DryRunDefault_NoWrites is F184-07's
-// SQLite-backend "completely unconfigured" test — the SQLite twin of
-// TestScheduler_GoalFamilyTTL_DryRunDefault_NoWrites. It lives in this file
+// TestScheduler_GoalFamilyTTL_SQLite_Default_MarksStaleRows is the SQLite-
+// backend "completely unconfigured" test after the default flip (GTD
+// c0a6c408) — the SQLite twin of
+// TestScheduler_GoalFamilyTTL_Default_MarksStaleRows. It lives in this file
 // (despite the _pg_test.go name) rather than
 // internal/storage/sqlite/proposal_prune_test.go because
 // pendingProposalsGoalFamilyTTLDryRun is unexported to that package —
@@ -653,7 +718,72 @@ func TestScheduler_GoalFamilyTTL_DoesNotTouchTaskOrDecision(t *testing.T) {
 // stubbed) *sqlite.ProposalStore — mirrors the construction pattern in
 // cognitive_jobs_sqlite_test.go's openCrossBackendSQLiteDB /
 // internal/storage/sqlite/proposal_test.go's openProposalStore.
-func TestScheduler_GoalFamilyTTL_SQLite_DryRunDefault_NoWrites(t *testing.T) {
+func TestScheduler_GoalFamilyTTL_SQLite_Default_MarksStaleRows(t *testing.T) {
+	ctx := context.Background()
+	d, err := sqlite.Open(ctx, ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := sqlite.NewProposalStore(d)
+
+	now := time.Now().UTC()
+	staleID := uuid.New()
+	freshID := uuid.New()
+	for _, p := range []struct {
+		id  uuid.UUID
+		age int
+	}{{staleID, 95}, {freshID, 10}} {
+		if err := store.ImportProposal(ctx, db.PendingProposal{
+			ID:        p.id,
+			Type:      "goal",
+			Payload:   []byte(`{}`),
+			Status:    pendingStatus,
+			CreatedAt: pgtype.Timestamptz{Time: now.AddDate(0, 0, -p.age), Valid: true},
+		}); err != nil {
+			t.Fatalf("seed SQLite goal-family proposal (age %dd): %v", p.age, err)
+		}
+	}
+
+	sc := &Scheduler{pendingProposalsPruneSQLite: store}
+	sc.runDailyPendingProposalsPrune()
+
+	got, err := store.Get(ctx, staleID)
+	if err != nil {
+		t.Fatalf("Get stale: %v", err)
+	}
+	if got.Status != rejectedStatus {
+		t.Errorf("stale status = %q, want %q (default must mark)", got.Status, rejectedStatus)
+	}
+	if !got.Reason.Valid || got.Reason.String != pendingProposalsGoalFamilyTTLReason {
+		t.Errorf("stale reason = %+v, want %q", got.Reason, pendingProposalsGoalFamilyTTLReason)
+	}
+
+	fresh, err := store.Get(ctx, freshID)
+	if err != nil {
+		t.Fatalf("Get fresh: %v", err)
+	}
+	if fresh.Status != pendingStatus {
+		t.Errorf("fresh status = %q, want %q (must not be touched)", fresh.Status, pendingStatus)
+	}
+	if fresh.Reason.Valid {
+		t.Errorf("fresh reason = %q, want invalid/nil", fresh.Reason.String)
+	}
+}
+
+// TestScheduler_GoalFamilyTTL_SQLite_DryRunEnabled_NoWrites is the SQLite twin
+// of TestScheduler_GoalFamilyTTL_DryRunEnabled_NoWrites: with
+// pendingProposalsGoalFamilyTTLDryRun explicitly set to true, the SQLite
+// dispatch passes dryRun=true to the real *sqlite.ProposalStore and a stale
+// goal row stays pending with no reason. It lives in this file for the same
+// reason as TestScheduler_GoalFamilyTTL_SQLite_Default_MarksStaleRows (the
+// switch is unexported to the sqlite package).
+func TestScheduler_GoalFamilyTTL_SQLite_DryRunEnabled_NoWrites(t *testing.T) {
+	// Dry-run explicitly on: the SQLite store must receive dryRun=true and write nothing.
+	prev := pendingProposalsGoalFamilyTTLDryRun
+	pendingProposalsGoalFamilyTTLDryRun = true
+	t.Cleanup(func() { pendingProposalsGoalFamilyTTLDryRun = prev })
+
 	ctx := context.Background()
 	d, err := sqlite.Open(ctx, ":memory:", "")
 	if err != nil {
@@ -682,7 +812,7 @@ func TestScheduler_GoalFamilyTTL_SQLite_DryRunDefault_NoWrites(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if got.Status != pendingStatus {
-		t.Errorf("status = %q, want %q (dry-run default must not write)", got.Status, pendingStatus)
+		t.Errorf("status = %q, want %q (dry-run must not write)", got.Status, pendingStatus)
 	}
 	if got.Reason.Valid {
 		t.Errorf("reason = %q, want invalid/nil", got.Reason.String)

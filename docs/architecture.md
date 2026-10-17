@@ -165,7 +165,7 @@ SQLite schema evolution runs through golang-migrate against the embedded `migrat
 | `weekly-ai-concept-review` | Weekly Sunday 02:00 | Claude reviews low-retention concepts and proposes archival or reinforcement |
 | `sunday-playbook-promoter` | Weekly Sunday 03:00 | Turns clusters of ≥3 recent decisions into 2-5 playbook candidates via Haiku |
 | `cognitive-behavior-rule-candidate` | Weekly Saturday 03:00 | Reviews the last 7 days of reflections with detected patterns and proposes behavior-rule candidates |
-| `daily-pending-proposals-prune` | Daily 03:00 | Marks stale pending `task` proposals rejected, then deletes long-resolved `pending_proposals` rows per per-status retention |
+| `daily-pending-proposals-prune` | Daily 03:00 | Marks stale pending `task` proposals (30 days) and pending `goal` / `project` / `concept` / `knowledge` / `playbook` proposals (90 days) rejected, then deletes long-resolved `pending_proposals` rows per per-status retention |
 | `daily-merged-prs-observed-prune` | Daily 03:00 | Deletes `merged_prs_observed` rows older than 30 days |
 | `cognitive-daily-reflection` | Daily 03:15 | Builds a plain-text reflection summary from recent activity + decisions and stores a `daily` reflection record (no LLM call) |
 | `daily-outcome-prune` | Daily 03:30 | Deletes `outcomes` + `evaluations` rows older than 90 days |

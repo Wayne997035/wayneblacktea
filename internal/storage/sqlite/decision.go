@@ -328,3 +328,18 @@ func (s *DecisionStore) decisionByID(ctx context.Context, id uuid.UUID) (*db.Dec
 	}
 	return &d, nil
 }
+
+// decisionByIDTx re-reads a decisions row via the still-open tx, mirroring
+// decisionByID's query but scanning through tx instead of s.db.conn.
+// [F205-02] SQLite serialises all access through a single pooled connection
+// (db.go's SetMaxOpenConns(1)) and the accept transaction is holding it, so
+// the s.db.conn read decisionByID does would deadlock — same constraint
+// KnowledgeStore.getByIDTx documents.
+func (s *DecisionStore) decisionByIDTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (*db.Decision, error) {
+	const q = `SELECT ` + decisionsSelectCols + ` FROM decisions WHERE id = ?1 LIMIT 1`
+	d, err := scanDecision(tx.QueryRowContext(ctx, q, id.String()).Scan)
+	if err != nil {
+		return nil, errWrap("decisionByIDTx", err)
+	}
+	return &d, nil
+}

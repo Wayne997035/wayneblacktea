@@ -56,6 +56,59 @@ func TestSqliteAcceptAdapter_MaterializeProject_NilGTDStore(t *testing.T) {
 	}
 }
 
+// TestSqliteAcceptAdapter_MaterializeDecision_NilDecisionStore guards
+// sqliteAcceptAdapter.materializeDecision: deleting its nil-store guard lets
+// a.deps.Decision.LogTx run on a nil *DecisionStore, which dereferences s.db
+// and panics. a.tx is nil here on purpose — the guard fires before the tx is
+// touched.
+func TestSqliteAcceptAdapter_MaterializeDecision_NilDecisionStore(t *testing.T) {
+	// [F205-02] nil-store guard of the SQLite adapter's decision materialisation.
+	t.Parallel() // [F0925-10]
+	a := &sqliteAcceptAdapter{deps: AcceptDeps{Decision: nil}}
+	payload, err := json.Marshal(map[string]any{"title": "decision title", "decision": "adopt X"})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	prop := &db.PendingProposal{Payload: payload}
+
+	_, err = a.materializeDecision(context.Background(), prop)
+	if err == nil {
+		t.Fatal("materializeDecision: want error for nil Decision store, got nil (would have panicked on LogTx)")
+	}
+	if !strings.Contains(err.Error(), "decision store") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "decision store")
+	}
+}
+
+// TestSqliteAcceptAdapter_TypeTask_MaterializeTask_NilGTDStore guards
+// sqliteAcceptAdapter.materializeTask: deleting its nil-store guard lets
+// a.deps.GTD.CreateTaskTx run on a nil *GTDStore, which dereferences s.db and
+// panics. a.tx is nil here on purpose — the guard fires before the tx is
+// touched. The payload carries a clean description so the decode that runs
+// first passes under any WBT_STRICT_VAGUENESS value (this file's tests are
+// parallel and so cannot t.Setenv).
+func TestSqliteAcceptAdapter_TypeTask_MaterializeTask_NilGTDStore(t *testing.T) {
+	// [F205-11] nil-store guard of the SQLite adapter's task materialisation.
+	t.Parallel() // [F0925-10]
+	a := &sqliteAcceptAdapter{deps: AcceptDeps{GTD: nil}}
+	payload, err := json.Marshal(map[string]any{
+		"title":       "task title",
+		"description": "Add slog.Info audit row to confirm_proposal at internal/handler/proposal_handler.go:240 with proposal_id",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	prop := &db.PendingProposal{Payload: payload}
+
+	_, err = a.materializeTask(context.Background(), prop)
+	if err == nil {
+		t.Fatal("materializeTask: want error for nil GTD store, got nil (would have panicked on CreateTaskTx)")
+	}
+	if !strings.Contains(err.Error(), "gtd store") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "gtd store")
+	}
+}
+
 func TestSqliteAcceptAdapter_MaterializeConcept_NilLearningStore(t *testing.T) {
 	t.Parallel() // [F0925-10]
 	a := &sqliteAcceptAdapter{deps: AcceptDeps{Learning: nil}}

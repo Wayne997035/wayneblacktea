@@ -78,6 +78,27 @@ describe('useResolveProposal invalidations', () => {
     expect(calledKeys).toContain(JSON.stringify(['decisions']))
     expect(calledKeys).toContain(JSON.stringify(['decisions-feed']))
   })
+
+  it("[F205-16] marks a cached ['tasks', filter] list query invalidated on success", async () => {
+    const { Wrapper, queryClient } = makeWrapper()
+    // The cached key is the one useAllTasks owns: ['tasks', statusFilter]. Asserting
+    // its isInvalidated flag (not just the key the hook passed) proves the
+    // ['tasks'] prefix really reaches it.
+    queryClient.setQueryData(['tasks', 'active'], [])
+    expect(queryClient.getQueryState(['tasks', 'active'])?.isInvalidated).toBe(false)
+
+    apiFetchMock.mockResolvedValueOnce({ proposal: { id: 'p-1', type: 'task' } })
+
+    const { result } = renderHook(() => useResolveProposal(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ id: 'p-1', action: 'accept' })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(queryClient.getQueryState(['tasks', 'active'])?.isInvalidated).toBe(true)
+  })
 })
 
 describe('useConfirmBatchProposals invalidations', () => {
@@ -126,5 +147,23 @@ describe('useConfirmBatchProposals invalidations', () => {
     const calledKeys = calledKeysOf(invalidateSpy)
     expect(calledKeys).toContain(JSON.stringify(['decisions']))
     expect(calledKeys).toContain(JSON.stringify(['decisions-feed']))
+  })
+
+  it("[F205-17] marks a cached ['tasks', filter] list query invalidated on success", async () => {
+    const { Wrapper, queryClient } = makeWrapper()
+    queryClient.setQueryData(['tasks', 'active'], [])
+    expect(queryClient.getQueryState(['tasks', 'active'])?.isInvalidated).toBe(false)
+
+    apiFetchMock.mockResolvedValueOnce({ results: [{ id: 'p-1', ok: true }] })
+
+    const { result } = renderHook(() => useConfirmBatchProposals(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ ids: ['p-1'], action: 'accept' })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(queryClient.getQueryState(['tasks', 'active'])?.isInvalidated).toBe(true)
   })
 })

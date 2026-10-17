@@ -14,7 +14,7 @@ now live in that table's `PrunerSpec` literal in `cmd/server/main.go`.
 | `guard_events` | 30 days | `scheduler.runDailyGuardPrune` at 23:30 Asia/Taipei |
 | `guard_bypasses` | 30 days by `created_at` | `scheduler.runDailyGuardPrune` at 23:30 Asia/Taipei |
 | `discipline_events` | 30 days | `scheduler.runDailyDisciplinePrune` at 23:00 Asia/Taipei |
-| `pending_proposals` | accepted/rejected: 90 days; pending `type='decision'`: 180 days | `scheduler.runDailyPendingProposalsPrune` at 03:00 Asia/Taipei |
+| `pending_proposals` | accepted/rejected: 90 days, except `type='task'` rows with `proposed_by='scheduler:decision_outcome_review'`, which are never deleted; pending `type='decision'`: 180 days; pending `type='task'`: marked `rejected` (reason `ttl-expired-30d`) after 30 days; pending `goal`/`project`/`concept`/`knowledge`/`playbook`: marked `rejected` (reason `ttl-expired-90d`) after 90 days — marked rows then age out under the 90-day accepted/rejected rule | `scheduler.runDailyPendingProposalsPrune` at 03:00 Asia/Taipei |
 | `knowledge_items` | Ebbinghaus decay, low-importance rows only | `decay.Pruner` daily decay job |
 | `concepts` | Ebbinghaus decay, low-importance rows only | `decay.Pruner` daily decay job |
 | `memory_atoms` | 90 days for low-value atoms | `decay.Pruner` via atom store pruning |

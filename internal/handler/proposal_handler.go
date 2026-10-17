@@ -10,9 +10,7 @@ import (
 	"strings"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
-	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
@@ -46,32 +44,6 @@ type proposalListStore interface {
 	Resolve(ctx context.Context, id uuid.UUID, status proposal.Status) (*db.PendingProposal, error)
 }
 
-// proposalConceptStore covers the learning operations needed when accepting a
-// concept proposal.
-type proposalConceptStore interface {
-	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
-}
-
-// proposalDecisionStore covers the decision operation needed when accepting
-// a TypeDecision proposal. The handler depends on the iface (not the
-// concrete *Store) so tests can inject a fake without booting a DB.
-type proposalDecisionStore interface {
-	Log(ctx context.Context, p decision.LogParams) (*db.Decision, error)
-}
-
-// proposalKnowledgeStore covers the knowledge operation needed when accepting
-// a TypeKnowledge proposal.
-type proposalKnowledgeStore interface {
-	AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error)
-}
-
-// proposalTaskStore covers the task-creation operation needed when accepting
-// a TypeTask proposal (TASK 3 of feature/gtd-enforce-server-side). Kept narrow
-// so tests can inject a fake without pulling the full gtd.StoreIface surface.
-type proposalTaskStore interface {
-	CreateTask(ctx context.Context, p gtd.CreateTaskParams) (*db.Task, error)
-}
-
 // goalProjectAcceptAdapterFactory constructs a fresh proposal.AcceptAdapter
 // for one proposal.AcceptOrchestration(ctx, id, adapter) call, given the
 // target proposal id. A factory func — rather than a single pre-built
@@ -79,8 +51,8 @@ type proposalTaskStore interface {
 // state (see AcceptAdapter's doc comment) and must be constructed new for
 // every accept.
 //
-// This is a func type, not a narrow store interface like the other
-// proposal*Store fields above, because building proposal.PgAcceptDeps /
+// This is a func type, not a narrow store interface like proposalListStore
+// above, because building proposal.PgAcceptDeps /
 // sqlite.AcceptDeps requires backend-specific types (pgxpool.Pool,
 // *gtd.Store vs *sqlite.GTDStore, ...) that the handler package has no
 // business importing (ADR-0003 keeps pgx/sqlite typing out of the handler
@@ -96,62 +68,33 @@ type goalProjectAcceptAdapterFactory func(id uuid.UUID) proposal.AcceptAdapter
 // POST /api/proposals/:id/confirm.
 type ProposalHandler struct {
 	proposal proposalListStore
-	learning proposalConceptStore
-	// decision is optional; nil disables decision-proposal materialisation
-	// (handler returns 500 on accept of a TypeDecision row). For full
-	// behaviour wire NewProposalHandlerWithDecision.
-	decision proposalDecisionStore
-	// knowledge is optional; nil disables knowledge-proposal materialisation.
-	// Wire via WithKnowledge.
-	knowledge proposalKnowledgeStore
-	// task is optional; nil disables task-proposal materialisation. When nil
-	// and the proposal type is TypeTask, accept falls back to the legacy
-	// "Resolve only" branch (matches pre-TASK-3 behaviour). Wire via WithTask.
-	task proposalTaskStore
-	// goalProjectAdapter is optional; nil disables goal/project-proposal
-	// materialisation. When nil and the proposal type is TypeGoal or
-	// TypeProject, accept falls back to the legacy "Resolve only" branch
-	// (matches pre-A1-http behaviour, and keeps callers that don't wire
+	// goalProjectAdapter is optional; nil disables seam-routed materialisation.
+	// When nil and the proposal type is TypeGoal, TypeProject or TypeKnowledge,
+	// accept falls back to the legacy "Resolve only" branch (matches
+	// pre-A1-http behaviour, and keeps callers that don't wire
 	// WithGoalProjectAccept — e.g. existing unit tests — working unchanged).
-	// Wire via WithGoalProjectAccept.
+	// TypeDecision, TypeConcept and TypeTask do NOT fall back: they fail closed
+	// (500 / per-row "internal error", no resolve). Wire via WithGoalProjectAccept.
 	goalProjectAdapter goalProjectAcceptAdapterFactory
 }
 
-// NewProposalHandler creates a ProposalHandler. Decision-proposal accept will
-// fail with 500 unless WithDecision is also used (see
-// NewProposalHandlerWithDecision).
-func NewProposalHandler(p proposalListStore, l proposalConceptStore) *ProposalHandler {
-	return &ProposalHandler{proposal: p, learning: l}
-}
-
-// WithDecision wires the decision store used by the TypeDecision accept path.
-// Returns the handler for chaining. nil decision = decision-accept disabled.
-func (h *ProposalHandler) WithDecision(d proposalDecisionStore) *ProposalHandler {
-	h.decision = d
-	return h
-}
-
-// WithKnowledge wires the knowledge store used by the TypeKnowledge accept path.
-// Returns the handler for chaining. nil knowledge = knowledge-accept disabled.
-func (h *ProposalHandler) WithKnowledge(k proposalKnowledgeStore) *ProposalHandler {
-	h.knowledge = k
-	return h
-}
-
-// WithTask wires the gtd store used by the TypeTask accept path
-// (TASK 3 of feature/gtd-enforce-server-side). Returns the handler for
-// chaining. nil = TypeTask accept falls back to the legacy resolve-only branch.
-func (h *ProposalHandler) WithTask(t proposalTaskStore) *ProposalHandler {
-	h.task = t
-	return h
+// NewProposalHandler creates a ProposalHandler over the list/resolve store p.
+// [F204-03] It takes no concept or knowledge store: every accept that
+// materialises a row goes through the adapter wired with
+// WithGoalProjectAccept. Accepting a decision, concept or task proposal fails
+// with 500 unless WithGoalProjectAccept is also used: those three types have no
+// resolve-only fallback.
+func NewProposalHandler(p proposalListStore) *ProposalHandler {
+	return &ProposalHandler{proposal: p}
 }
 
 // WithGoalProjectAccept wires the factory used to construct a fresh
-// proposal.AcceptAdapter per accept call for TypeGoal / TypeProject
-// proposals, routing them through the same atomic
-// proposal.AcceptOrchestration flow the MCP path uses. Returns the handler
-// for chaining. nil (the zero value) falls back to the legacy resolve-only
-// branch — mirrors WithTask's nil h.task fallback.
+// proposal.AcceptAdapter per accept call for TypeGoal / TypeProject /
+// TypeKnowledge / TypeDecision / TypeConcept / TypeTask proposals, routing them
+// through the same atomic proposal.AcceptOrchestration flow the MCP path uses.
+// Returns the handler for chaining. nil (the zero value) falls back to the
+// legacy resolve-only branch for goal/project/knowledge and fails closed for
+// TypeDecision, TypeConcept and TypeTask.
 func (h *ProposalHandler) WithGoalProjectAccept(f goalProjectAcceptAdapterFactory) *ProposalHandler {
 	h.goalProjectAdapter = f
 	return h
@@ -328,12 +271,12 @@ func (h *ProposalHandler) ConfirmProposal(c echo.Context) error {
 	}
 }
 
-// handleAccept executes the accept flow: Get → status guard → materialise
-// (type-specific, before Resolve) → Resolve (atomic, WHERE status='pending').
-// All types materialise BEFORE Resolve so a Resolve failure never leaves an
-// "accepted" proposal with no backing row. Concurrent accepts can both
-// materialise a resource before either Resolve fires; the second Resolve
-// returns ErrNotFound → 409. Orphan resource > missing resource.
+// handleAccept executes the accept flow: Get → status guard → type-specific
+// accept. TypeGoal/TypeProject/TypeKnowledge/TypeDecision/TypeConcept/TypeTask
+// go through proposal.AcceptOrchestration, which materialises and resolves
+// inside ONE transaction, so a failed resolve (including a concurrent accept
+// that wins the race) rolls the materialised row back and leaves no orphan.
+// Every other type resolves only.
 func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id uuid.UUID) error {
 	prop, err := h.proposal.Get(ctx, id)
 	if errors.Is(err, proposal.ErrNotFound) {
@@ -348,13 +291,23 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 	}
 
 	switch proposal.Type(prop.Type) {
-	case proposal.TypeDecision:
-		return h.acceptDecision(c, ctx, id, prop)
-	case proposal.TypeConcept:
-		return h.acceptConcept(c, ctx, id, prop)
-	case proposal.TypeTask:
-		return h.acceptTask(c, ctx, id, prop)
-	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge:
+	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge, proposal.TypeDecision, proposal.TypeConcept, proposal.TypeTask:
+		// TypeTask routes through the same atomic proposal.AcceptOrchestration
+		// seam: the tasks row and the proposal resolve commit together, so a
+		// lost race between two accepts rolls the task insert back (the former
+		// two-step CreateTask followed by a separate proposal resolve left an
+		// orphan task).
+		// TypeConcept routes through the same atomic
+		// proposal.AcceptOrchestration seam: the concepts row, its
+		// review_schedule row and the proposal resolve commit together, so a
+		// failed resolve rolls both rows back (the former two-step concept
+		// create followed by a separate proposal resolve left an orphan
+		// concept).
+		// TypeDecision routes through the same atomic
+		// proposal.AcceptOrchestration seam: the decision insert and the
+		// proposal resolve commit together, so a failed resolve rolls the
+		// decisions row back (the former h.decision.Log + separate
+		// h.proposal.Resolve pair left an orphan row).
 		// [F184-03] TypeKnowledge routes through the same atomic
 		// proposal.AcceptOrchestration seam as TypeGoal/TypeProject —
 		// h.goalProjectAdapter's deps already carry a.deps.Knowledge (wired
@@ -384,114 +337,47 @@ func (h *ProposalHandler) handleAccept(c echo.Context, ctx context.Context, id u
 	}
 }
 
-// acceptTask materialises a TypeTask proposal into the tasks table after
-// running the same validator (CheckVagueness + CheckKindFields) that
-// handleAddTask runs. In strict mode (WBT_STRICT_VAGUENESS=true) warnings
-// abort the accept with HTTP 400; otherwise they are surfaced in the
-// response body for the UI to display.
-//
-// Materialise BEFORE Resolve — matches acceptDecision / acceptConcept /
-// acceptKnowledge. If Resolve fails on race, the task row is left behind
-// (orphan > missing).
-//
-// nil task store falls back to a "resolve only" branch so the proposal can
-// still be cleared from the queue — this matches the pre-TASK-3 behaviour
-// for callers that don't yet wire WithTask.
-func (h *ProposalHandler) acceptTask(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
-	tp, errMsg := decodeTaskProposalPayload(prop.Payload)
-	if errMsg != "" {
-		return c.JSON(http.StatusBadRequest, errResp(errMsg))
-	}
-
-	// Run the SAME validator that handleAddTask runs — closing the bypass
-	// identified by SA decision 42e0b783. Field name "description" matches the
-	// MCP add_task message so existing warnings translate 1:1.
-	//
-	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
-	// of silently coercing it (GTD f457740e / [F0902-54]) — the kind warning
-	// is merged first so strict mode fails on it exactly like any other
-	// vagueness warning.
-	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
-	warnings := validator.CheckTaskInput(tp.Description, kind)
-	if kindWarning != "" {
-		warnings = append([]string{kindWarning}, warnings...)
-	}
-	if len(warnings) > 0 && validator.StrictModeEnabled() {
-		return c.JSON(http.StatusBadRequest, map[string]any{
-			"error":    "vagueness check failed",
-			"warnings": warnings,
-		})
-	}
-
-	if h.task == nil {
-		// Legacy resolve-only fallback when the gtd store is not wired.
-		// Surface warnings if any so the caller still gets visibility.
-		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
-		if errors.Is(err, proposal.ErrNotFound) {
-			return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
-		}
-		if err != nil {
-			c.Logger().Errorf("ConfirmProposal resolve task %s: %v", id, err)
-			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-		}
-		return c.JSON(http.StatusOK, confirmResponse{
-			Proposal: toResponse(*resolved),
-			Warnings: warnings,
-		})
-	}
-
-	task, err := h.task.CreateTask(ctx, gtd.CreateTaskParams{
-		Title:       tp.Title,
-		Description: tp.Description,
-		Kind:        kind,
-	})
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal materialise task %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-
-	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
-	if errors.Is(err, proposal.ErrNotFound) {
-		c.Logger().Warnf("ConfirmProposal accept %s: resolved concurrently (orphan task %s)", id, task.ID)
-		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
-	}
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal resolve task %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-	return c.JSON(http.StatusOK, confirmResponse{
-		Proposal: toResponse(*resolved),
-		Task:     task,
-		Warnings: warnings,
-	})
-}
-
-// acceptGoalOrProject materialises a TypeGoal, TypeProject, or [F184-03]
-// TypeKnowledge proposal via the atomic proposal.AcceptOrchestration flow
-// (ReadPending → PrepareOutOfBand → BeginTx → Materialize → ResolveAccepted
-// → Commit) — the same seam internal/proposal/accept_pg.go and
-// internal/storage/sqlite/accept_proposal.go already implement for the MCP
-// path. Unlike acceptConcept/acceptDecision/acceptTask (which materialise
-// via a narrow store field then call h.proposal.Resolve as a second,
-// non-atomic step), this path is a single atomic transaction —
-// AcceptOrchestration owns the materialise + resolve pairing itself, so
-// there is no separate "materialise-then-resolve race" to reason about here.
+// acceptGoalOrProject materialises a TypeGoal, TypeProject, [F184-03]
+// TypeKnowledge, TypeDecision, TypeConcept, or TypeTask proposal via the atomic
+// proposal.AcceptOrchestration flow (ReadPending → PrepareOutOfBand → BeginTx
+// → Materialize → ResolveAccepted → Commit) — the same seam
+// internal/proposal/accept_pg.go and internal/storage/sqlite/accept_proposal.go
+// already implement for the MCP path. This path is a single atomic
+// transaction — AcceptOrchestration owns the materialise + resolve pairing
+// itself, so there is no separate "materialise-then-resolve race" to reason
+// about here: a lost race rolls the materialised row back.
 //
 // TypeGoal/TypeProject discard AcceptOrchestration's created value (no
-// dedicated confirmResponse field exists for either). TypeKnowledge does
-// NOT discard it — confirmResponse.KnowledgeItem is an existing API field
-// callers depend on; silently dropping it here would be a response-shape
-// regression.
+// dedicated confirmResponse field exists for either). TypeKnowledge,
+// TypeDecision, TypeConcept and TypeTask do NOT discard it —
+// confirmResponse.KnowledgeItem / Decision / Concept / Task are existing API
+// fields callers depend on; silently dropping them here would be a
+// response-shape regression (see seamAcceptResponse).
 //
-// h.goalProjectAdapter nil → legacy resolve-only fallback (matches the prior
-// default-branch behaviour, and keeps existing callers that don't wire
-// WithGoalProjectAccept working unchanged, e.g. TestProposalHandler_ConfirmBatch's
-// "concept + goal" case). For TypeKnowledge this means no knowledge_items row
-// is materialised when unwired — production always wires
-// WithGoalProjectAccept (cmd/server/main.go), so this fallback is only
-// reachable from a handler built without it (e.g. a test).
+// h.goalProjectAdapter nil: TypeDecision, TypeConcept and TypeTask fail
+// CLOSED — 500 and no resolve, because a resolve-only fallback would flip the
+// proposal to accepted with no decisions / concepts / tasks row behind it
+// (permanent data loss: Resolve only matches status='pending').
+// TypeGoal/TypeProject/TypeKnowledge keep the legacy resolve-only fallback
+// (matches the prior default-branch behaviour, and keeps existing callers that
+// don't wire WithGoalProjectAccept working unchanged); for TypeKnowledge that
+// means no knowledge_items row is materialised when unwired. Production always
+// wires WithGoalProjectAccept (cmd/server/main.go), so the unwired branch is
+// only reachable from a handler built without it (e.g. a test).
 func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
 	if h.goalProjectAdapter == nil {
+		if proposal.Type(prop.Type) == proposal.TypeDecision { // [F205-03] fail closed: no resolve-only fallback for decisions
+			c.Logger().Errorf("ConfirmProposal accept %s: decision accept adapter not wired", id)
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
+		}
+		if proposal.Type(prop.Type) == proposal.TypeConcept { // [F205-07] fail closed: no resolve-only fallback for concepts
+			c.Logger().Errorf("ConfirmProposal accept %s: concept accept adapter not wired", id)
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
+		}
+		if proposal.Type(prop.Type) == proposal.TypeTask { // [F205-12] fail closed: no resolve-only fallback for tasks
+			c.Logger().Errorf("ConfirmProposal accept %s: task accept adapter not wired", id)
+			return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
+		}
 		resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
 		if errors.Is(err, proposal.ErrNotFound) {
 			return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
@@ -504,15 +390,17 @@ func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Contex
 	}
 
 	// Validate the payload decodes cleanly BEFORE opening a transaction, so a
-	// malformed payload surfaces as 400 (matching acceptConcept/acceptDecision/
-	// acceptTask's decode-first pattern) instead of a generic 500 from deep
+	// malformed payload surfaces as 400 instead of a generic 500 from deep
 	// inside AcceptOrchestration's Materialize step. The adapter decodes the
-	// same bytes again inside the tx — cheap for these small JSON payloads,
-	// and keeps decode logic single-sourced in
-	// proposal.DecodeGoalParams/DecodeProjectParams/DecodeKnowledgePayload
-	// rather than duplicated here.
-	if errMsg := validateGoalProjectPayload(proposal.Type(prop.Type), prop.Payload); errMsg != "" {
-		return c.JSON(http.StatusBadRequest, errResp(errMsg))
+	// same bytes again inside the tx — cheap for these small JSON payloads, and
+	// keeps decode logic single-sourced in proposal.DecodeGoalParams/
+	// DecodeProjectParams/DecodeKnowledgePayload/DecodeDecisionParams/
+	// DecodeTaskParams rather than duplicated here. For TypeTask the gate also
+	// carries the vagueness warnings to the response (and rejects them in
+	// strict mode).
+	warnings, badRequest := acceptPayloadGate(proposal.Type(prop.Type), prop.Payload)
+	if badRequest != nil {
+		return c.JSON(http.StatusBadRequest, badRequest)
 	}
 
 	adapter := h.goalProjectAdapter(id)
@@ -527,20 +415,127 @@ func (h *ProposalHandler) acceptGoalOrProject(c echo.Context, ctx context.Contex
 		c.Logger().Errorf("ConfirmProposal accept %s: %v", id, err)
 		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
 	}
-	resp := confirmResponse{Proposal: toResponse(*resolved)}
-	if proposal.Type(prop.Type) == proposal.TypeKnowledge {
-		if item, ok := created.(*db.KnowledgeItem); ok {
-			resp.KnowledgeItem = item
-		}
+	resp := seamAcceptResponse(proposal.Type(prop.Type), resolved, created, warnings)
+	if proposal.Type(prop.Type) == proposal.TypeTask && resp.Task == nil {
+		// The transaction is already committed, so respond 200 without the task
+		// rather than a 5xx for a row that exists.
+		c.Logger().Errorf("ConfirmProposal accept %s: task adapter returned %T carrying no *db.Task", id, created)
 	}
 	return c.JSON(http.StatusOK, resp)
 }
 
+// acceptPayloadGate is the pre-transaction payload gate of the seam accept
+// path. It returns the vagueness warnings to surface in the response (TypeTask
+// only) and, when the payload must be refused, the 400 body.
+func acceptPayloadGate(t proposal.Type, payload []byte) (warnings []string, badRequest any) {
+	if t == proposal.TypeTask {
+		return taskPayloadGate(payload)
+	}
+	if errMsg := validateGoalProjectPayload(t, payload); errMsg != "" {
+		return nil, errResp(errMsg)
+	}
+	return nil, nil
+}
+
+// publicDecodeErr turns a payload decode error into text that is safe to put
+// in a 400 body. encoding/json errors (*json.SyntaxError,
+// *json.UnmarshalTypeError) carry Go struct field and type names and the
+// offending input character, so they collapse to "<prefix>: malformed JSON",
+// where <prefix> is the text before the first ": " in err.Error() ("decoding
+// task payload" for "decoding task payload: invalid character ..."); a JSON
+// error with no such prefix becomes "proposal payload is malformed". Any other
+// error is one of the decoders' own validation messages ("task payload missing
+// title", ...) and is returned unchanged. [F204-04]
+func publicDecodeErr(err error) string {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	if errors.As(err, &syn) || errors.As(err, &typ) {
+		if prefix, _, ok := strings.Cut(err.Error(), ": "); ok {
+			return prefix + ": malformed JSON"
+		}
+		return "proposal payload is malformed"
+	}
+	return err.Error()
+}
+
+// taskPayloadGate decodes a TypeTask payload in warn mode (the adapter
+// re-decodes inside the transaction with the server's real strict setting) and
+// applies the strict-mode decision HERE, so a vague payload is a 400 carrying
+// the warnings array decided before any transaction opens — not a generic 500
+// from a failed Materialize. Non-strict warnings are returned for the response.
+func taskPayloadGate(payload []byte) (warnings []string, badRequest any) {
+	_, warnings, err := proposal.DecodeTaskParams(payload, false)
+	if err != nil {
+		return nil, errResp(publicDecodeErr(err))
+	}
+	if len(warnings) > 0 && validator.StrictModeEnabled() {
+		return nil, map[string]any{
+			"error":    "vagueness check failed",
+			"warnings": warnings,
+		}
+	}
+	return warnings, nil
+}
+
+// taskFromCreated extracts the created task from the value AcceptOrchestration
+// returned for a TypeTask: either a bare *db.Task, or the map[string]any
+// {"task": *db.Task, "warnings": []string} both adapters return when the payload
+// raised warnings. A handler that recognised only the first shape would
+// silently drop `task` on every warn-mode accept. Any other shape yields nil.
+func taskFromCreated(created any) *db.Task {
+	switch v := created.(type) {
+	case *db.Task:
+		return v
+	case map[string]any:
+		if task, ok := v["task"].(*db.Task); ok {
+			return task
+		}
+	}
+	return nil
+}
+
+// seamAcceptResponse builds the confirm response for a proposal accepted via
+// proposal.AcceptOrchestration. Four types carry a dedicated confirmResponse
+// field that surfaces the created row: TypeKnowledge (KnowledgeItem),
+// TypeDecision (Decision), TypeConcept (Concept) and TypeTask (Task, with the
+// gate's warnings); TypeGoal and TypeProject discard it. Both backends' adapters MUST return the concrete db type
+// for these — a different shape would silently drop the field from the
+// response, which is why the backend parity of each is pinned by a test
+// (e.g. TestConfirmProposal_TypeDecision_BackendParity).
+func seamAcceptResponse(t proposal.Type, resolved *db.PendingProposal, created any, warnings []string) confirmResponse {
+	resp := confirmResponse{Proposal: toResponse(*resolved)}
+	switch t {
+	case proposal.TypeKnowledge:
+		if item, ok := created.(*db.KnowledgeItem); ok {
+			resp.KnowledgeItem = item
+		}
+	case proposal.TypeDecision:
+		dec, ok := created.(*db.Decision)
+		if ok { // [F205-01] surface the created decision in the response
+			resp.Decision = dec
+		}
+	case proposal.TypeConcept:
+		concept, ok := created.(*db.Concept)
+		if ok { // [F205-05] surface the created concept in the response
+			resp.Concept = concept
+		}
+	case proposal.TypeTask:
+		resp.Task = taskFromCreated(created)
+		resp.Warnings = warnings
+	default:
+		// TypeGoal/TypeProject have no dedicated confirmResponse field, so
+		// their created value is discarded.
+	}
+	return resp
+}
+
 // validateGoalProjectPayload decodes payload with the same
 // proposal.DecodeGoalParams / proposal.DecodeProjectParams /
-// proposal.DecodeKnowledgePayload [F184-03] helpers the AcceptAdapter's
-// Materialize step uses, returning a human-readable message on failure
-// ("" = ok). Non-goal/project/knowledge types are not reachable here (see
+// proposal.DecodeKnowledgePayload [F184-03] / proposal.DecodeDecisionParams
+// [F205-01] helpers the AcceptAdapter's Materialize step uses (TypeConcept is
+// the exception: it is gated by the handler's own, stricter
+// decodeConceptCandidatePayload), returning a human-readable message on
+// failure ("" = ok). Types outside those five are not reachable here (see
 // handleAccept's switch) and fall through to "" (no-op).
 func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 	switch t {
@@ -561,123 +556,34 @@ func validateGoalProjectPayload(t proposal.Type, payload []byte) string {
 		if _, err := proposal.DecodeKnowledgePayload(payload); err != nil {
 			return err.Error()
 		}
+	case proposal.TypeDecision:
+		// [F205-01] proposal.DecodeDecisionParams is the single decoder for
+		// TypeDecision (the old handler-local one had no length caps). Its
+		// validation text is already specific ("decision payload missing
+		// title", "decision title exceeds 512 bytes", ...) so it is surfaced
+		// verbatim, same choice as TypeKnowledge above — except a JSON
+		// syntax/type error, which publicDecodeErr collapses so encoding/json's
+		// own wording never reaches the client. [F204-04]
+		if _, err := proposal.DecodeDecisionParams(payload); err != nil {
+			return publicDecodeErr(err)
+		}
+	case proposal.TypeConcept:
+		// The handler's own decodeConceptCandidatePayload stays the gate: it is
+		// the strictest of the three concept decoders, so passing it implies
+		// proposal.DecodeConceptPayload (the in-tx decode) passes too, and the
+		// 400 texts ("concept title exceeds 512 characters", "too many tags
+		// (max 50)", ...) stay exactly what clients already see.
+		if _, errMsg := decodeConceptCandidatePayload(payload); errMsg != "" {
+			return errMsg
+		}
 	default:
-		// Unreachable: handleAccept's switch only routes
-		// TypeGoal/TypeProject/TypeKnowledge here (proposal_handler.go's
-		// switch above). Kept exhaustive to satisfy the exhaustive linter
-		// without a //nolint suppression.
+		// Not reachable with a gated type: handleAccept's switch routes
+		// TypeGoal/TypeProject/TypeKnowledge/TypeDecision/TypeConcept/TypeTask
+		// to acceptGoalOrProject, and TypeTask is gated by taskPayloadGate
+		// before this function is called (acceptPayloadGate). Kept exhaustive
+		// to satisfy the exhaustive linter without a //nolint suppression.
 	}
 	return ""
-}
-
-// decodeTaskProposalPayload decodes the proposal.TaskPayload JSON shape into
-// a value ready for validator + gtd.CreateTask. Title-required matches the
-// auto-capture producers; missing title is rejected as 400.
-func decodeTaskProposalPayload(payload []byte) (proposal.TaskPayload, string) {
-	var tp proposal.TaskPayload
-	if err := json.Unmarshal(payload, &tp); err != nil {
-		return proposal.TaskPayload{}, "task proposal payload is malformed"
-	}
-	if tp.Title == "" {
-		return proposal.TaskPayload{}, "task proposal payload missing title"
-	}
-	if len(tp.Title) > maxTaskTitle {
-		return proposal.TaskPayload{}, "task proposal title exceeds 500 characters"
-	}
-	return tp, ""
-}
-
-// acceptConcept materialises the concept row BEFORE marking the proposal
-// accepted (matching acceptDecision). If Resolve fails after materialise (e.g.
-// concurrent accept), an orphaned concept row is left behind; orphan > missing.
-func (h *ProposalHandler) acceptConcept(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
-	cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
-	if errMsg != "" {
-		return c.JSON(http.StatusBadRequest, errResp(errMsg))
-	}
-
-	concept, err := h.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal materialise concept %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-
-	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
-	if errors.Is(err, proposal.ErrNotFound) {
-		c.Logger().Warnf("ConfirmProposal accept %s: resolved concurrently (orphan concept %s)", id, concept.ID)
-		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
-	}
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Concept: concept})
-}
-
-// acceptDecision materialises the decision row BEFORE marking the proposal
-// accepted. This avoids the accept-then-fail-materialise race the round-2
-// reviewer flagged: if Resolve succeeded and Log later failed, the proposal
-// would be marked accepted with no decision row to back it. Materialise-first
-// can leave an orphan on Resolve race (rare); orphan > missing.
-func (h *ProposalHandler) acceptDecision(c echo.Context, ctx context.Context, id uuid.UUID, prop *db.PendingProposal) error {
-	if h.decision == nil {
-		c.Logger().Errorf("ConfirmProposal accept %s: decision store not wired", id)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-	dp, errMsg := decodeProposalDecisionPayload(prop.Payload)
-	if errMsg != "" {
-		return c.JSON(http.StatusBadRequest, errResp(errMsg))
-	}
-
-	logged, err := h.decision.Log(ctx, dp)
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal materialise decision %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-
-	resolved, err := h.proposal.Resolve(ctx, id, proposal.StatusAccepted)
-	if errors.Is(err, proposal.ErrNotFound) {
-		// The decision row was already inserted; surface a 409 so the caller
-		// knows the original proposal was already resolved. The orphan row
-		// remains in `decisions` for the user to clean up via list_decisions.
-		c.Logger().Warnf("ConfirmProposal accept %s: proposal resolved between materialise and resolve (orphan decision %s)", id, logged.ID)
-		return c.JSON(http.StatusConflict, errResp("proposal already resolved"))
-	}
-	if err != nil {
-		c.Logger().Errorf("ConfirmProposal resolve %s: %v", id, err)
-		return c.JSON(http.StatusInternalServerError, errResp(errInternalGeneric))
-	}
-	return c.JSON(http.StatusOK, confirmResponse{Proposal: toResponse(*resolved), Decision: logged})
-}
-
-// decodeProposalDecisionPayload decodes a TypeDecision pending_proposals
-// payload (proposal.DecisionProposerPayload JSON shape) into a
-// decision.LogParams ready for store.Log.
-func decodeProposalDecisionPayload(payload []byte) (decision.LogParams, string) {
-	var p proposal.DecisionProposerPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return decision.LogParams{}, "decision proposal payload is malformed"
-	}
-	if p.Title == "" {
-		return decision.LogParams{}, "decision proposal payload missing title"
-	}
-	rationale := p.Rationale
-	if len(p.Alternatives) > 0 {
-		rationale += "\n\nAlternatives considered:"
-		for _, a := range p.Alternatives {
-			rationale += "\n- " + a
-		}
-	}
-	return decision.LogParams{
-		Title:     p.Title,
-		Context:   fmt.Sprintf("auto-proposed by trigger_tool=%s session=%s", p.TriggerTool, p.SessionID),
-		Decision:  p.Decision,
-		Rationale: rationale,
-		// A human accepting a proposal does NOT change its auto origin — the
-		// decision was inferred by a TypeDecision materialiser, not confirmed
-		// fresh by an operator (P3.0a Step 6).
-		Source: decision.SourceAuto,
-	}, ""
 }
 
 // conceptCandidatePayload mirrors the shape stored by AutoProposeConceptFromKnowledge.
@@ -745,22 +651,27 @@ type batchConfirmResponse struct {
 // the proposal (the round-2 reviewer flagged that silent skip on malformed
 // decision payloads was the same data-loss class as missing decisions row).
 type proposalBatchMeta struct {
-	isConcept  bool
-	cp         conceptCandidatePayload
-	isDecision bool
-	dp         decision.LogParams
-	isTask     bool
-	tp         proposal.TaskPayload
-	// isGoalOrProject marks TypeGoal/TypeProject/TypeKnowledge [F184-03]
-	// proposals when h.goalProjectAdapter is wired. Unlike the materialise-
-	// then-generic-Resolve pattern the other types below use, these three
-	// route straight through proposal.AcceptOrchestration (batchResolveOne
-	// returns early for this flag) because AcceptOrchestration owns its own
-	// atomic resolve inside the transaction — see acceptGoalOrProject's doc
-	// comment for why they can't share the two-step pattern. false with
-	// h.goalProjectAdapter nil reproduces the pre-A1-http legacy
-	// resolve-only fallback.
+	// isGoalOrProject marks TypeGoal/TypeProject/TypeKnowledge [F184-03],
+	// TypeDecision [F205-01], TypeConcept and TypeTask proposals when
+	// h.goalProjectAdapter is wired. These six route straight through
+	// proposal.AcceptOrchestration (batchResolveOne returns early for this
+	// flag) because AcceptOrchestration owns its own atomic resolve inside the
+	// transaction — see acceptGoalOrProject's doc comment. false with
+	// h.goalProjectAdapter nil reproduces the pre-A1-http legacy resolve-only
+	// fallback for goal/project/knowledge; TypeDecision, TypeConcept and
+	// TypeTask set notWired instead.
 	isGoalOrProject bool
+	// notWired marks a TypeDecision, TypeConcept or TypeTask proposal seen
+	// while h.goalProjectAdapter is nil [F205-03]. batchResolveOne fails closed
+	// on it — per-row "internal error", never a resolve — because the generic
+	// Resolve at the tail of batchResolveOne would flip the proposal to
+	// accepted with no decisions / concepts / tasks row behind it (the M2
+	// data-loss class lookupFailed documents below).
+	notWired bool
+	// warnings carries a TypeTask proposal's non-strict vagueness warnings from
+	// the pre-fetch gate to batchResolveOne, which copies them onto the
+	// success entry (batchConfirmResultEntry.Warnings). nil for every other type.
+	warnings []string
 	// payloadErr is the human-readable decode failure message; empty = ok.
 	// When non-empty the resolve loop reports it as a per-row error and skips
 	// the resolve entirely (same semantics as the singular handler returning
@@ -779,7 +690,8 @@ type proposalBatchMeta struct {
 	lookupFailed bool
 }
 
-// batchProposalMeta pre-fetches payloads (concept + decision) for the given IDs.
+// batchProposalMeta pre-fetches and gates payloads (the seam-routed
+// goal/project/knowledge/decision/concept/task types) for the given IDs.
 // Proposals genuinely not found are silently skipped — the resolve loop
 // surfaces them via its own ErrNotFound check on h.proposal.Resolve. A
 // transient (non-ErrNotFound) error fetching the row is NOT treated the same
@@ -818,31 +730,34 @@ func (h *ProposalHandler) batchProposalMeta(c echo.Context, ctx context.Context,
 // readable on its own (gocyclo).
 func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) proposalBatchMeta {
 	switch proposal.Type(prop.Type) {
-	case proposal.TypeConcept:
-		cp, errMsg := decodeConceptCandidatePayload(prop.Payload)
-		if errMsg != "" {
-			return proposalBatchMeta{isConcept: true, payloadErr: errMsg}
-		}
-		return proposalBatchMeta{isConcept: true, cp: cp}
-	case proposal.TypeDecision:
-		dp, errMsg := decodeProposalDecisionPayload(prop.Payload)
-		if errMsg != "" {
-			return proposalBatchMeta{isDecision: true, payloadErr: errMsg}
-		}
-		return proposalBatchMeta{isDecision: true, dp: dp}
-	case proposal.TypeTask:
-		tp, errMsg := decodeTaskProposalPayload(prop.Payload)
-		if errMsg != "" {
-			return proposalBatchMeta{isTask: true, payloadErr: errMsg}
-		}
-		return proposalBatchMeta{isTask: true, tp: tp}
-	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge:
+	case proposal.TypeGoal, proposal.TypeProject, proposal.TypeKnowledge, proposal.TypeDecision, proposal.TypeConcept, proposal.TypeTask:
 		if h.goalProjectAdapter == nil {
+			if proposal.Type(prop.Type) == proposal.TypeDecision {
+				// [F205-03] No resolve-only fallback for TypeDecision: it would
+				// flip the proposal to accepted with no decisions row. Fail
+				// closed in batchResolveOne instead (notWired).
+				return proposalBatchMeta{notWired: true}
+			}
+			if proposal.Type(prop.Type) == proposal.TypeConcept {
+				// Same reasoning for TypeConcept: a resolve-only fallback would
+				// accept the proposal with no concepts row behind it.
+				return proposalBatchMeta{notWired: true}
+			}
+			if proposal.Type(prop.Type) == proposal.TypeTask { // [F205-13] fail closed: no resolve-only fallback for tasks
+				// Same reasoning for TypeTask: a resolve-only fallback would
+				// accept the proposal with no tasks row behind it.
+				return proposalBatchMeta{notWired: true}
+			}
 			// Legacy fallback: resolve-only, matches pre-A1-http behaviour and
 			// keeps existing callers that don't wire WithGoalProjectAccept
-			// working unchanged (e.g. TestProposalHandler_ConfirmBatch's
-			// "concept + goal" case).
+			// working unchanged.
 			return proposalBatchMeta{}
+		}
+		if proposal.Type(prop.Type) == proposal.TypeTask {
+			// The task gate (decode + strict) sits between the nil-adapter block
+			// above and the shared validate below: it needs the warnings, which
+			// validateGoalProjectPayload's string-only return cannot carry.
+			return batchTaskMeta(prop.Payload)
 		}
 		// Decode-first, same as acceptGoalOrProject's decode-before-tx
 		// pattern: surfaces a specific per-row error instead of a generic one
@@ -856,12 +771,30 @@ func (h *ProposalHandler) batchProposalMetaForType(prop *db.PendingProposal) pro
 	}
 }
 
+// batchTaskMeta is the batch twin of taskPayloadGate: it decodes a TypeTask
+// payload in warn mode and applies the strict-mode decision HERE, before any
+// transaction, as a per-row payloadErr — a decode failure carries the decoder's
+// text through publicDecodeErr, a strict-mode vagueness failure "vagueness
+// check failed: w1; w2". Otherwise the warnings ride along in the meta for
+// batchResolveOne to copy onto the success entry.
+func batchTaskMeta(payload []byte) proposalBatchMeta {
+	_, warnings, err := proposal.DecodeTaskParams(payload, false)
+	if err != nil {
+		return proposalBatchMeta{isGoalOrProject: true, payloadErr: publicDecodeErr(err)}
+	}
+	if len(warnings) > 0 && validator.StrictModeEnabled() {
+		return proposalBatchMeta{isGoalOrProject: true, payloadErr: "vagueness check failed: " + strings.Join(warnings, "; ")}
+	}
+	return proposalBatchMeta{isGoalOrProject: true, warnings: warnings}
+}
+
 // batchResolveOne resolves a single proposal and materialises the appropriate
-// entity. Decision and concept materialise BEFORE Resolve so a Resolve
-// failure never leaves an "accepted" proposal with no backing row;
-// goal/project/knowledge [F184-03] route through the atomic
-// proposal.AcceptOrchestration seam below instead (materialise + resolve
-// happen inside one transaction).
+// entity. Goal/project/knowledge [F184-03], decision [F205-01], concept and
+// task route through the atomic proposal.AcceptOrchestration seam below
+// (materialise + resolve happen inside one transaction, so a Resolve failure
+// never leaves an "accepted" proposal with no backing row and never leaves an
+// orphan row either); every other accept falls through to the generic Resolve
+// at the tail.
 //
 //nolint:gocyclo // per-type materialisation branches are inherently complex; each branch calls extracted helpers
 func (h *ProposalHandler) batchResolveOne(
@@ -887,19 +820,30 @@ func (h *ProposalHandler) batchResolveOne(
 		return entry
 	}
 
-	// Goal/project/knowledge [F184-03] route through the same atomic
-	// proposal.AcceptOrchestration flow acceptGoalOrProject uses (ReadPending
-	// → PrepareOutOfBand → BeginTx → Materialize → ResolveAccepted → Commit).
-	// Unlike the materialise-then-generic-Resolve types below,
-	// AcceptOrchestration performs its OWN resolve inside the transaction, so
-	// this branch returns directly instead of falling through to the tail
-	// h.proposal.Resolve call — calling Resolve a second time on an
-	// already-accepted proposal would report a spurious "not found or
-	// already resolved". The materialised item (e.g. *db.KnowledgeItem) is
-	// intentionally discarded here (`_`) — unlike the singular
-	// acceptGoalOrProject path, batchConfirmResultEntry has no per-type item
-	// field, only OK/Error (matches the existing concept/decision batch
-	// behaviour, which also never surfaces the created row).
+	// Fail closed [F205-03]: a TypeDecision, TypeConcept or TypeTask proposal
+	// with no accept adapter wired. Same reason as lookupFailed above — the
+	// tail Resolve would mark it accepted with no decisions / concepts / tasks
+	// row behind it.
+	if status == proposal.StatusAccepted && hasMeta && m.notWired {
+		c.Logger().Errorf("ConfirmBatch accept %s: accept adapter not wired", id)
+		entry.Error = errInternalGeneric
+		return entry
+	}
+
+	// Goal/project/knowledge [F184-03], decision [F205-01], concept and task
+	// route through the same atomic proposal.AcceptOrchestration flow
+	// acceptGoalOrProject uses (ReadPending → PrepareOutOfBand → BeginTx →
+	// Materialize → ResolveAccepted → Commit). AcceptOrchestration performs its
+	// OWN resolve inside the transaction, so this branch returns directly
+	// instead of falling through to the tail h.proposal.Resolve call — calling
+	// Resolve a second time on an already-accepted proposal would report a
+	// spurious "not found or already resolved". The materialised item (e.g.
+	// *db.KnowledgeItem, *db.Decision, *db.Concept, *db.Task) is intentionally
+	// discarded here (`_`) — unlike the singular acceptGoalOrProject path,
+	// batchConfirmResultEntry has no per-type item field. The one thing a TypeTask
+	// success does surface is its warn-mode warnings (additive field; the front
+	// end does not read it and no MCP tool wraps this endpoint), taken from the
+	// pre-fetch gate's meta.
 	if status == proposal.StatusAccepted && hasMeta && m.isGoalOrProject {
 		if m.payloadErr != "" {
 			entry.Error = m.payloadErr
@@ -916,88 +860,13 @@ func (h *ProposalHandler) batchResolveOne(
 				entry.Error = "project name already exists"
 				return entry
 			}
-			c.Logger().Errorf("ConfirmBatch accept goal/project %s: %v", id, err)
+			c.Logger().Errorf("ConfirmBatch accept via seam %s: %v", id, err)
 			entry.Error = errInternalGeneric
 			return entry
 		}
 		entry.OK = true
+		entry.Warnings = m.warnings
 		return entry
-	}
-
-	// All types materialise BEFORE Resolve: orphan resource on a concurrent
-	// accept is preferable to an "accepted" proposal with no backing row.
-	if status == proposal.StatusAccepted && hasMeta {
-		if m.isDecision {
-			if m.payloadErr != "" {
-				entry.Error = m.payloadErr
-				return entry
-			}
-			if h.decision == nil {
-				c.Logger().Errorf("ConfirmBatch accept decision %s: decision store not wired", id)
-				entry.Error = errInternalGeneric
-				return entry
-			}
-			if _, derr := h.decision.Log(ctx, m.dp); derr != nil {
-				c.Logger().Errorf("ConfirmBatch materialise decision %s: %v", id, derr)
-				entry.Error = errInternalGeneric
-				return entry
-			}
-		}
-		if m.isConcept {
-			if m.payloadErr != "" {
-				entry.Error = m.payloadErr
-				return entry
-			}
-			if h.learning == nil {
-				c.Logger().Errorf("ConfirmBatch accept concept %s: learning store not wired", id)
-				entry.Error = errInternalGeneric
-				return entry
-			}
-			if _, cerr := h.learning.CreateConcept(ctx, m.cp.Title, m.cp.Content, m.cp.Tags); cerr != nil {
-				c.Logger().Errorf("ConfirmBatch materialise concept %s: %v", id, cerr)
-				entry.Error = errInternalGeneric
-				return entry
-			}
-		}
-		if m.isTask {
-			if m.payloadErr != "" {
-				entry.Error = m.payloadErr
-				return entry
-			}
-			if h.task == nil {
-				// Legacy: resolve-only when task store not wired. Same fallback as
-				// singular acceptTask (line 357). Allow resolve to proceed.
-			} else {
-				// ResolveTaskKind surfaces an invalid suggested_kind as a
-				// warning instead of silently coercing it (GTD f457740e /
-				// [F0902-54]) — merged first so strict mode fails on it like
-				// any other vagueness warning.
-				kind, kindWarning := validator.ResolveTaskKind(m.tp.SuggestedKind)
-				warnings := validator.CheckTaskInput(m.tp.Description, kind)
-				if kindWarning != "" {
-					warnings = append([]string{kindWarning}, warnings...)
-				}
-				if len(warnings) > 0 && validator.StrictModeEnabled() {
-					entry.Error = "vagueness check failed: " + strings.Join(warnings, "; ")
-					return entry
-				}
-				if _, terr := h.task.CreateTask(ctx, gtd.CreateTaskParams{
-					Title:       m.tp.Title,
-					Description: m.tp.Description,
-					Kind:        kind,
-				}); terr != nil {
-					c.Logger().Errorf("ConfirmBatch materialise task %s: %v", id, terr)
-					entry.Error = errInternalGeneric
-					return entry
-				}
-				// Additive (spec f457740e Risk flags D4): entry.Warnings is a
-				// new optional field; front end doesn't read it and no MCP
-				// tool wraps this endpoint. Surfaces warn-mode warnings
-				// (kind + description vagueness) that batch accept
-				// previously discarded entirely.
-				entry.Warnings = warnings
-			}
-		}
 	}
 
 	if _, err := h.proposal.Resolve(ctx, id, status); err != nil {

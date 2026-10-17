@@ -151,21 +151,35 @@ func DecodeProjectParams(payload []byte) (gtd.CreateProjectParams, error) {
 // DecodeConceptPayload decodes and validates a type=concept
 // pending_proposals.payload. Ported from
 // internal/mcp/tools_proposal.go's decodeConceptPayload (same length caps).
+//
+// The payload is first decoded into a private struct that also declares
+// source_item_id and source_item_type, only so a non-string value for either
+// makes json.Unmarshal fail — which is how the HTTP handler's and the MCP
+// path's concept decoders already behave. ConceptPayload itself (and so both
+// materializeConcept callers) is unchanged: title, content and tags are
+// copied out and the two source fields are dropped.
 func DecodeConceptPayload(payload []byte) (ConceptPayload, error) {
-	var p ConceptPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
+	var raw struct {
+		Title          string   `json:"title"`
+		Content        string   `json:"content"`
+		Tags           []string `json:"tags,omitempty"`
+		SourceItemID   string   `json:"source_item_id"`
+		SourceItemType string   `json:"source_item_type"`
+	}
+	err := json.Unmarshal(payload, &raw)
+	if err != nil { // [F205-09] a non-string source_item_* is rejected here, aligned with the handler and MCP decoders
 		return ConceptPayload{}, fmt.Errorf("decoding concept payload: %w", err)
 	}
-	if len(p.Title) > 512 {
+	if len(raw.Title) > 512 {
 		return ConceptPayload{}, fmt.Errorf("concept title exceeds 512 bytes")
 	}
-	if len(p.Content) > 65536 {
+	if len(raw.Content) > 65536 {
 		return ConceptPayload{}, fmt.Errorf("concept content exceeds 64 KB")
 	}
-	if len(p.Tags) > 50 {
+	if len(raw.Tags) > 50 {
 		return ConceptPayload{}, fmt.Errorf("too many tags (max 50)")
 	}
-	return p, nil
+	return ConceptPayload{Title: raw.Title, Content: raw.Content, Tags: raw.Tags}, nil
 }
 
 // DecodeDecisionParams decodes a type=decision pending_proposals.payload
@@ -236,14 +250,18 @@ func DecodeTaskParams(payload []byte, strict bool) (gtd.CreateTaskParams, []stri
 
 	// ResolveTaskKind surfaces an invalid suggested_kind as a warning instead
 	// of silently coercing it (GTD f457740e / [F0902-54]) — merged first so
-	// strict mode fails on it like any other vagueness warning. Not yet
-	// production-reachable for TypeTask (see doc comment above).
+	// strict mode fails on it like any other vagueness warning. [F204-02]
+	// Reached in production by the HTTP accept gates
+	// (taskPayloadGate and batchTaskMeta in internal/handler/proposal_handler.go)
+	// and by both adapters' materializeTask (internal/proposal/accept_pg.go,
+	// internal/storage/sqlite/accept_proposal.go).
 	//
 	// [GTD c761ba5c] The lockstep this comment used to only assert is now
 	// enforced: the warning text is bounded and neutralised inside
 	// ResolveTaskKind, so all four call sites get it by construction rather
-	// than by each remembering to. Wiring this seam to production therefore
-	// cannot reintroduce the forged-marker escape on its own.
+	// than by each remembering to. This seam is wired to production, and the
+	// forged-marker escape stays closed because every call site gets the
+	// bounded, neutralised warning from ResolveTaskKind.
 	kind, kindWarning := validator.ResolveTaskKind(tp.SuggestedKind)
 	warnings := validator.CheckTaskInput(tp.Description, kind)
 	if kindWarning != "" {

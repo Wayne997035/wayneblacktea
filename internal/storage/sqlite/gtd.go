@@ -1094,6 +1094,24 @@ func (s *GTDStore) taskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 	return &t, nil
 }
 
+// taskByIDTx re-reads a tasks row via the still-open tx, mirroring taskByID's
+// query but scanning through tx instead of s.db.conn. SQLite serialises all
+// access through a single pooled connection (db.go's SetMaxOpenConns(1)) and
+// the accept transaction is holding it, so the s.db.conn read taskByID does
+// would block until the context deadline — same constraint
+// LearningStore.conceptByIDTx and DecisionStore.decisionByIDTx document.
+func (s *GTDStore) taskByIDTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (*db.Task, error) {
+	const q = `SELECT ` + tasksSelectCols + ` FROM tasks WHERE id = ?1 AND (?2 IS NULL OR workspace_id = ?2) LIMIT 1`
+	t, err := scanTask(tx.QueryRowContext(ctx, q, id.String(), s.db.workspaceArg()).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, gtd.ErrNotFound
+	}
+	if err != nil {
+		return nil, errWrap("taskByIDTx", err)
+	}
+	return &t, nil
+}
+
 // GetTaskByID returns a single task by UUID, scoped to the configured workspace.
 // Returns ErrNotFound when no matching row exists. Satisfies gtd.StoreIface.
 func (s *GTDStore) GetTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error) {

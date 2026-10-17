@@ -8,6 +8,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -92,9 +93,10 @@ func (a *sqliteAcceptAdapter) BeginTx(ctx context.Context) error {
 // materializeFromPayloadSQLiteTx: TypeDecision, TypeGoal, TypeProject,
 // TypeConcept. TypeKnowledge is wired via materializeKnowledge below
 // [F184-02], consuming the knowledge.PreparedItem PrepareOutOfBand computed
-// before BeginTx. TypeTask and TypePlaybook are not yet tx-wired on SQLite
-// (the mcp-package original defers them to a post-commit, non-atomic step)
-// — wiring them is a future A1-seam task's job, not this one's.
+// before BeginTx. TypeTask is wired via materializeTask below, which copies
+// the PG adapter's return contract. TypePlaybook is not yet tx-wired on SQLite
+// (the mcp-package original defers it to a post-commit, non-atomic step) —
+// wiring it is a future A1-seam task's job, not this one's.
 func (a *sqliteAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, prepared any) (any, error) {
 	switch proposal.Type(prop.Type) {
 	case proposal.TypeDecision:
@@ -107,13 +109,22 @@ func (a *sqliteAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingP
 		return a.materializeConcept(ctx, prop)
 	case proposal.TypeKnowledge:
 		return a.materializeKnowledge(ctx, prepared)
-	case proposal.TypeTask, proposal.TypePlaybook:
+	case proposal.TypeTask:
+		return a.materializeTask(ctx, prop)
+	case proposal.TypePlaybook:
 		return nil, fmt.Errorf("A1-seam TODO: %s materialize not yet tx-wired on sqlite", prop.Type)
 	default:
 		return nil, fmt.Errorf("unknown proposal type %q", prop.Type)
 	}
 }
 
+// materializeDecision inserts the TypeDecision row inside the open tx and
+// returns the full *db.Decision, read back through that same tx (see the
+// re-read below). Matches pgAcceptAdapter.materializeDecision's return type so
+// the HTTP handler can surface confirmResponse.Decision identically on both
+// backends (decision cbbbf686: the two backends are functionally identical);
+// the read-back must go through a.tx because the single pooled connection is
+// held by it (see ResolveAccepted's note below).
 func (a *sqliteAcceptAdapter) materializeDecision(ctx context.Context, prop *db.PendingProposal) (any, error) {
 	dp, err := proposal.DecodeDecisionParams(prop.Payload)
 	if err != nil {
@@ -126,7 +137,11 @@ func (a *sqliteAcceptAdapter) materializeDecision(ctx context.Context, prop *db.
 	if err != nil {
 		return nil, fmt.Errorf("creating decision: %w", err)
 	}
-	return map[string]string{"id": decisionID.String(), "title": dp.Title}, nil
+	dec, err := a.deps.Decision.decisionByIDTx(ctx, a.tx, decisionID)
+	if err != nil { // [F205-02] the tx read-back that makes SQLite return *db.Decision like PG
+		return nil, fmt.Errorf("re-reading decision %s: %w", decisionID, err)
+	}
+	return dec, nil
 }
 
 func (a *sqliteAcceptAdapter) materializeGoal(ctx context.Context, prop *db.PendingProposal) (any, error) {
@@ -159,6 +174,12 @@ func (a *sqliteAcceptAdapter) materializeProject(ctx context.Context, prop *db.P
 	return map[string]string{"id": projectID.String(), "name": pp.Name, "title": pp.Title}, nil
 }
 
+// materializeConcept inserts the concepts row and its initial review_schedule
+// row inside the open tx and returns the full *db.Concept, read back through
+// that same tx. It matches pgAcceptAdapter.materializeConcept's return type so
+// the HTTP handler can surface confirmResponse.Concept identically on both
+// backends (decision cbbbf686); the read-back must go through a.tx because the
+// single pooled connection is held by it (see ResolveAccepted's note below).
 func (a *sqliteAcceptAdapter) materializeConcept(ctx context.Context, prop *db.PendingProposal) (any, error) {
 	cp, err := proposal.DecodeConceptPayload(prop.Payload)
 	if err != nil {
@@ -171,7 +192,42 @@ func (a *sqliteAcceptAdapter) materializeConcept(ctx context.Context, prop *db.P
 	if err != nil {
 		return nil, fmt.Errorf("creating concept: %w", err)
 	}
-	return map[string]string{"id": conceptID.String(), "title": cp.Title}, nil
+	concept, err := a.deps.Learning.conceptByIDTx(ctx, a.tx, conceptID)
+	if err != nil { // [F205-06] the tx read-back that makes SQLite return *db.Concept like PG
+		return nil, fmt.Errorf("re-reading concept %s: %w", conceptID, err)
+	}
+	return concept, nil
+}
+
+// materializeTask inserts the tasks row inside the open tx and returns it, read
+// back through that same tx, with the exact return contract of
+// pgAcceptAdapter.materializeTask: a *db.Task when the payload raised no
+// vagueness warnings, else map[string]any{"task": *db.Task, "warnings":
+// []string}. The HTTP handler's response builder relies on both shapes being
+// identical on the two backends (decision cbbbf686); the read-back must go
+// through a.tx because the single pooled connection is held by it (see
+// ResolveAccepted's note below). Decoding runs in the same strict/warn mode
+// the PG adapter uses, so a strict-mode vagueness failure is an error here too.
+func (a *sqliteAcceptAdapter) materializeTask(ctx context.Context, prop *db.PendingProposal) (any, error) {
+	params, warnings, err := proposal.DecodeTaskParams(prop.Payload, validator.StrictModeEnabled())
+	if err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+	if a.deps.GTD == nil { // [F205-11] nil-store guard: error instead of a nil-receiver panic on CreateTaskTx
+		return nil, fmt.Errorf("task proposal materialisation requires SQLite gtd store")
+	}
+	taskID, err := a.deps.GTD.CreateTaskTx(ctx, a.tx, params)
+	if err != nil {
+		return nil, fmt.Errorf("creating task: %w", err)
+	}
+	task, err := a.deps.GTD.taskByIDTx(ctx, a.tx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("re-reading task %s: %w", taskID, err)
+	}
+	if len(warnings) > 0 {
+		return map[string]any{"task": task, "warnings": warnings}, nil
+	}
+	return task, nil
 }
 
 // materializeKnowledge inserts the TypeKnowledge row inside the open tx via

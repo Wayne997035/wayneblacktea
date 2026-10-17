@@ -113,20 +113,22 @@ var pendingProposalsPruneTimeout = 60 * time.Second
 // mark has already affected rows.
 var pendingProposalsPruneBetweenSteps func(ctx context.Context)
 
-// pendingProposalsGoalFamilyTTLDryRun gates F184-07 (D-02's dry-run-by-
-// default policy): while true — the hard-coded, checked-in default — the
-// F184-06 goal-family TTL step (see markStaleGoalFamilyProposalsPG /
-// markStaleGoalFamilyProposalsSQLite) only COUNTS pending goal/project/
-// concept/knowledge/playbook rows older than
-// pendingProposalsPendingGoalFamilyTTLRetention and logs the count; it
-// performs ZERO UPDATE against pending_proposals. `var` (not `const`),
-// matching pendingProposalsPruneTimeout's pattern above, purely so tests
-// have a deterministic in-process hook for the "switch on" direction. This
+// pendingProposalsGoalFamilyTTLDryRun gates F184-07 (D-02's dry-run gate on
+// the goal-family TTL step). The hard-coded, checked-in default is false
+// (flipped from true per decision f84ce602): the F184-06 goal-family TTL
+// step (see markStaleGoalFamilyProposalsPG /
+// markStaleGoalFamilyProposalsSQLite) marks pending goal/project/concept/
+// knowledge/playbook rows older than
+// pendingProposalsPendingGoalFamilyTTLRetention as rejected. Only tests set
+// this to true, to exercise the dry-run branch, which just COUNTS those rows
+// and logs the count with ZERO UPDATE against pending_proposals. `var` (not
+// `const`), matching pendingProposalsPruneTimeout's pattern above, purely so
+// tests have a deterministic in-process hook for the dry-run direction. This
 // is NOT an env var and MUST NEVER be sourced from one — D-02: "預設值就寫
 // 在碼裡,NEVER 靠環境變數預設為開" (an unset/misconfigured env var must
-// never silently enable a production write). Production callers MUST NOT
-// mutate this outside of internal/scheduler tests.
-var pendingProposalsGoalFamilyTTLDryRun = true
+// never silently turn production writes on or off). Production callers MUST
+// NOT mutate this outside of internal/scheduler tests.
+var pendingProposalsGoalFamilyTTLDryRun = false // [F205-18] GTD:c0a6c408 flipped off per decision:f84ce602
 
 // pendingProposalsResolvedRetention / pendingProposalsPendingDecisionRetention
 // / pendingProposalsPendingTaskRetention document the per-status TTL on
@@ -163,15 +165,28 @@ var pendingProposalsGoalFamilyTTLDryRun = true
 //     these 5 types (GTD c0a6c408). Same two-hop mark pattern as type='task'
 //     above (status='rejected', reason='ttl-expired-90d', ages out via the
 //     90-day resolved retention). Gated by pendingProposalsGoalFamilyTTLDryRun
-//     (F184-07, D-02): while that stays at its checked-in default of true,
-//     this branch only counts matching rows and performs zero writes — see
-//     that var's doc comment for why the default lives in code, not an env
-//     var.
+//     (F184-07, D-02): its checked-in default is false, so this branch marks
+//     matching rows; only tests set it to true to run the dry-run branch,
+//     which just counts matching rows and performs zero writes — see that
+//     var's doc comment for why the default lives in code, not an env var.
 const (
 	pendingProposalsResolvedRetention             = "90 days"
 	pendingProposalsPendingDecisionRetention      = "180 days"
 	pendingProposalsPendingTaskRetention          = "30 days"
 	pendingProposalsPendingGoalFamilyTTLRetention = "90 days"
+)
+
+// pendingProposalsPruneKeepReviewTasks is the clause that keeps
+// 'scheduler:decision_outcome_review' task rows out of the resolved-row DELETE
+// (F197-L1) and is the single source for that exclusion: the manual
+// `pending-proposals-prune` target in build/Taskfile.yml and the SQLite prune in
+// internal/storage/sqlite/proposal.go each carry a literal copy that Go cannot
+// reference, and TestPendingProposalsPruneExclusion_MatchesTaskfileAndSQLite
+// fails when either copy drifts from this text. The leading AND is part of the
+// constant on purpose: a copy that says OR NOT (...) is a different, far more
+// destructive DELETE. [F204-05]
+const (
+	pendingProposalsPruneKeepReviewTasks = "AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review')"
 )
 
 // pendingProposalsResolvedRetentionDuration / *DecisionRetentionDuration /
@@ -1150,12 +1165,13 @@ func (s *Scheduler) runDailyPendingProposalsPrune() {
 //     playbook older than 90 days → status='rejected',
 //     reason='ttl-expired-90d', via markStaleGoalFamilyProposalsPG. Unlike
 //     the other 3 steps above, this one is gated by
-//     pendingProposalsGoalFamilyTTLDryRun (checked-in default: true) — while
-//     dry-run stays on, it only counts matching rows and performs zero
-//     writes. These types used to be permanently exempt from any TTL
-//     ("still require manual review and are NOT touched"); GTD c0a6c408
-//     found that left the table unboundedly growable for exactly these 5
-//     types, so the exemption is now dry-run-gated instead of absolute.
+//     pendingProposalsGoalFamilyTTLDryRun (checked-in default: false) — it
+//     marks matching rows unless a test sets the var to true, in which case
+//     it only counts them and performs zero writes. These types used to be
+//     permanently exempt from any TTL ("still require manual review and are
+//     NOT touched"); GTD c0a6c408 found that left the table unboundedly
+//     growable for exactly these 5 types, so the exemption was first
+//     dry-run-gated and is now lifted by the false default.
 //
 // A working retention policy is mandatory in the same PR that introduces
 // the auto-proposer (which can write unbounded pending rows); this job is
@@ -1214,7 +1230,7 @@ WHERE status = 'pending' AND type = 'task'
 	// row — permanently exempting it from this DELETE instead of just this one.
 	const q = `DELETE FROM pending_proposals
 WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` + pendingProposalsResolvedRetention + `'
-       AND NOT (type = 'task' AND COALESCE(proposed_by, '') = 'scheduler:decision_outcome_review'))
+       ` + pendingProposalsPruneKeepReviewTasks + `)
    OR (status = 'pending' AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingDecisionRetention + `' AND type = 'decision')`
 	tag, err := s.disciplinePool.Exec(ctx, q)
 	if err != nil {
@@ -1251,21 +1267,21 @@ WHERE (status IN ('accepted', 'rejected') AND resolved_at < NOW() - INTERVAL '` 
 // markStaleGoalFamilyProposalsPG implements F184-06 (the 90-day goal/
 // project/concept/knowledge/playbook TTL) and F184-07 (its dry-run gate) for
 // the Postgres backend. Returns the number of rows that matched the TTL
-// predicate — when pendingProposalsGoalFamilyTTLDryRun is true (the
-// checked-in default), that count reflects rows COUNTED only (zero writes
-// performed); when false, it reflects rows actually UPDATEd to
-// status='rejected'. A query/exec failure is logged at warn level and
-// swallowed HERE (returns 0), matching every other step in
-// runDailyPendingProposalsPrunePG (the TypeTask mark step and the DELETE
-// step both consume their own errors locally the same way) and its own
-// SQLite dispatch counterpart markStaleGoalFamilyProposalsSQLite, which is
-// void for the same reason — a single failed step must not take down the
+// predicate. With pendingProposalsGoalFamilyTTLDryRun at its default of false
+// the count is rows actually UPDATEd to status='rejected'; when a test sets
+// it to true the count is rows COUNTED only (zero writes performed). A
+// query/exec failure is logged at warn level and swallowed HERE (returns 0),
+// matching every other step in runDailyPendingProposalsPrunePG (the TypeTask
+// mark step and the DELETE step both consume their own errors locally the
+// same way) and its own SQLite dispatch counterpart
+// markStaleGoalFamilyProposalsSQLite, which is void for the same reason — a
+// single failed step must not take down the
 // rest of the nightly prune job, and the caller (the daily scheduler job)
 // has no different action available on error than this function already
 // takes. rows is still returned (not swallowed) so tests can assert the
 // exact count directly instead of scraping slog output.
 func (s *Scheduler) markStaleGoalFamilyProposalsPG(ctx context.Context) (rows int64) {
-	if pendingProposalsGoalFamilyTTLDryRun {
+	if pendingProposalsGoalFamilyTTLDryRun { // [F205-19]
 		const countQ = `SELECT COUNT(*) FROM pending_proposals
 WHERE status = 'pending' AND type IN ('goal', 'project', 'concept', 'knowledge', 'playbook')
   AND created_at < NOW() - INTERVAL '` + pendingProposalsPendingGoalFamilyTTLRetention + `'`

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
@@ -86,6 +87,17 @@ const (
 	drafterAllowedControlChar  = '\t'
 )
 
+// drafterMaxAlternativeBytes caps each alternative in BYTES, not runes (see
+// truncateToBytes). It aligns with proposal.DecodeDecisionParams'
+// per-alternative `if len(a) > 100 {` check (internal/proposal/accept_decode.go),
+// which the HTTP accept path and the MCP accept path both run before a drafted
+// proposal can become a decision. Without this cap a CJK alternative longer
+// than ~33 characters is producer-valid but cannot be accepted. Code-side
+// enforcement is the real gate; drafterSystemPrompt only tells the model the
+// same number (TestDrafterSystemPrompt_MentionsAlternativeByteCap pins the two
+// together).
+const drafterMaxAlternativeBytes = 100
+
 // drafterSystemPrompt instructs the model to draft a decision record from a
 // freshly-fired mutating MCP tool call. The drafter is intentionally
 // conservative: when the activity is routine (e.g. a single update_task
@@ -110,7 +122,8 @@ const drafterSystemPrompt = "You draft decision-record proposals from MCP tool a
 	"Return JSON: {\"title\": string, \"decision\": string, " +
 	"\"rationale\": string, \"alternatives\": [string]}. " +
 	"Keep title ≤ 80 chars, decision ≤ 200 chars, rationale ≤ 400 chars, " +
-	"and at most 3 alternatives. Empty title = drop."
+	"and at most 3 alternatives, each ≤ 100 bytes (about 33 CJK characters). " +
+	"Empty title = drop."
 
 // DecisionDrafter calls an LLM provider to draft a decision proposal from
 // a triggering MCP tool call. nil client = drafter disabled (Draft will
@@ -166,7 +179,8 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 	if err := json.Unmarshal([]byte(raw), &draft); err != nil {
 		// Log + return empty draft so a single bad model response doesn't
 		// crash the tool call. The middleware drops empty drafts already.
-		slog.Warn("decision drafter: model returned invalid JSON",
+		slog.Warn(
+			"decision drafter: model returned invalid JSON",
 			"err", err,
 			"raw_len", len(raw),
 		)
@@ -177,12 +191,14 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 		// so the middleware can record a discrete warning. Other cap rejects
 		// (over-long title, etc.) are recoverable: log + drop silently.
 		if errors.Is(capErr, ErrInjectionDetected) {
-			slog.Warn("decision drafter: prompt-injection markers in draft",
+			slog.Warn(
+				"decision drafter: prompt-injection markers in draft",
 				"reason", reason,
 			)
 			return nil, capErr
 		}
-		slog.Warn("decision drafter: draft rejected by code-side caps",
+		slog.Warn(
+			"decision drafter: draft rejected by code-side caps",
 			"reason", reason,
 		)
 		return &DecisionDraft{}, nil
@@ -198,7 +214,8 @@ func (d *DecisionDrafter) Draft(ctx context.Context, in DecisionDraftInput) (*De
 //   - rejected=true with err=nil                  → ordinary cap drop
 //   - rejected=false                              → draft passes; the
 //     alternatives slice may have been silently truncated to
-//     drafterMaxAlternatives (truncation is harmless)
+//     drafterMaxAlternatives entries and each entry to
+//     drafterMaxAlternativeBytes bytes (truncation is harmless)
 //
 // All string fields are run through stripDraftControlChars BEFORE the
 // injection scan so a model that smuggles control chars between letters
@@ -230,7 +247,27 @@ func enforceDraftCaps(d *DecisionDraft) (rejected bool, reason string, err error
 	if len(d.Alternatives) > drafterMaxAlternatives {
 		d.Alternatives = d.Alternatives[:drafterMaxAlternatives]
 	}
+	// Per-alternative byte cap. MUST stay AFTER the injection scan above:
+	// cutting first would drop a marker sitting past the cap and turn a
+	// security reject into a silently shortened proposal
+	// (TestDecisionDrafter_InjectionPastAlternativeCapStillDetected).
+	for i := range d.Alternatives {
+		d.Alternatives[i] = truncateToBytes(d.Alternatives[i], drafterMaxAlternativeBytes)
+	}
 	return false, "", nil
+}
+
+// truncateToBytes cuts s to at most limit bytes without splitting a UTF-8
+// sequence: it backs up from limit to the start of the rune that straddles it.
+func truncateToBytes(s string, limit int) string {
+	if len(s) <= limit { // [F205-04] the per-alternative byte cap lives on this branch
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // firstInjectionField returns the name of the first draft field whose value

@@ -14,6 +14,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/handler"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -132,6 +133,98 @@ func (f *fakeProposalLearningStore) ReviewHistory(_ context.Context) ([]learning
 
 func (f *fakeProposalLearningStore) LearningStats(_ context.Context) (*learning.LearningStatsResult, error) {
 	return &learning.LearningStatsResult{}, nil
+}
+
+// ---- fake accept adapter ----
+
+// fakeAcceptAdapter is a no-DB proposal.AcceptAdapter for the fake-store
+// handler tests. It drives the same fakes the handler reads from, so a case
+// written against the fakes keeps its intent now that TypeConcept accept runs
+// through proposal.AcceptOrchestration: ReadPending reads the fake proposal
+// store, Materialize creates a concept through the fake learning store (so
+// createCount and an injected error still apply; every other proposal type
+// materialises nothing), and ResolveAccepted resolves through the fake store.
+// A Materialize error therefore aborts the accept before Resolve — the
+// "materialise first, Resolve NOT called" property these cases assert.
+//
+// TypeTask materialises through tasks (when set): the payload goes through
+// proposal.DecodeTaskParams exactly like the real adapters, the resulting
+// gtd.CreateTaskParams are recorded in the fake task store, and the return
+// value has the real adapters' contract (a *db.Task, or the {"task",
+// "warnings"} map when the payload raised warnings).
+type fakeAcceptAdapter struct {
+	proposal.BaseAcceptAdapter
+	id       uuid.UUID
+	store    *fakeProposalStore
+	learning *fakeProposalLearningStore
+	tasks    *fakeProposalTaskStore
+}
+
+func (a *fakeAcceptAdapter) ReadPending(ctx context.Context) (*db.PendingProposal, error) {
+	return a.store.Get(ctx, a.id)
+}
+
+func (a *fakeAcceptAdapter) BeginTx(context.Context) error { return nil }
+
+func (a *fakeAcceptAdapter) Materialize(ctx context.Context, prop *db.PendingProposal, _ any) (any, error) {
+	if proposal.Type(prop.Type) == proposal.TypeTask {
+		return a.materializeTask(ctx, prop)
+	}
+	if proposal.Type(prop.Type) != proposal.TypeConcept {
+		return nil, nil
+	}
+	cp, err := proposal.DecodeConceptPayload(prop.Payload)
+	if err != nil {
+		return nil, err
+	}
+	concept, err := a.learning.CreateConcept(ctx, cp.Title, cp.Content, cp.Tags)
+	if err != nil {
+		return nil, err
+	}
+	return concept, nil
+}
+
+// materializeTask is the fake TypeTask arm: same decode (with the server's real
+// strict setting) and same return contract as the PG and SQLite adapters.
+func (a *fakeAcceptAdapter) materializeTask(ctx context.Context, prop *db.PendingProposal) (any, error) {
+	params, warnings, err := proposal.DecodeTaskParams(prop.Payload, validator.StrictModeEnabled())
+	if err != nil {
+		return nil, err
+	}
+	task, err := a.tasks.CreateTask(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if len(warnings) > 0 {
+		return map[string]any{"task": task, "warnings": warnings}, nil
+	}
+	return task, nil
+}
+
+func (a *fakeAcceptAdapter) ResolveAccepted(ctx context.Context) (*db.PendingProposal, error) {
+	return a.store.Resolve(ctx, a.id, proposal.StatusAccepted)
+}
+
+func (a *fakeAcceptAdapter) Commit(context.Context) error { return nil }
+
+func (a *fakeAcceptAdapter) Rollback(context.Context) {}
+
+// fakeAcceptAdapterFactory is the WithGoalProjectAccept argument that builds a
+// fakeAcceptAdapter over store and learning for each accept call.
+func fakeAcceptAdapterFactory(store *fakeProposalStore, learning *fakeProposalLearningStore) func(uuid.UUID) proposal.AcceptAdapter {
+	return func(id uuid.UUID) proposal.AcceptAdapter {
+		return &fakeAcceptAdapter{id: id, store: store, learning: learning}
+	}
+}
+
+// fakeTaskAcceptAdapterFactory is the WithGoalProjectAccept argument that builds
+// a fakeAcceptAdapter over store and taskStore for each accept call, so
+// TypeTask cases written against the fakes keep their intent now that TypeTask
+// accept runs through proposal.AcceptOrchestration.
+func fakeTaskAcceptAdapterFactory(store *fakeProposalStore, taskStore *fakeProposalTaskStore) func(uuid.UUID) proposal.AcceptAdapter {
+	return func(id uuid.UUID) proposal.AcceptAdapter {
+		return &fakeAcceptAdapter{id: id, store: store, tasks: taskStore}
+	}
 }
 
 // ---- helpers ----
@@ -268,7 +361,8 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, tc.learning)
+			h := handler.NewProposalHandler(tc.store).
+				WithGoalProjectAccept(fakeAcceptAdapterFactory(tc.store, tc.learning))
 			e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 			rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", tc.body)
 			if rec.Code != tc.wantCode {
@@ -326,7 +420,7 @@ func TestProposalHandler_ConfirmBatch_TransientGetError_FailsClosed(t *testing.T
 	store.getErr = errors.New("connection reset by peer") // transient — NOT proposal.ErrNotFound
 
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	h := handler.NewProposalHandler(store)
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 	body := `{"ids":["` + goalID.String() + `"],"action":"accept"}`
 	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
@@ -424,7 +518,8 @@ func TestProposalHandler_ConfirmProposal_Accept(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, tc.learning)
+			h := handler.NewProposalHandler(tc.store).
+				WithGoalProjectAccept(fakeAcceptAdapterFactory(tc.store, tc.learning))
 			e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 			rec := performRequest(e, http.MethodPost, "/api/proposals/"+tc.paramID+"/confirm", tc.body)
 			if rec.Code != tc.wantCode {
@@ -449,7 +544,7 @@ func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
 		store := newFakeProposalStore(conceptProp)
 		learn := &fakeProposalLearningStore{err: errors.New("db down")}
 		e := newEcho()
-		h := handler.NewProposalHandler(store, learn)
+		h := handler.NewProposalHandler(store).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
 		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
 		if rec.Code != http.StatusInternalServerError {
@@ -464,7 +559,7 @@ func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
 		store := newFakeProposalStore(conceptProp)
 		learn := &fakeProposalLearningStore{concept: &db.Concept{ID: uuid.New(), Title: "Test"}}
 		e := newEcho()
-		h := handler.NewProposalHandler(store, learn)
+		h := handler.NewProposalHandler(store).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
 		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
 		if rec.Code != http.StatusOK {
@@ -563,7 +658,7 @@ func TestProposalHandler_ListProposals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(tc.store)
 			e.GET("/api/proposals", h.ListProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals"+tc.query, "")
 			if rec.Code != tc.wantCode {
@@ -637,7 +732,7 @@ func TestProposalHandler_ListPendingProposals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(tc.store)
 			e.GET("/api/proposals/pending", h.ListPendingProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals/pending"+tc.query, "")
 			if rec.Code != tc.wantCode {
@@ -659,7 +754,8 @@ func TestProposalHandler_ListPendingProposals(t *testing.T) {
 
 // ---- TASK 3: TypeTask materialise + validator tests ----
 
-// fakeProposalTaskStore is the narrow fake for proposalTaskStore.
+// fakeProposalTaskStore records the gtd.CreateTaskParams the fake accept
+// adapter materialises for a TypeTask proposal.
 type fakeProposalTaskStore struct {
 	mu        sync.Mutex
 	created   []gtd.CreateTaskParams
@@ -722,7 +818,8 @@ func confirmTaskProposal(
 ) (code int, body map[string]any, raw string) {
 	t.Helper()
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).WithTask(taskStore)
+	h := handler.NewProposalHandler(store).
+		WithGoalProjectAccept(fakeTaskAcceptAdapterFactory(store, taskStore))
 	e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 	rec := performRequest(e, http.MethodPost, "/api/proposals/"+id.String()+"/confirm", `{"action":"accept"}`)
 	raw = rec.Body.String()
@@ -733,6 +830,7 @@ func confirmTaskProposal(
 // TestConfirmProposal_TypeTask_RunsVagueness_WarnMode: warn mode (default env)
 // returns 200 with warnings in body AND task is materialised.
 func TestConfirmProposal_TypeTask_RunsVagueness_WarnMode(t *testing.T) {
+	// [F205-14] the legacy two-step TypeTask accept path is deleted; this case now runs on the seam via a fake adapter.
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	id := uuid.New()
 	prop := makeTaskProposal(id, "Add audit log", vagueDescriptionFixture, "general")
@@ -904,7 +1002,20 @@ func TestConfirmProposal_TypeTask_EmptyKind_NoWarning(t *testing.T) {
 	}
 }
 
-// TestConfirmProposal_TypeTask_MalformedPayload: malformed JSON → 400, no task.
+// requireNoJSONDecoderLeak fails when s carries encoding/json's own wording —
+// the Go struct field and type names or the offending input character — which
+// a 400 body must never expose. [F204-04]
+func requireNoJSONDecoderLeak(t *testing.T, s string) {
+	t.Helper()
+	for _, leak := range []string{"Go struct field", "invalid character"} {
+		if strings.Contains(s, leak) {
+			t.Errorf("400 body leaks encoding/json text %q: %s", leak, s)
+		}
+	}
+}
+
+// TestConfirmProposal_TypeTask_MalformedPayload: malformed JSON → 400 carrying
+// only "decoding task payload: malformed JSON", no task. [F204-04]
 func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 	id := uuid.New()
 	prop := db.PendingProposal{
@@ -916,10 +1027,15 @@ func TestConfirmProposal_TypeTask_MalformedPayload(t *testing.T) {
 	store := newFakeProposalStore(prop)
 	taskStore := &fakeProposalTaskStore{}
 
-	code, _, raw := confirmTaskProposal(t, store, taskStore, id)
+	code, body, raw := confirmTaskProposal(t, store, taskStore, id)
 	if code != http.StatusBadRequest {
 		t.Errorf("want 400, got %d: %s", code, raw)
 	}
+	const wantErr = "decoding task payload: malformed JSON"
+	if got, _ := body["error"].(string); got != wantErr {
+		t.Errorf("error = %q, want %q (body: %s)", got, wantErr, raw)
+	}
+	requireNoJSONDecoderLeak(t, raw)
 	if len(taskStore.snapshot()) != 0 {
 		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
 	}
@@ -950,7 +1066,8 @@ func runBatchConfirmTypeTask(
 	taskStore := &fakeProposalTaskStore{}
 
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).WithTask(taskStore)
+	h := handler.NewProposalHandler(store).
+		WithGoalProjectAccept(fakeTaskAcceptAdapterFactory(store, taskStore))
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 	body := `{"ids":["` + id.String() + `"],"action":"accept"}`
 	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
@@ -992,9 +1109,10 @@ func TestProposalHandler_ConfirmBatch_TypeTask_Materialises(t *testing.T) {
 }
 
 // TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload (round-1
-// follow-up GTD 95bd2a09): garbage JSON in payload surfaces "task proposal
-// payload is malformed" as entry.Error, leaves the proposal pending, and
-// inserts no task row.
+// follow-up GTD 95bd2a09): garbage JSON in payload surfaces only
+// "decoding task payload: malformed JSON" as entry.Error [F204-04] (never
+// encoding/json's own text), leaves the proposal pending, and inserts no task
+// row.
 func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
 	t.Setenv("WBT_STRICT_VAGUENESS", "")
 	id := uuid.New()
@@ -1009,10 +1127,11 @@ func TestProposalHandler_ConfirmBatch_TypeTask_MalformedPayload(t *testing.T) {
 	if resp.Results[0].OK {
 		t.Errorf("result.OK = true, want false on malformed payload")
 	}
-	const wantSubstr = "task proposal payload is malformed"
-	if !strings.Contains(resp.Results[0].Error, wantSubstr) {
-		t.Errorf("entry.Error = %q, want substring %q", resp.Results[0].Error, wantSubstr)
+	const wantErr = "decoding task payload: malformed JSON"
+	if resp.Results[0].Error != wantErr {
+		t.Errorf("entry.Error = %q, want %q", resp.Results[0].Error, wantErr)
 	}
+	requireNoJSONDecoderLeak(t, resp.Results[0].Error)
 	if len(taskStore.snapshot()) != 0 {
 		t.Errorf("expected 0 tasks on malformed payload, got %d", len(taskStore.snapshot()))
 	}
@@ -1157,7 +1276,7 @@ func TestPendingProposalResponse_ReasonField(t *testing.T) {
 				all:  []db.PendingProposal{tc.row},
 			}
 			e := newEcho()
-			h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(store)
 			e.GET("/api/proposals", h.ListProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
 			if rec.Code != http.StatusOK {
@@ -1211,7 +1330,7 @@ func TestPendingProposalResponse_ReasonField_PresentCase(t *testing.T) {
 		all:  []db.PendingProposal{row},
 	}
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	h := handler.NewProposalHandler(store)
 	e.GET("/api/proposals", h.ListProposals)
 	rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
 	if rec.Code != http.StatusOK {
