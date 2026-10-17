@@ -28,8 +28,10 @@ const (
 	acceptBody        = `{"action":"accept"}`
 	batchActionAccept = "accept"
 
-	// wantDecisionContext / wantDecisionRationale are what
+	// wantDecisionText / wantDecisionContext / wantDecisionRationale are what
 	// proposal.DecodeDecisionParams derives from decisionPayload.
+	// [F204-01] wantDecisionText is decisionPayload's Decision field.
+	wantDecisionText      = "d"
 	wantDecisionContext   = "auto-proposed by trigger_tool=complete_task session=s-1"
 	wantDecisionRationale = "r\n\nAlternatives considered:\n- a1\n- a2"
 
@@ -40,10 +42,14 @@ const (
 
 // decisionAuditRow is the audit-relevant slice of a decisions row, read
 // straight from the table (not from the HTTP response) for AC-8.
+// [F204-01] Decision / Rationale carry the stored text columns so the batch
+// route (whose response has no decision object) can still be checked verbatim.
 type decisionAuditRow struct {
 	Source      string
 	Confirmed   bool
 	ActorIsNull bool
+	Decision    string
+	Rationale   string
 }
 
 // decisionBackend is one real DB stack behind a real ProposalHandler.
@@ -63,8 +69,8 @@ type decisionBackend struct {
 	// decisionCount / goalCount count rows by exact title.
 	decisionCount func(t *testing.T, title string) int
 	goalCount     func(t *testing.T, title string) int
-	// decisionAudit reads source / confirmed_by_human / actor_session_id of
-	// the decisions row with title.
+	// decisionAudit reads source / confirmed_by_human / actor_session_id /
+	// decision / rationale of the decisions row with title.
 	decisionAudit func(t *testing.T, title string) decisionAuditRow
 	// trackTitle registers cleanup of decisions/goals rows by title. A no-op
 	// on SQLite (fresh :memory: DB per test); the PG container is shared.
@@ -236,6 +242,10 @@ func runDecisionMaterialises(t *testing.T, be decisionBackend) {
 	if dec.Rationale != wantDecisionRationale {
 		t.Errorf("decision.rationale = %q, want %q", dec.Rationale, wantDecisionRationale)
 	}
+	// [F204-01] the proposal's decision text must reach the response verbatim.
+	if dec.Decision != wantDecisionText {
+		t.Errorf("decision.decision = %q, want %q", dec.Decision, wantDecisionText)
+	}
 	requireCount(t, "decisions rows", be.decisionCount(t, title), 1)
 	requireStatus(t, be, id, proposalAccepted)
 }
@@ -387,6 +397,11 @@ func runDecisionCapBoundaries(t *testing.T, be decisionBackend) {
 			if dec.Title != title {
 				t.Errorf("decision.title length = %d, want %d", len(dec.Title), len(title))
 			}
+			// [F204-01] the decision text must arrive whole. The 65536-byte case is what
+			// exposes a truncation; the 1-byte "d" fixture survives any cut to >= 1 byte.
+			if dec.Decision != p.Decision {
+				t.Errorf("decision.decision length = %d, want %d", len(dec.Decision), len(p.Decision))
+			}
 			requireCount(t, "decisions rows", be.decisionCount(t, title), 1)
 			requireStatus(t, be, id, proposalAccepted)
 		})
@@ -464,6 +479,15 @@ func runBatchMaterialises(t *testing.T, be decisionBackend) {
 		assertBatchResultOK(t, rec.Body.Bytes(), id.String())
 		requireCount(t, "decisions rows for "+titles[i], be.decisionCount(t, titles[i]), 1)
 		requireStatus(t, be, id, proposalAccepted)
+		// [F204-01] the batch response has no decision object, so read the stored
+		// row: the decision text and rationale must match the payload verbatim.
+		got := be.decisionAudit(t, titles[i])
+		if got.Decision != wantDecisionText {
+			t.Errorf("batch decision.decision for %s = %q, want %q", titles[i], got.Decision, wantDecisionText)
+		}
+		if got.Rationale != wantDecisionRationale {
+			t.Errorf("batch decision.rationale for %s = %q, want %q", titles[i], got.Rationale, wantDecisionRationale)
+		}
 	}
 }
 
@@ -662,8 +686,8 @@ func newSQLiteDecisionBackend(t *testing.T) decisionBackend {
 				actorNull int
 			)
 			err := sdb.QueryRowContext(ctx,
-				"SELECT source, confirmed_by_human, actor_session_id IS NULL FROM decisions WHERE title = ?", title).
-				Scan(&row.Source, &confirmed, &actorNull)
+				"SELECT source, confirmed_by_human, actor_session_id IS NULL, decision, rationale FROM decisions WHERE title = ?", title).
+				Scan(&row.Source, &confirmed, &actorNull, &row.Decision, &row.Rationale)
 			if err != nil {
 				t.Fatalf("decision audit query: %v", err)
 			}

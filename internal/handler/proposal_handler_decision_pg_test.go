@@ -92,8 +92,8 @@ func newPGDecisionBackend(t *testing.T) decisionBackend {
 			t.Helper()
 			var row decisionAuditRow
 			err := pool.QueryRow(ctx,
-				"SELECT source, confirmed_by_human, actor_session_id IS NULL FROM decisions WHERE title = $1", title).
-				Scan(&row.Source, &row.Confirmed, &row.ActorIsNull)
+				"SELECT source, confirmed_by_human, actor_session_id IS NULL, decision, rationale FROM decisions WHERE title = $1", title).
+				Scan(&row.Source, &row.Confirmed, &row.ActorIsNull, &row.Decision, &row.Rationale)
 			if err != nil {
 				t.Fatalf("decision audit query: %v", err)
 			}
