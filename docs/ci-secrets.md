@@ -17,7 +17,7 @@ actually reference today, and how to rotate each one.
 
 | Variable | Used by | Notes |
 |---|---|---|
-| `WBT_API_URL` | `gtd-reconcile.yml` | Base URL of the deployed server, e.g. `https://wayneblacktea-production.up.railway.app`. Not a secret (readable by any collaborator), but the workflow still rejects any non-`https://` value before sending `WBT_API_KEY` to it (SSRF guard). |
+| `WBT_API_URL` | `gtd-reconcile.yml` | Base URL of the deployed server, e.g. `https://<your-app>.up.railway.app`. Not a secret (readable by any collaborator), but the workflow still rejects any non-`https://` value before sending `WBT_API_KEY` to it (SSRF guard). |
 
 ## No signing key, and nothing to sign
 

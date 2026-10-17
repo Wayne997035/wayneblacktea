@@ -12,7 +12,7 @@
 #
 # Required repository configuration (Settings -> Secrets and variables -> Actions):
 #   - secret  WBT_API_KEY : the same API_KEY the deployed server validates (>=32 chars)
-#   - variable WBT_API_URL: base URL of the deployed server, e.g. https://wayneblacktea.up.railway.app
+#   - variable WBT_API_URL: base URL of the deployed server, e.g. https://<your-app>.up.railway.app
 # When either is missing the job logs a warning and exits 0 (never blocks a merge).
 name: GTD reconcile on PR merge
 
