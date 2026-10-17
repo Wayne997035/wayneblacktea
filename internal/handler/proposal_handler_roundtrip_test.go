@@ -64,7 +64,7 @@ func TestPendingProposalResponse_PayloadStillHTMLEscapedOnOutput(t *testing.T) {
 		all:  []db.PendingProposal{row},
 	}
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	h := handler.NewProposalHandler(store)
 	e.GET("/api/proposals", h.ListProposals)
 	rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
 	if rec.Code != http.StatusOK {

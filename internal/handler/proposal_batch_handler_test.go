@@ -42,15 +42,8 @@ func (f *fakeProposalListStore) ListAll(_ context.Context, _ string, _ int32) ([
 	return f.pending, f.err
 }
 
-// fakeLearningStoreForProposal satisfies the proposalConceptStore interface.
-type fakeLearningStoreForProposal struct{}
-
-func (f *fakeLearningStoreForProposal) CreateConcept(_ context.Context, _, _ string, _ []string) (*db.Concept, error) {
-	return &db.Concept{}, nil
-}
-
 func newProposalHandler(store *fakeProposalListStore) *handler.ProposalHandler {
-	return handler.NewProposalHandler(store, &fakeLearningStoreForProposal{})
+	return handler.NewProposalHandler(store)
 }
 
 // TestConfirmBatch_HappyPath verifies that valid accept/reject requests return 200.

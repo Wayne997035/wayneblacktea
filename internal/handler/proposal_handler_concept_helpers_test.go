@@ -35,17 +35,6 @@ const (
 	conceptAlreadyDone   = "proposal already resolved"
 )
 
-// tripwireConceptStore is the handler's first-class learning dependency. With
-// the accept adapter wired it must NEVER run: any call fails the test. That is
-// what separates "went through the seam" from "the legacy path happened to
-// produce the same rows".
-type tripwireConceptStore struct{ t *testing.T }
-
-func (s tripwireConceptStore) CreateConcept(context.Context, string, string, []string) (*db.Concept, error) {
-	s.t.Errorf("legacy h.learning.CreateConcept ran: TypeConcept accept did not go through the accept seam")
-	return nil, errors.New("tripwire: legacy concept path used")
-}
-
 // failResolveErrAdapter wraps a real proposal.AcceptAdapter and fails
 // ResolveAccepted with err AFTER the real Materialize already inserted the
 // concept (and its review_schedule row) inside the open tx. Unlike
@@ -70,8 +59,8 @@ func injectResolveErr(err error) func(proposal.AcceptAdapter) proposal.AcceptAda
 // conceptBackend is one real DB stack behind a real ProposalHandler.
 type conceptBackend struct {
 	name string
-	// newHandler builds the handler over the real stores with the tripwire as
-	// its learning dependency. wrap, when non-nil, wraps every per-accept adapter.
+	// newHandler builds the handler over the real stores. wrap, when non-nil,
+	// wraps every per-accept adapter.
 	newHandler func(t *testing.T, wrap func(proposal.AcceptAdapter) proposal.AcceptAdapter) *handler.ProposalHandler
 	// create inserts a pending proposal and returns its id.
 	create func(t *testing.T, typ proposal.Type, payload []byte) uuid.UUID

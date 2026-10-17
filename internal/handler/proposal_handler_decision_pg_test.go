@@ -54,7 +54,7 @@ func newPGDecisionBackend(t *testing.T) decisionBackend {
 		name:           "pg",
 		rawJSONPayload: false, // pending_proposals.payload is jsonb: broken JSON is refused at INSERT
 		newHandler: func(wrap func(proposal.AcceptAdapter) proposal.AcceptAdapter) *handler.ProposalHandler {
-			return handler.NewProposalHandler(propStore, learningStore).
+			return handler.NewProposalHandler(propStore).
 				WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 					a := proposal.NewPgAcceptAdapter(id, deps)
 					if wrap != nil {

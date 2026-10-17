@@ -73,7 +73,7 @@ func newKnowledgeAcceptPGHandler(pool *pgxpool.Pool, embed ai.ContextEmbeddingPr
 		Decision:  decisionStore,
 		Knowledge: knowledgeStore,
 	}
-	h := handler.NewProposalHandler(propStore, learningStore).
+	h := handler.NewProposalHandler(propStore).
 		WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 			return proposal.NewPgAcceptAdapter(id, deps)
 		})

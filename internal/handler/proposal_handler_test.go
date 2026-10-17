@@ -361,7 +361,7 @@ func TestProposalHandler_ConfirmBatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, tc.learning).
+			h := handler.NewProposalHandler(tc.store).
 				WithGoalProjectAccept(fakeAcceptAdapterFactory(tc.store, tc.learning))
 			e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 			rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", tc.body)
@@ -420,7 +420,7 @@ func TestProposalHandler_ConfirmBatch_TransientGetError_FailsClosed(t *testing.T
 	store.getErr = errors.New("connection reset by peer") // transient — NOT proposal.ErrNotFound
 
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	h := handler.NewProposalHandler(store)
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 	body := `{"ids":["` + goalID.String() + `"],"action":"accept"}`
 	rec := performRequest(e, http.MethodPost, "/api/proposals/confirm-batch", body)
@@ -518,7 +518,7 @@ func TestProposalHandler_ConfirmProposal_Accept(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, tc.learning).
+			h := handler.NewProposalHandler(tc.store).
 				WithGoalProjectAccept(fakeAcceptAdapterFactory(tc.store, tc.learning))
 			e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 			rec := performRequest(e, http.MethodPost, "/api/proposals/"+tc.paramID+"/confirm", tc.body)
@@ -544,7 +544,7 @@ func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
 		store := newFakeProposalStore(conceptProp)
 		learn := &fakeProposalLearningStore{err: errors.New("db down")}
 		e := newEcho()
-		h := handler.NewProposalHandler(store, learn).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
+		h := handler.NewProposalHandler(store).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
 		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
 		if rec.Code != http.StatusInternalServerError {
@@ -559,7 +559,7 @@ func TestProposalHandler_ConfirmProposal_Accept_MaterialiseFirst(t *testing.T) {
 		store := newFakeProposalStore(conceptProp)
 		learn := &fakeProposalLearningStore{concept: &db.Concept{ID: uuid.New(), Title: "Test"}}
 		e := newEcho()
-		h := handler.NewProposalHandler(store, learn).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
+		h := handler.NewProposalHandler(store).WithGoalProjectAccept(fakeAcceptAdapterFactory(store, learn))
 		e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 		rec := performRequest(e, http.MethodPost, "/api/proposals/"+conceptProp.ID.String()+"/confirm", `{"action":"accept"}`)
 		if rec.Code != http.StatusOK {
@@ -658,7 +658,7 @@ func TestProposalHandler_ListProposals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(tc.store)
 			e.GET("/api/proposals", h.ListProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals"+tc.query, "")
 			if rec.Code != tc.wantCode {
@@ -732,7 +732,7 @@ func TestProposalHandler_ListPendingProposals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(tc.store)
 			e.GET("/api/proposals/pending", h.ListPendingProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals/pending"+tc.query, "")
 			if rec.Code != tc.wantCode {
@@ -818,7 +818,7 @@ func confirmTaskProposal(
 ) (code int, body map[string]any, raw string) {
 	t.Helper()
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).
+	h := handler.NewProposalHandler(store).
 		WithGoalProjectAccept(fakeTaskAcceptAdapterFactory(store, taskStore))
 	e.POST("/api/proposals/:id/confirm", h.ConfirmProposal)
 	rec := performRequest(e, http.MethodPost, "/api/proposals/"+id.String()+"/confirm", `{"action":"accept"}`)
@@ -1048,7 +1048,7 @@ func runBatchConfirmTypeTask(
 	taskStore := &fakeProposalTaskStore{}
 
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{}).
+	h := handler.NewProposalHandler(store).
 		WithGoalProjectAccept(fakeTaskAcceptAdapterFactory(store, taskStore))
 	e.POST("/api/proposals/confirm-batch", h.ConfirmBatch)
 	body := `{"ids":["` + id.String() + `"],"action":"accept"}`
@@ -1256,7 +1256,7 @@ func TestPendingProposalResponse_ReasonField(t *testing.T) {
 				all:  []db.PendingProposal{tc.row},
 			}
 			e := newEcho()
-			h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(store)
 			e.GET("/api/proposals", h.ListProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
 			if rec.Code != http.StatusOK {
@@ -1310,7 +1310,7 @@ func TestPendingProposalResponse_ReasonField_PresentCase(t *testing.T) {
 		all:  []db.PendingProposal{row},
 	}
 	e := newEcho()
-	h := handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	h := handler.NewProposalHandler(store)
 	e.GET("/api/proposals", h.ListProposals)
 	rec := performRequest(e, http.MethodGet, "/api/proposals?status=all", "")
 	if rec.Code != http.StatusOK {

@@ -29,7 +29,7 @@ func unwiredProposalRow(typ proposal.Type, payload []byte) db.PendingProposal {
 }
 
 func unwiredHandler(store *fakeProposalStore) *handler.ProposalHandler {
-	return handler.NewProposalHandler(store, &fakeProposalLearningStore{})
+	return handler.NewProposalHandler(store)
 }
 
 func TestConfirmProposal_TypeDecision_AdapterNotWired_FailsClosed(t *testing.T) {

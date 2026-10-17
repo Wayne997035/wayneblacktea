@@ -11,7 +11,6 @@ import (
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
-	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
@@ -45,18 +44,6 @@ type proposalListStore interface {
 	Resolve(ctx context.Context, id uuid.UUID, status proposal.Status) (*db.PendingProposal, error)
 }
 
-// proposalConceptStore covers the learning operations needed when accepting a
-// concept proposal.
-type proposalConceptStore interface {
-	CreateConcept(ctx context.Context, title, content string, tags []string) (*db.Concept, error)
-}
-
-// proposalKnowledgeStore covers the knowledge operation needed when accepting
-// a TypeKnowledge proposal.
-type proposalKnowledgeStore interface {
-	AddItem(ctx context.Context, p knowledge.AddItemParams) (*db.KnowledgeItem, error)
-}
-
 // goalProjectAcceptAdapterFactory constructs a fresh proposal.AcceptAdapter
 // for one proposal.AcceptOrchestration(ctx, id, adapter) call, given the
 // target proposal id. A factory func — rather than a single pre-built
@@ -64,8 +51,8 @@ type proposalKnowledgeStore interface {
 // state (see AcceptAdapter's doc comment) and must be constructed new for
 // every accept.
 //
-// This is a func type, not a narrow store interface like the other
-// proposal*Store fields above, because building proposal.PgAcceptDeps /
+// This is a func type, not a narrow store interface like proposalListStore
+// above, because building proposal.PgAcceptDeps /
 // sqlite.AcceptDeps requires backend-specific types (pgxpool.Pool,
 // *gtd.Store vs *sqlite.GTDStore, ...) that the handler package has no
 // business importing (ADR-0003 keeps pgx/sqlite typing out of the handler
@@ -81,10 +68,6 @@ type goalProjectAcceptAdapterFactory func(id uuid.UUID) proposal.AcceptAdapter
 // POST /api/proposals/:id/confirm.
 type ProposalHandler struct {
 	proposal proposalListStore
-	learning proposalConceptStore
-	// knowledge is optional; nil disables knowledge-proposal materialisation.
-	// Wire via WithKnowledge.
-	knowledge proposalKnowledgeStore
 	// goalProjectAdapter is optional; nil disables seam-routed materialisation.
 	// When nil and the proposal type is TypeGoal, TypeProject or TypeKnowledge,
 	// accept falls back to the legacy "Resolve only" branch (matches
@@ -95,18 +78,13 @@ type ProposalHandler struct {
 	goalProjectAdapter goalProjectAcceptAdapterFactory
 }
 
-// NewProposalHandler creates a ProposalHandler. Accepting a decision, concept
-// or task proposal fails with 500 unless WithGoalProjectAccept is also used:
-// those three types have no resolve-only fallback.
-func NewProposalHandler(p proposalListStore, l proposalConceptStore) *ProposalHandler {
-	return &ProposalHandler{proposal: p, learning: l}
-}
-
-// WithKnowledge wires the knowledge store used by the TypeKnowledge accept path.
-// Returns the handler for chaining. nil knowledge = knowledge-accept disabled.
-func (h *ProposalHandler) WithKnowledge(k proposalKnowledgeStore) *ProposalHandler {
-	h.knowledge = k
-	return h
+// NewProposalHandler creates a ProposalHandler over the list/resolve store p.
+// It takes no concept or knowledge store: every accept that materialises a row
+// goes through the adapter wired with WithGoalProjectAccept. Accepting a
+// decision, concept or task proposal fails with 500 unless WithGoalProjectAccept
+// is also used: those three types have no resolve-only fallback.
+func NewProposalHandler(p proposalListStore) *ProposalHandler {
+	return &ProposalHandler{proposal: p}
 }
 
 // WithGoalProjectAccept wires the factory used to construct a fresh

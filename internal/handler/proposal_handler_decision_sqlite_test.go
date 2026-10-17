@@ -645,7 +645,7 @@ func newSQLiteDecisionBackend(t *testing.T) decisionBackend {
 		name:           "sqlite",
 		rawJSONPayload: true,
 		newHandler: func(wrap func(proposal.AcceptAdapter) proposal.AcceptAdapter) *handler.ProposalHandler {
-			return handler.NewProposalHandler(propStore, learningStore).
+			return handler.NewProposalHandler(propStore).
 				WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 					a := wbtsqlite.NewAcceptAdapter(id, deps)
 					if wrap != nil {

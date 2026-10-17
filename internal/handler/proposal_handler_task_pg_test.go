@@ -48,7 +48,7 @@ func newPGTaskBackend(t *testing.T) taskBackend {
 		name:       "pg",
 		newAdapter: newAdapter,
 		newHandler: func(wrap func(proposal.AcceptAdapter) proposal.AcceptAdapter) *handler.ProposalHandler {
-			return handler.NewProposalHandler(propStore, &fakeProposalLearningStore{}).
+			return handler.NewProposalHandler(propStore).
 				WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 					a := newAdapter(id)
 					if wrap != nil {

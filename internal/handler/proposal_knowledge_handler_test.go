@@ -88,7 +88,7 @@ func TestProposalHandler_ListProposals_KnowledgeType(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEcho()
-			h := handler.NewProposalHandler(tc.store, &fakeProposalLearningStore{})
+			h := handler.NewProposalHandler(tc.store)
 			e.GET("/api/proposals", h.ListProposals)
 			rec := performRequest(e, http.MethodGet, "/api/proposals"+tc.query, "")
 			if rec.Code != tc.wantCode {

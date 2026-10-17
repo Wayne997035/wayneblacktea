@@ -132,7 +132,7 @@ func newGoalProjectPGHandler(pool *pgxpool.Pool) (*handler.ProposalHandler, *pro
 		Learning: learningStore,
 		Decision: decisionStore,
 	}
-	h := handler.NewProposalHandler(propStore, learningStore).
+	h := handler.NewProposalHandler(propStore).
 		WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 			return proposal.NewPgAcceptAdapter(id, deps)
 		})

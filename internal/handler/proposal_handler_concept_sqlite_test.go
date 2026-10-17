@@ -39,7 +39,7 @@ func newSQLiteConceptBackend(t *testing.T) conceptBackend {
 		name: "sqlite",
 		newHandler: func(t *testing.T, wrap func(proposal.AcceptAdapter) proposal.AcceptAdapter) *handler.ProposalHandler {
 			t.Helper()
-			return handler.NewProposalHandler(propStore, tripwireConceptStore{t: t}).
+			return handler.NewProposalHandler(propStore).
 				WithGoalProjectAccept(func(id uuid.UUID) proposal.AcceptAdapter {
 					a := wbtsqlite.NewAcceptAdapter(id, deps)
 					if wrap != nil {
