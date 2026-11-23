@@ -249,6 +249,8 @@ External compute:   API / service / process boundary
 
 `FINAL_REVIEW_SUMMARY.md` 與 `MACHINE_QA.md` 是審查結果，不凌駕 architecture contract。
 
+The existing repo's root AGENTS.md, current architecture, migration immutability rules, dual-backend parity and proposal-gated durable writes remain hard constraints unless this pack explicitly supersedes a product-level 2.0 non-goal.
+
 ## Primary dependency order
 
 ```text
@@ -282,19 +284,6 @@ Persistent Operators
                 ▼
 Closed-loop Action → Verification → Outcome → Learning
 ```
-
-## Source-of-truth hierarchy
-
-When documents disagree:
-
-1. `architecture-contract.yaml`
-2. `decision-register.yaml`
-3. `00-foundation/02_LOCKED_DECISIONS.md`
-4. subsystem specs
-5. delivery docs
-6. research notes
-
-The existing repo's root AGENTS.md, current architecture, migration immutability rules, dual-backend parity and proposal-gated durable writes remain hard constraints unless this pack explicitly supersedes a product-level 2.0 non-goal.
 
 ## Important supersession
 
