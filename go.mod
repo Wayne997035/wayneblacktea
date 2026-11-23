@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
-	github.com/labstack/echo/v4 v4.16.0
+	github.com/labstack/echo/v4 v4.16.6
 	github.com/mark3labs/mcp-go v0.49.0
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
