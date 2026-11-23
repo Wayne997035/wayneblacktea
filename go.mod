@@ -1,6 +1,6 @@
 module github.com/Wayne997035/wayneblacktea
 
-go 1.26.9
+go 1.26.11
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.38.0
@@ -10,15 +10,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
-	github.com/labstack/echo/v4 v4.15.1
+	github.com/labstack/echo/v4 v4.16.6
 	github.com/mark3labs/mcp-go v0.49.0
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/yuin/goldmark v1.8.2
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/text v0.43.0
-	golang.org/x/time v0.14.0
+	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.0
 )
@@ -55,12 +55,12 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
-	github.com/labstack/gommon v0.4.2 // indirect
+	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
 	github.com/moby/moby/api v1.54.1 // indirect
