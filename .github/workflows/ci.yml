@@ -149,14 +149,14 @@ jobs:
 
       # [F1123-02] govulncheck has no ignore list, so the gate reads its JSON
       # and fails on any called (symbol-level) vulnerability except the IDs in
-      # ALLOWED_VULNS. Only IDs with no fixed echo/v4 release belong there,
-      # each with the reason this server is not exposed; drop an ID as soon
-      # as a fixed release exists (the step warns when one stops appearing).
-      #   GO-2026-6875  Proxy middleware forwards X-Real-IP upstream; this
-      #                 server never uses echo's Proxy middleware.
-      #   GO-2026-6872  RateLimiter's default identifier trusts a spoofed
-      #                 X-Forwarded-For via Context.RealIP; RealIP uses
-      #                 e.IPExtractor first, and cmd/server/main.go sets it.
+      # ALLOWED_VULNS. An ID belongs there only while the Go vulnerability
+      # database lists no fixed version for it; once the database records a
+      # fix, the ID blocks again until the dependency is upgraded, and the
+      # step warns when an allowed ID stops appearing so it can be removed.
+      #   GO-2026-6875 (GHSA-99jh-6h7p-pp36) and GO-2026-6872
+      #   (GHSA-246p-cpwv-v3jq): fixed upstream in echo v4.16.3 (go.mod pins
+      #   v4.16.6), but the database still lists every echo/v4 version as
+      #   affected. Moving to echo v5 also removes them.
       - name: Install and run govulncheck
         env:
           ALLOWED_VULNS: GO-2026-6875 GO-2026-6872
@@ -168,18 +168,25 @@ jobs:
           govulncheck -format json ./... > "$out/scan.json"
           jq -s -e 'map(select(.config)) | length == 1' "$out/scan.json" > /dev/null \
             || { echo "::error::govulncheck produced no scan result"; exit 1; }
-          jq -r 'select(.finding.trace[0].function != null) | .finding.osv' "$out/scan.json" | sort -u > "$out/called.txt"
-          printf '%s\n' $ALLOWED_VULNS | sort -u > "$out/allowed.txt"
+          jq -r 'select(.finding.trace[0].function != null) | .finding | "\(.osv)\t\(.fixed_version // "")"' \
+            "$out/scan.json" | sort -u > "$out/called.tsv"
+          cut -f1 "$out/called.tsv" | sort -u > "$out/called.txt"
+          awk -F'\t' '$2 != "" {print $1}' "$out/called.tsv" | sort -u > "$out/fixable.txt"
+          printf '%s\n' $ALLOWED_VULNS | sed '/^$/d' | sort -u > "$out/allowed.txt"
           comm -23 "$out/called.txt" "$out/allowed.txt" > "$out/blocking.txt"
+          comm -12 "$out/fixable.txt" "$out/allowed.txt" > "$out/fix-available.txt"
           comm -13 "$out/called.txt" "$out/allowed.txt" > "$out/stale.txt"
           echo "called vulnerabilities: $(tr '\n' ' ' < "$out/called.txt")"
           while read -r id; do
             echo "::warning::$id is allowed but no longer reported; remove it from ALLOWED_VULNS"
           done < "$out/stale.txt"
-          if [ -s "$out/blocking.txt" ]; then
-            while read -r id; do
-              jq -r --arg id "$id" 'select(.osv.id == $id) | .osv | "::error::\(.id): \(.summary)"' "$out/scan.json"
-            done < "$out/blocking.txt"
+          while read -r id; do
+            echo "::error::$id now has a fixed version in the vulnerability database; upgrade and remove it from ALLOWED_VULNS"
+          done < "$out/fix-available.txt"
+          while read -r id; do
+            jq -r --arg id "$id" 'select(.osv.id == $id) | .osv | "::error::\(.id): \(.summary)"' "$out/scan.json"
+          done < "$out/blocking.txt"
+          if [ -s "$out/blocking.txt" ] || [ -s "$out/fix-available.txt" ]; then
             exit 1
           fi
 
