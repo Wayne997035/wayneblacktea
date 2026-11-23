@@ -159,7 +159,7 @@ curl -H "Authorization: Bearer YOUR_API_KEY" https://your-host/api/projects \
 
 If the response is empty, hit `/api/dashboard/stats?period=7` and confirm
 `workspace` field on the snapshot equals your UUID. If neither matches,
-restart the server — `runtime.WorkspaceIDFromEnv()` runs at boot only.
+restart the server — `bootcfg.WorkspaceIDFromEnv()` runs at boot only.
 
 ### Rollback — undo the backfill
 
