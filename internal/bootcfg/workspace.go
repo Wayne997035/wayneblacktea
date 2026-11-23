@@ -1,8 +1,8 @@
-// Package runtime exposes process-wide configuration read at startup time:
+// Package bootcfg exposes process-wide configuration read at startup time:
 // most importantly the optional workspace context that scopes every domain
 // Store. WORKSPACE_ID env unset → legacy mode (no filter, NULL inserts);
 // set → all reads filtered by that UUID and all writes populate it.
-package runtime
+package bootcfg
 
 import (
 	"errors"
@@ -32,6 +32,9 @@ var ErrSentinelWorkspaceID = errors.New(
 // rejected before any DB query runs.
 const migration000015Sentinel = "00000000-0000-0000-0000-000000000001"
 
+// [F1123-30] moved from internal/runtime unchanged; the directory is now free
+// for the 3.0 Runtime package.
+//
 // WorkspaceIDFromEnv returns the optional workspace ID configured via the
 // WORKSPACE_ID environment variable.
 //

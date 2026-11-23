@@ -1,5 +1,6 @@
 # AI tool config (personal, local only) — CLAUDE.md/.claude/ stay local-only.
 CLAUDE.md
+AGENTS.md
 .claude/
 !.claude/settings.json
 .mcp.json

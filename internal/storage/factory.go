@@ -12,6 +12,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/arch"
 	"github.com/Wayne997035/wayneblacktea/internal/atom"
 	"github.com/Wayne997035/wayneblacktea/internal/behaviorrule"
+	"github.com/Wayne997035/wayneblacktea/internal/bootcfg"
 	"github.com/Wayne997035/wayneblacktea/internal/decay"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/discipline"
@@ -23,7 +24,6 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/procedural"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
 	"github.com/Wayne997035/wayneblacktea/internal/reflection"
-	wbtruntime "github.com/Wayne997035/wayneblacktea/internal/runtime"
 	"github.com/Wayne997035/wayneblacktea/internal/search"
 	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/Wayne997035/wayneblacktea/internal/skill"
@@ -173,7 +173,7 @@ func newPostgresServerStores(ctx context.Context, cfg FactoryConfig) (*postgresS
 	if err != nil {
 		return nil, err
 	}
-	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	wsID, err := bootcfg.WorkspaceIDFromEnv()
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
@@ -455,7 +455,7 @@ func newSQLiteServerStores(ctx context.Context, cfg FactoryConfig) (*sqliteServe
 	if cfg.SQLitePath == "" {
 		return nil, ErrMissingSQLitePath
 	}
-	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	wsID, err := bootcfg.WorkspaceIDFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("reading WORKSPACE_ID env: %w", err)
 	}

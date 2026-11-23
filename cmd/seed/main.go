@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wayne997035/wayneblacktea/internal/bootcfg"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gitremote"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/knowledge"
 	"github.com/Wayne997035/wayneblacktea/internal/learning"
-	wbtruntime "github.com/Wayne997035/wayneblacktea/internal/runtime"
 	"github.com/Wayne997035/wayneblacktea/internal/storage"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/google/uuid"
@@ -65,7 +65,7 @@ func run() error {
 	defer pool.Close()
 
 	ctx := context.Background()
-	wsID, err := wbtruntime.WorkspaceIDFromEnv()
+	wsID, err := bootcfg.WorkspaceIDFromEnv()
 	if err != nil {
 		return fmt.Errorf("reading WORKSPACE_ID env: %w", err)
 	}

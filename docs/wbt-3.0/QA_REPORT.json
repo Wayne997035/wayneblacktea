@@ -1,0 +1,17 @@
+{
+  "verdict": "PASS",
+  "baseline_commit": "75ce929c301090f0d1e742591b311e90b712c5fe",
+  "markdown_documents_checked": 76,
+  "checks": {
+    "frontmatter": true,
+    "dependency_ids": true,
+    "balanced_code_fences": true,
+    "legacy_product_vocabulary_removed": true,
+    "no_sql_foreign_key_recommendation": true,
+    "core_concepts_present": true,
+    "existing_components_reused": true,
+    "release_gates_complete": true
+  },
+  "errors": [],
+  "warnings": []
+}

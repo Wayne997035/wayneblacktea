@@ -1,0 +1,64 @@
+{
+  "version": "3.0-spec-1",
+  "date": "2026-08-25",
+  "baseline_commit": "75ce929c301090f0d1e742591b311e90b712c5fe",
+  "product": {
+    "role": "AI Collaboration Partner",
+    "north_star": "E.V.-class software behavior",
+    "interaction_reference": [
+      "TARS",
+      "CASE"
+    ],
+    "runtime_reference": "OpenJarvis"
+  },
+  "core_languages": [
+    "Go",
+    "TypeScript"
+  ],
+  "authority": {
+    "durable_personal_state": "WBT Kernel",
+    "llm_output_is_authoritative_truth": false,
+    "side_effect_gateway_required": true,
+    "high_risk_fail_closed": true,
+    "proposal_gate_preserved": true
+  },
+  "media": {
+    "raw_audio_persist_default": false,
+    "raw_camera_persist_default": false,
+    "raw_screen_persist_default": false,
+    "browser_long_lived_provider_key_allowed": false
+  },
+  "required_components": [
+    "Runtime",
+    "ContextCompiler",
+    "ModelRuntime",
+    "CapabilityGateway",
+    "Policy",
+    "PresenceSession",
+    "MultimodalPerception",
+    "ActivePerception",
+    "EventFabric",
+    "WorldModel",
+    "AttentionEngine",
+    "Operators",
+    "Trace",
+    "Web3"
+  ],
+  "existing_components_to_evolve": {
+    "context": "internal/contextpack",
+    "models": "internal/llm",
+    "evals": "internal/evals",
+    "work_lifecycle": "internal/worksession",
+    "scheduler": "internal/scheduler",
+    "risk": "internal/guard"
+  },
+  "forbidden": [
+    "foreign-key-constraints",
+    "editing-merged-migrations",
+    "master-provider-key-in-browser",
+    "autonomous-side-effect-bypass",
+    "hidden-permanent-ai-mutation",
+    "raw-media-persistence-by-default",
+    "relationship-gamification-product-framing"
+  ]
+}
