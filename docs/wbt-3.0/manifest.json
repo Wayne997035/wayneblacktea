@@ -1,0 +1,902 @@
+{
+  "pack": "WBT 3.0 E.V.-class Personal Intelligence Formal Specification",
+  "version": "3.0-spec-1",
+  "status": "FROZEN_BASELINE",
+  "generated": "2026-08-25",
+  "baseline_commit": "75ce929c301090f0d1e742591b311e90b712c5fe",
+  "product_role": "AI Collaboration Partner",
+  "core_languages": [
+    "Go",
+    "TypeScript"
+  ],
+  "document_count": 77,
+  "reading_order": [
+    "README.md",
+    "00-foundation/00_PRODUCT_CHARTER.md",
+    "00-foundation/01_SCOPE_NON_GOALS.md",
+    "00-foundation/02_LOCKED_DECISIONS.md",
+    "00-foundation/03_CURRENT_STATE_AUDIT.md",
+    "00-foundation/04_TERMINOLOGY_AND_SESSION_MODEL.md",
+    "00-foundation/05_CURRENT_COMPONENT_DISPOSITION.md",
+    "10-architecture/10_TARGET_ARCHITECTURE.md",
+    "10-architecture/11_RUNTIME.md",
+    "10-architecture/12_CONTEXT_COMPILER.md",
+    "10-architecture/13_MODEL_RUNTIME.md",
+    "10-architecture/14_CAPABILITY_GATEWAY.md",
+    "10-architecture/15_POLICY_AUTHORITY.md",
+    "10-architecture/16_OPERATOR_SYSTEM.md",
+    "10-architecture/17_EVENT_FABRIC.md",
+    "10-architecture/18_WORLD_MODEL.md",
+    "10-architecture/19_ATTENTION_ENGINE.md",
+    "10-architecture/20_TRACE_OBSERVABILITY.md",
+    "10-architecture/21_WORKSESSION_INTEGRATION.md",
+    "20-perception/20_PRESENCE_SESSION.md",
+    "20-perception/21_REALTIME_VOICE.md",
+    "20-perception/22_MULTIMODAL_PERCEPTION.md",
+    "20-perception/23_ACTIVE_PERCEPTION.md",
+    "20-perception/24_PHYSICAL_OBJECT_ANALYSIS.md",
+    "20-perception/25_SCREEN_PERCEPTION.md",
+    "20-perception/26_PERCEPTION_CONFIDENCE.md",
+    "20-perception/27_SENSOR_ADAPTER_CONTRACT.md",
+    "30-interaction/30_COLLABORATION_PARTNER_CONTRACT.md",
+    "30-interaction/31_TARS_CASE_REFERENCE.md",
+    "30-interaction/32_PROACTIVITY_INTERRUPTION.md",
+    "30-interaction/33_CONVERSATIONAL_CONTINUITY.md",
+    "40-web/40_WEB_INFORMATION_ARCHITECTURE.md",
+    "40-web/41_PRESENCE_SURFACE.md",
+    "40-web/42_WORLD_SURFACE.md",
+    "40-web/43_MIND_SURFACE.md",
+    "40-web/44_OPERATIONS_SURFACE.md",
+    "40-web/45_CONTROL_SURFACE.md",
+    "40-web/46_EXPLORE_MIGRATION.md",
+    "40-web/47_VISUAL_DESIGN_SYSTEM.md",
+    "40-web/48_MOTION_STATE.md",
+    "40-web/49_ACCESSIBILITY_PERFORMANCE.md",
+    "40-web/50_DESKTOP_CLIENT.md",
+    "50-data-api/50_DATA_MODEL.md",
+    "50-data-api/51_EVENT_WORLD_SCHEMA.md",
+    "50-data-api/52_RUNTIME_TRACE_SCHEMA.md",
+    "50-data-api/53_API_CONTRACTS.md",
+    "50-data-api/54_REALTIME_CONTROL_PROTOCOL.md",
+    "50-data-api/55_EPHEMERAL_CREDENTIALS.md",
+    "50-data-api/56_RETENTION_PRIVACY.md",
+    "50-data-api/57_DUAL_BACKEND_MIGRATION.md",
+    "60-engineering/60_PACKAGE_OWNERSHIP.md",
+    "60-engineering/61_EXISTING_EVOLUTION.md",
+    "60-engineering/62_SCHEDULER_OPERATOR_MIGRATION.md",
+    "60-engineering/63_GUARD_RISK_INTEGRATION.md",
+    "60-engineering/64_LLM_EVOLUTION.md",
+    "60-engineering/65_EVAL_EVOLUTION.md",
+    "60-engineering/66_FAILURE_MODES.md",
+    "60-engineering/67_SLOS_BUDGETS.md",
+    "60-engineering/68_TEST_STRATEGY.md",
+    "60-engineering/69_SECURITY_THREAT_MODEL.md",
+    "70-delivery/70_PHASE_PLAN.md",
+    "70-delivery/71_RELEASE_GATES.md",
+    "70-delivery/72_ACCEPTANCE_DEMOS.md",
+    "70-delivery/73_PR_SEQUENCE.md",
+    "70-delivery/74_ROLLBACK_MIGRATION.md",
+    "70-delivery/75_AI_CODING_AGENT_GUIDE.md",
+    "70-delivery/76_DEFINITION_OF_DONE.md",
+    "references/RESEARCH_SOURCES.md",
+    "references/BASELINE_EVIDENCE.md",
+    "review/00_FINAL_REVIEW_SUMMARY.md",
+    "review/01_ARCHITECTURE_REVIEW.md",
+    "review/02_SECURITY_REVIEW.md",
+    "review/03_REALTIME_MULTIMODAL_REVIEW.md",
+    "review/04_WEB_UX_REVIEW.md",
+    "review/05_MIGRATION_REVIEW.md",
+    "review/06_CROSS_SPEC_CONSISTENCY.md",
+    "review/99_MACHINE_QA.md"
+  ],
+  "documents": [
+    {
+      "id": "WBT3-INDEX",
+      "path": "README.md",
+      "title": "WBT 3.0 — E.V.-class Personal Intelligence Formal Specification",
+      "status": "frozen",
+      "order": 0,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-000",
+      "path": "00-foundation/00_PRODUCT_CHARTER.md",
+      "title": "Product Charter",
+      "status": "frozen",
+      "order": 10,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-001",
+      "path": "00-foundation/01_SCOPE_NON_GOALS.md",
+      "title": "Scope and Non-goals",
+      "status": "frozen",
+      "order": 11,
+      "depends_on": [
+        "WBT3-000"
+      ]
+    },
+    {
+      "id": "WBT3-002",
+      "path": "00-foundation/02_LOCKED_DECISIONS.md",
+      "title": "Locked Architecture Decisions",
+      "status": "frozen",
+      "order": 12,
+      "depends_on": [
+        "WBT3-000",
+        "WBT3-001"
+      ]
+    },
+    {
+      "id": "WBT3-003",
+      "path": "00-foundation/03_CURRENT_STATE_AUDIT.md",
+      "title": "Current-state Codebase Audit",
+      "status": "frozen",
+      "order": 13,
+      "depends_on": [
+        "WBT3-002"
+      ]
+    },
+    {
+      "id": "WBT3-004",
+      "path": "00-foundation/04_TERMINOLOGY_AND_SESSION_MODEL.md",
+      "title": "Terminology and Session Model",
+      "status": "frozen",
+      "order": 14,
+      "depends_on": [
+        "WBT3-003"
+      ]
+    },
+    {
+      "id": "WBT3-005",
+      "path": "00-foundation/05_CURRENT_COMPONENT_DISPOSITION.md",
+      "title": "Current Component Disposition",
+      "status": "frozen",
+      "order": 15,
+      "depends_on": [
+        "WBT3-003"
+      ]
+    },
+    {
+      "id": "WBT3-100",
+      "path": "10-architecture/10_TARGET_ARCHITECTURE.md",
+      "title": "Target Architecture",
+      "status": "frozen",
+      "order": 100,
+      "depends_on": [
+        "WBT3-002",
+        "WBT3-005"
+      ]
+    },
+    {
+      "id": "WBT3-110",
+      "path": "10-architecture/11_RUNTIME.md",
+      "title": "Personal Intelligence Runtime",
+      "status": "frozen",
+      "order": 110,
+      "depends_on": [
+        "WBT3-100"
+      ]
+    },
+    {
+      "id": "WBT3-120",
+      "path": "10-architecture/12_CONTEXT_COMPILER.md",
+      "title": "Context Compiler Evolution",
+      "status": "frozen",
+      "order": 120,
+      "depends_on": [
+        "WBT3-110"
+      ]
+    },
+    {
+      "id": "WBT3-130",
+      "path": "10-architecture/13_MODEL_RUNTIME.md",
+      "title": "Model Runtime — evolve internal/llm",
+      "status": "frozen",
+      "order": 130,
+      "depends_on": [
+        "WBT3-110"
+      ]
+    },
+    {
+      "id": "WBT3-140",
+      "path": "10-architecture/14_CAPABILITY_GATEWAY.md",
+      "title": "Capability Gateway",
+      "status": "frozen",
+      "order": 140,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-130"
+      ]
+    },
+    {
+      "id": "WBT3-150",
+      "path": "10-architecture/15_POLICY_AUTHORITY.md",
+      "title": "Policy, Authority and Approval",
+      "status": "frozen",
+      "order": 150,
+      "depends_on": [
+        "WBT3-140"
+      ]
+    },
+    {
+      "id": "WBT3-160",
+      "path": "10-architecture/16_OPERATOR_SYSTEM.md",
+      "title": "Persistent Operator System",
+      "status": "frozen",
+      "order": 160,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-140",
+        "WBT3-150"
+      ]
+    },
+    {
+      "id": "WBT3-170",
+      "path": "10-architecture/17_EVENT_FABRIC.md",
+      "title": "Event Fabric",
+      "status": "frozen",
+      "order": 170,
+      "depends_on": [
+        "WBT3-100"
+      ]
+    },
+    {
+      "id": "WBT3-180",
+      "path": "10-architecture/18_WORLD_MODEL.md",
+      "title": "World Model",
+      "status": "frozen",
+      "order": 180,
+      "depends_on": [
+        "WBT3-170"
+      ]
+    },
+    {
+      "id": "WBT3-190",
+      "path": "10-architecture/19_ATTENTION_ENGINE.md",
+      "title": "Attention Engine",
+      "status": "frozen",
+      "order": 190,
+      "depends_on": [
+        "WBT3-170",
+        "WBT3-180"
+      ]
+    },
+    {
+      "id": "WBT3-200",
+      "path": "10-architecture/20_TRACE_OBSERVABILITY.md",
+      "title": "Runtime Trace and Observability",
+      "status": "frozen",
+      "order": 200,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-140"
+      ]
+    },
+    {
+      "id": "WBT3-210",
+      "path": "10-architecture/21_WORKSESSION_INTEGRATION.md",
+      "title": "Work Session Integration",
+      "status": "frozen",
+      "order": 210,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-200"
+      ]
+    },
+    {
+      "id": "WBT3-300",
+      "path": "20-perception/20_PRESENCE_SESSION.md",
+      "title": "Presence Session",
+      "status": "frozen",
+      "order": 300,
+      "depends_on": [
+        "WBT3-100",
+        "WBT3-110"
+      ]
+    },
+    {
+      "id": "WBT3-310",
+      "path": "20-perception/21_REALTIME_VOICE.md",
+      "title": "Realtime Voice",
+      "status": "frozen",
+      "order": 310,
+      "depends_on": [
+        "WBT3-300",
+        "WBT3-130"
+      ]
+    },
+    {
+      "id": "WBT3-320",
+      "path": "20-perception/22_MULTIMODAL_PERCEPTION.md",
+      "title": "Multimodal Perception",
+      "status": "frozen",
+      "order": 320,
+      "depends_on": [
+        "WBT3-300"
+      ]
+    },
+    {
+      "id": "WBT3-330",
+      "path": "20-perception/23_ACTIVE_PERCEPTION.md",
+      "title": "Active Perception",
+      "status": "frozen",
+      "order": 330,
+      "depends_on": [
+        "WBT3-320",
+        "WBT3-180"
+      ]
+    },
+    {
+      "id": "WBT3-340",
+      "path": "20-perception/24_PHYSICAL_OBJECT_ANALYSIS.md",
+      "title": "Camera, Image and Physical Object Analysis",
+      "status": "frozen",
+      "order": 340,
+      "depends_on": [
+        "WBT3-320",
+        "WBT3-330"
+      ]
+    },
+    {
+      "id": "WBT3-350",
+      "path": "20-perception/25_SCREEN_PERCEPTION.md",
+      "title": "Screen Perception",
+      "status": "frozen",
+      "order": 350,
+      "depends_on": [
+        "WBT3-300",
+        "WBT3-320"
+      ]
+    },
+    {
+      "id": "WBT3-360",
+      "path": "20-perception/26_PERCEPTION_CONFIDENCE.md",
+      "title": "Perception Confidence and Evidence",
+      "status": "frozen",
+      "order": 360,
+      "depends_on": [
+        "WBT3-320"
+      ]
+    },
+    {
+      "id": "WBT3-370",
+      "path": "20-perception/27_SENSOR_ADAPTER_CONTRACT.md",
+      "title": "Sensor Adapter Contract",
+      "status": "frozen",
+      "order": 370,
+      "depends_on": [
+        "WBT3-320"
+      ]
+    },
+    {
+      "id": "WBT3-400",
+      "path": "30-interaction/30_COLLABORATION_PARTNER_CONTRACT.md",
+      "title": "Collaboration Partner Interaction Contract",
+      "status": "frozen",
+      "order": 400,
+      "depends_on": [
+        "WBT3-000"
+      ]
+    },
+    {
+      "id": "WBT3-410",
+      "path": "30-interaction/31_TARS_CASE_REFERENCE.md",
+      "title": "TARS / CASE Design Lessons",
+      "status": "frozen",
+      "order": 410,
+      "depends_on": [
+        "WBT3-400"
+      ]
+    },
+    {
+      "id": "WBT3-420",
+      "path": "30-interaction/32_PROACTIVITY_INTERRUPTION.md",
+      "title": "Proactivity and Interruption Policy",
+      "status": "frozen",
+      "order": 420,
+      "depends_on": [
+        "WBT3-190",
+        "WBT3-400"
+      ]
+    },
+    {
+      "id": "WBT3-430",
+      "path": "30-interaction/33_CONVERSATIONAL_CONTINUITY.md",
+      "title": "Conversational Continuity",
+      "status": "frozen",
+      "order": 430,
+      "depends_on": [
+        "WBT3-120",
+        "WBT3-300"
+      ]
+    },
+    {
+      "id": "WBT3-500",
+      "path": "40-web/40_WEB_INFORMATION_ARCHITECTURE.md",
+      "title": "Web 3.0 Information Architecture",
+      "status": "frozen",
+      "order": 500,
+      "depends_on": [
+        "WBT3-100",
+        "WBT3-300"
+      ]
+    },
+    {
+      "id": "WBT3-510",
+      "path": "40-web/41_PRESENCE_SURFACE.md",
+      "title": "Presence Surface",
+      "status": "frozen",
+      "order": 510,
+      "depends_on": [
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-520",
+      "path": "40-web/42_WORLD_SURFACE.md",
+      "title": "World Surface",
+      "status": "frozen",
+      "order": 520,
+      "depends_on": [
+        "WBT3-180",
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-530",
+      "path": "40-web/43_MIND_SURFACE.md",
+      "title": "Mind Surface",
+      "status": "frozen",
+      "order": 530,
+      "depends_on": [
+        "WBT3-500",
+        "WBT3-120"
+      ]
+    },
+    {
+      "id": "WBT3-540",
+      "path": "40-web/44_OPERATIONS_SURFACE.md",
+      "title": "Operations Surface",
+      "status": "frozen",
+      "order": 540,
+      "depends_on": [
+        "WBT3-160",
+        "WBT3-200",
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-550",
+      "path": "40-web/45_CONTROL_SURFACE.md",
+      "title": "Control Surface",
+      "status": "frozen",
+      "order": 550,
+      "depends_on": [
+        "WBT3-150",
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-560",
+      "path": "40-web/46_EXPLORE_MIGRATION.md",
+      "title": "Legacy Pages / Explore Migration",
+      "status": "frozen",
+      "order": 560,
+      "depends_on": [
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-570",
+      "path": "40-web/47_VISUAL_DESIGN_SYSTEM.md",
+      "title": "Visual Design System — Precision Futurism",
+      "status": "frozen",
+      "order": 570,
+      "depends_on": [
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-580",
+      "path": "40-web/48_MOTION_STATE.md",
+      "title": "Motion and Runtime State",
+      "status": "frozen",
+      "order": 580,
+      "depends_on": [
+        "WBT3-570",
+        "WBT3-300"
+      ]
+    },
+    {
+      "id": "WBT3-590",
+      "path": "40-web/49_ACCESSIBILITY_PERFORMANCE.md",
+      "title": "Web Accessibility and Performance",
+      "status": "frozen",
+      "order": 590,
+      "depends_on": [
+        "WBT3-570"
+      ]
+    },
+    {
+      "id": "WBT3-600",
+      "path": "40-web/50_DESKTOP_CLIENT.md",
+      "title": "Optional Desktop Client",
+      "status": "frozen",
+      "order": 600,
+      "depends_on": [
+        "WBT3-500"
+      ]
+    },
+    {
+      "id": "WBT3-700",
+      "path": "50-data-api/50_DATA_MODEL.md",
+      "title": "3.0 Data Model Overview",
+      "status": "frozen",
+      "order": 700,
+      "depends_on": [
+        "WBT3-004",
+        "WBT3-100"
+      ]
+    },
+    {
+      "id": "WBT3-710",
+      "path": "50-data-api/51_EVENT_WORLD_SCHEMA.md",
+      "title": "Event and World Schema",
+      "status": "frozen",
+      "order": 710,
+      "depends_on": [
+        "WBT3-170",
+        "WBT3-180",
+        "WBT3-700"
+      ]
+    },
+    {
+      "id": "WBT3-720",
+      "path": "50-data-api/52_RUNTIME_TRACE_SCHEMA.md",
+      "title": "Runtime and Trace Schema",
+      "status": "frozen",
+      "order": 720,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-200",
+        "WBT3-700"
+      ]
+    },
+    {
+      "id": "WBT3-730",
+      "path": "50-data-api/53_API_CONTRACTS.md",
+      "title": "API Contracts",
+      "status": "frozen",
+      "order": 730,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-300",
+        "WBT3-700"
+      ]
+    },
+    {
+      "id": "WBT3-740",
+      "path": "50-data-api/54_REALTIME_CONTROL_PROTOCOL.md",
+      "title": "Realtime Control Protocol",
+      "status": "frozen",
+      "order": 740,
+      "depends_on": [
+        "WBT3-300",
+        "WBT3-730"
+      ]
+    },
+    {
+      "id": "WBT3-750",
+      "path": "50-data-api/55_EPHEMERAL_CREDENTIALS.md",
+      "title": "Realtime Provider Credential Architecture",
+      "status": "frozen",
+      "order": 750,
+      "depends_on": [
+        "WBT3-130",
+        "WBT3-300"
+      ]
+    },
+    {
+      "id": "WBT3-760",
+      "path": "50-data-api/56_RETENTION_PRIVACY.md",
+      "title": "Retention and Privacy",
+      "status": "frozen",
+      "order": 760,
+      "depends_on": [
+        "WBT3-200",
+        "WBT3-320",
+        "WBT3-700"
+      ]
+    },
+    {
+      "id": "WBT3-770",
+      "path": "50-data-api/57_DUAL_BACKEND_MIGRATION.md",
+      "title": "Dual-backend Migration Rules",
+      "status": "frozen",
+      "order": 770,
+      "depends_on": [
+        "WBT3-700"
+      ]
+    },
+    {
+      "id": "WBT3-800",
+      "path": "60-engineering/60_PACKAGE_OWNERSHIP.md",
+      "title": "Package Ownership",
+      "status": "frozen",
+      "order": 800,
+      "depends_on": [
+        "WBT3-005",
+        "WBT3-100"
+      ]
+    },
+    {
+      "id": "WBT3-810",
+      "path": "60-engineering/61_EXISTING_EVOLUTION.md",
+      "title": "Existing Component Evolution Map",
+      "status": "frozen",
+      "order": 810,
+      "depends_on": [
+        "WBT3-003",
+        "WBT3-800"
+      ]
+    },
+    {
+      "id": "WBT3-820",
+      "path": "60-engineering/62_SCHEDULER_OPERATOR_MIGRATION.md",
+      "title": "Scheduler to Operator Migration",
+      "status": "frozen",
+      "order": 820,
+      "depends_on": [
+        "WBT3-160",
+        "WBT3-810"
+      ]
+    },
+    {
+      "id": "WBT3-830",
+      "path": "60-engineering/63_GUARD_RISK_INTEGRATION.md",
+      "title": "Guard and Risk Integration",
+      "status": "frozen",
+      "order": 830,
+      "depends_on": [
+        "WBT3-140",
+        "WBT3-150"
+      ]
+    },
+    {
+      "id": "WBT3-840",
+      "path": "60-engineering/64_LLM_EVOLUTION.md",
+      "title": "internal/llm Evolution Plan",
+      "status": "frozen",
+      "order": 840,
+      "depends_on": [
+        "WBT3-130",
+        "WBT3-810"
+      ]
+    },
+    {
+      "id": "WBT3-850",
+      "path": "60-engineering/65_EVAL_EVOLUTION.md",
+      "title": "Eval Evolution",
+      "status": "frozen",
+      "order": 850,
+      "depends_on": [
+        "WBT3-003",
+        "WBT3-810"
+      ]
+    },
+    {
+      "id": "WBT3-860",
+      "path": "60-engineering/66_FAILURE_MODES.md",
+      "title": "Failure Modes",
+      "status": "frozen",
+      "order": 860,
+      "depends_on": [
+        "WBT3-100"
+      ]
+    },
+    {
+      "id": "WBT3-870",
+      "path": "60-engineering/67_SLOS_BUDGETS.md",
+      "title": "SLOs and Budgets",
+      "status": "frozen",
+      "order": 870,
+      "depends_on": [
+        "WBT3-110",
+        "WBT3-300"
+      ]
+    },
+    {
+      "id": "WBT3-880",
+      "path": "60-engineering/68_TEST_STRATEGY.md",
+      "title": "Test Strategy",
+      "status": "frozen",
+      "order": 880,
+      "depends_on": [
+        "WBT3-850"
+      ]
+    },
+    {
+      "id": "WBT3-890",
+      "path": "60-engineering/69_SECURITY_THREAT_MODEL.md",
+      "title": "Security Threat Model",
+      "status": "frozen",
+      "order": 890,
+      "depends_on": [
+        "WBT3-150",
+        "WBT3-300",
+        "WBT3-320"
+      ]
+    },
+    {
+      "id": "WBT3-900",
+      "path": "70-delivery/70_PHASE_PLAN.md",
+      "title": "3.0 Phase Plan",
+      "status": "frozen",
+      "order": 900,
+      "depends_on": [
+        "WBT3-100"
+      ]
+    },
+    {
+      "id": "WBT3-910",
+      "path": "70-delivery/71_RELEASE_GATES.md",
+      "title": "Release Gates",
+      "status": "frozen",
+      "order": 910,
+      "depends_on": [
+        "WBT3-900"
+      ]
+    },
+    {
+      "id": "WBT3-920",
+      "path": "70-delivery/72_ACCEPTANCE_DEMOS.md",
+      "title": "Acceptance Demos",
+      "status": "frozen",
+      "order": 920,
+      "depends_on": [
+        "WBT3-910"
+      ]
+    },
+    {
+      "id": "WBT3-930",
+      "path": "70-delivery/73_PR_SEQUENCE.md",
+      "title": "Recommended PR Sequence",
+      "status": "frozen",
+      "order": 930,
+      "depends_on": [
+        "WBT3-900"
+      ]
+    },
+    {
+      "id": "WBT3-940",
+      "path": "70-delivery/74_ROLLBACK_MIGRATION.md",
+      "title": "Rollback and Migration Strategy",
+      "status": "frozen",
+      "order": 940,
+      "depends_on": [
+        "WBT3-900"
+      ]
+    },
+    {
+      "id": "WBT3-950",
+      "path": "70-delivery/75_AI_CODING_AGENT_GUIDE.md",
+      "title": "AI Coding Agent Guide",
+      "status": "frozen",
+      "order": 950,
+      "depends_on": [
+        "WBT3-002",
+        "WBT3-900"
+      ]
+    },
+    {
+      "id": "WBT3-960",
+      "path": "70-delivery/76_DEFINITION_OF_DONE.md",
+      "title": "Definition of Done",
+      "status": "frozen",
+      "order": 960,
+      "depends_on": [
+        "WBT3-910"
+      ]
+    },
+    {
+      "id": "WBT3-R01",
+      "path": "references/RESEARCH_SOURCES.md",
+      "title": "Research Sources",
+      "status": "reference",
+      "order": 1000,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-R02",
+      "path": "references/BASELINE_EVIDENCE.md",
+      "title": "Baseline Evidence and Findings",
+      "status": "reference",
+      "order": 1001,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q00",
+      "path": "review/00_FINAL_REVIEW_SUMMARY.md",
+      "title": "Final Review Summary",
+      "status": "reviewed",
+      "order": 1100,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q01",
+      "path": "review/01_ARCHITECTURE_REVIEW.md",
+      "title": "Architecture Review",
+      "status": "reviewed",
+      "order": 1101,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q02",
+      "path": "review/02_SECURITY_REVIEW.md",
+      "title": "Security Review",
+      "status": "reviewed",
+      "order": 1102,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q03",
+      "path": "review/03_REALTIME_MULTIMODAL_REVIEW.md",
+      "title": "Realtime and Multimodal Review",
+      "status": "reviewed",
+      "order": 1103,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q04",
+      "path": "review/04_WEB_UX_REVIEW.md",
+      "title": "Web/UX Review",
+      "status": "reviewed",
+      "order": 1104,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q05",
+      "path": "review/05_MIGRATION_REVIEW.md",
+      "title": "Migration Review",
+      "status": "reviewed",
+      "order": 1105,
+      "depends_on": []
+    },
+    {
+      "id": "WBT3-Q06",
+      "path": "review/06_CROSS_SPEC_CONSISTENCY.md",
+      "title": "Cross-spec Consistency Review",
+      "status": "reviewed",
+      "order": 1106,
+      "depends_on": [
+        "WBT3-Q01",
+        "WBT3-Q02",
+        "WBT3-Q03",
+        "WBT3-Q04",
+        "WBT3-Q05"
+      ]
+    },
+    {
+      "id": "WBT3-Q99",
+      "path": "review/99_MACHINE_QA.md",
+      "title": "Machine QA Report",
+      "status": "reviewed",
+      "order": 1199,
+      "depends_on": [
+        "WBT3-Q06"
+      ]
+    }
+  ],
+  "canonical_contract": "architecture-contract.json",
+  "decision_register": "decision-register.json",
+  "final_review": "review/00_FINAL_REVIEW_SUMMARY.md",
+  "cross_spec_review": "review/06_CROSS_SPEC_CONSISTENCY.md",
+  "machine_qa": "review/99_MACHINE_QA.md",
+  "release_gates": "70-delivery/71_RELEASE_GATES.md",
+  "entry_points": {
+    "start_here": "README.md",
+    "final_review_summary": "FINAL_REVIEW_SUMMARY.md",
+    "machine_qa": "MACHINE_QA.md"
+  }
+}

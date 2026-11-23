@@ -1,0 +1,101 @@
+{
+  "decisions": [
+    {
+      "id": "D-001",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-002",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-003",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-004",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-005",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-006",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-007",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-008",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-009",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-010",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-011",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-012",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-013",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-014",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    },
+    {
+      "id": "D-015",
+      "status": "accepted",
+      "source": "00-foundation/02_LOCKED_DECISIONS.md"
+    }
+  ],
+  "user_decisions": [
+    {
+      "id": "U-001",
+      "decision": "WBT 3.0 target is E.V.-class Personal Intelligence"
+    },
+    {
+      "id": "U-002",
+      "decision": "Product role is an AI collaboration partner; emotional dependency/relationship simulation is not a product goal"
+    },
+    {
+      "id": "U-003",
+      "decision": "Go + TypeScript remain core implementation languages"
+    },
+    {
+      "id": "U-004",
+      "decision": "Desktop application is acceptable only when it stays within core language/scope; deep native helper work is outside this spec"
+    },
+    {
+      "id": "U-005",
+      "decision": "TARS/CASE may inform good interaction design without changing the E.V. plan"
+    }
+  ]
+}
