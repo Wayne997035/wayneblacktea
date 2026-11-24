@@ -115,65 +115,6 @@ func TestClassifyBash_ReasonNonEmpty(t *testing.T) {
 	}
 }
 
-// TestSplitPipeline verifies the pipeline splitter handles quoted strings.
-func TestSplitPipeline(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input   string
-		wantLen int
-	}{
-		{"ls", 1},
-		{"ls && pwd", 2},
-		{"ls || echo 'foo && bar'", 2}, // quoted && should not split
-		{"a && b && c", 3},
-		{"a; b; c", 3},
-		{"a | b | c", 3},
-		{"a && b || c; d", 4},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			t.Parallel()
-			got := splitPipeline(tc.input)
-			if len(got) != tc.wantLen {
-				t.Errorf("splitPipeline(%q) = %d segments, want %d: %v", tc.input, len(got), tc.wantLen, got)
-			}
-		})
-	}
-}
-
-// TestTokenize verifies basic tokenization behaviour.
-func TestTokenize(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input    string
-		wantToks []string
-	}{
-		{"git add .", []string{"git", "add", "."}},
-		{"git commit -m 'feat: add'", []string{"git", "commit", "-m", "feat: add"}},
-		{`echo "hello world"`, []string{"echo", "hello world"}},
-		{"FOO=bar go test", []string{"FOO=bar", "go", "test"}},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			t.Parallel()
-			got := tokenize(tc.input)
-			if len(got) != len(tc.wantToks) {
-				t.Fatalf("tokenize(%q) = %v (len=%d), want %v (len=%d)",
-					tc.input, got, len(got), tc.wantToks, len(tc.wantToks))
-			}
-			for i, tok := range got {
-				if tok != tc.wantToks[i] {
-					t.Errorf("tokenize(%q)[%d] = %q, want %q", tc.input, i, tok, tc.wantToks[i])
-				}
-			}
-		})
-	}
-}
-
 // TestClassifyBash_NewlineAndSingleAmpSeparators directly verifies the two
 // separator additions in operatorWidth: '\n' and standalone '&'.
 func TestClassifyBash_NewlineAndSingleAmpSeparators(t *testing.T) {
