@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/Wayne997035/wayneblacktea/internal/aicost"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
@@ -92,7 +93,8 @@ func NewAtomizer() *Atomizer {
 	if key == "" {
 		return nil
 	}
-	client := anthropic.NewClient(option.WithAPIKey(key))
+	// [F1124-72] 1 MiB response cap.
+	client := anthropic.NewClient(option.WithAPIKey(key), llm.AnthropicResponseCap())
 	return &Atomizer{
 		client: &client,
 		model:  defaultAtomizerModel,

@@ -11,6 +11,7 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/db"
 	"github.com/Wayne997035/wayneblacktea/internal/decision"
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
@@ -94,7 +95,8 @@ type Generator struct {
 
 // NewGenerator creates a Generator using the given Claude API key.
 func NewGenerator(apiKey string) *Generator {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// [F1124-76] 1 MiB response cap.
+	client := anthropic.NewClient(option.WithAPIKey(apiKey), llm.AnthropicResponseCap())
 	return &Generator{client: &client, model: snapshotModel}
 }
 

@@ -85,7 +85,8 @@ func (r *ConceptReviewer) costRecorder() aicost.Recorder {
 // NewConceptReviewer creates a ConceptReviewer with the given API key.
 // The model defaults to claude-haiku-4-5 for cost efficiency.
 func NewConceptReviewer(apiKey string) *ConceptReviewer {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// [F1124-74] 1 MiB response cap.
+	client := anthropic.NewClient(option.WithAPIKey(apiKey), llm.AnthropicResponseCap())
 	return newConceptReviewerWithClient(&client, defaultReviewerModel)
 }
 

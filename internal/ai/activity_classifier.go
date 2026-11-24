@@ -151,7 +151,8 @@ func (c *ActivityClassifier) costRecorder() aicost.Recorder {
 // Backward-compat: returns a Claude-only instance when called with just a
 // Claude API key, matching pre-refactor behaviour exactly.
 func NewActivityClassifier(apiKey string) *ActivityClassifier {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// [F1124-71] 1 MiB response cap.
+	client := anthropic.NewClient(option.WithAPIKey(apiKey), llm.AnthropicResponseCap())
 	return NewActivityClassifierWithClient(&client, defaultClassifierModel)
 }
 

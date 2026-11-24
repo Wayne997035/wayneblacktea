@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/Wayne997035/wayneblacktea/internal/aicost"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/Wayne997035/wayneblacktea/internal/workspace"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -107,7 +108,8 @@ func resolveModel() string {
 // The model is selected from the CLAUDE_SUMMARY_MODEL environment variable,
 // defaulting to "claude-haiku-4-5".
 func New(apiKey string) *Summarizer {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// [F1124-75] 1 MiB response cap.
+	client := anthropic.NewClient(option.WithAPIKey(apiKey), llm.AnthropicResponseCap())
 	return NewWithClient(&client, resolveModel())
 }
 
