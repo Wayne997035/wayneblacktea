@@ -52,7 +52,17 @@ VERDICT_ORDER = [
     "UNKNOWN_NEEDS_HUMAN",
     "STILL_OPEN_LIKELY",
     "NO_ANCHOR_NEEDS_HUMAN",
+    # [F1124-92] A bucket missing from this list is silently dropped by
+    # render_text — every new verdict MUST be added here.
+    "SKIPPED_BUDGET_EXHAUSTED",
 ]
+
+# [F1124-92] Batch-wide cap on git subprocess calls (0 = unlimited). The check
+# runs BEFORE each ticket, so the batch can overshoot by at most one ticket's
+# worst case (~300 calls, see README bounds table). 3000 is ~3x the
+# extrapolated 1,060 calls for the full backlog (estimate, not measured on the
+# full 470 tickets; 16 fixture tickets measured 36 calls / 14.5s).
+DEFAULT_MAX_GIT_CALLS = 3000
 
 
 def find_repo_root(start: Path) -> Path:
@@ -68,10 +78,26 @@ def find_repo_root(start: Path) -> Path:
     return start
 
 
-def run(tasks: list[dict], repo_root: Path, window: int) -> list[dict]:
-    git = GitOps(repo_root)
+def run(tasks: list[dict], repo_root: Path, window: int, git=None,
+        max_git_calls: int = DEFAULT_MAX_GIT_CALLS) -> list[dict]:
+    if git is None:
+        git = GitOps(repo_root)
     rows = []
-    for t in tasks:
+    total = len(tasks)
+    for k, t in enumerate(tasks, start=1):
+        # [F1124-92] Budget exhausted -> this ticket and every later one is
+        # reported as skipped (visible in the report), never silently dropped.
+        if max_git_calls > 0 and git.calls >= max_git_calls:
+            rows.append({
+                "id": t["id"],
+                "status": t.get("status", ""),
+                "title": t["title"],
+                "verdict": "SKIPPED_BUDGET_EXHAUSTED",
+                "reasons": [f"⚠ 批次 git 呼叫預算 {max_git_calls} 已用盡,"
+                            f"本單未檢查(第 {k}/{total} 張起)"],
+                "verify_commands": [],
+            })
+            continue
         ev = rules.classify(t["title"], t["description"], t.get("created_at", ""),
                              git, window=window)
         rows.append({
@@ -119,7 +145,14 @@ def main():
                      help="label/PR 引註比對的行數窗口(預設 80)")
     ap.add_argument("--json", action="store_true", help="輸出 JSON 而非文字報告")
     ap.add_argument("--no-write", action="store_true", help="只印,不落檔到 reports/")
+    ap.add_argument("--max-git-calls", type=int, default=DEFAULT_MAX_GIT_CALLS,
+                     help="[F1124-92] 整批 git 子行程呼叫總預算(預設 "
+                          f"{DEFAULT_MAX_GIT_CALLS});用盡後剩餘單標 "
+                          "SKIPPED_BUDGET_EXHAUSTED 並 exit 3。0 = 不限(關閉保護)")
     a = ap.parse_args()
+    if a.max_git_calls < 0:
+        print("錯誤: --max-git-calls 不可為負數(0 = 不限)", file=sys.stderr)
+        return 2
 
     # [GTD b4379b4b] Two different roots, deliberately not the same variable.
     #
@@ -150,7 +183,7 @@ def main():
             print(f"錯誤: {e}", file=sys.stderr)
             return 2
 
-    rows = run(tasks, repo_root, a.window)
+    rows = run(tasks, repo_root, a.window, max_git_calls=a.max_git_calls)
 
     if a.json:
         text = json.dumps(rows, ensure_ascii=False, indent=2)
@@ -170,6 +203,14 @@ def main():
     if n_suspect:
         print(f"\n{n_suspect} 張單疑似已修 —— 這支腳本不會關單,"
               "請人工用附帶的驗證指令複驗後再決定要不要 complete_task。", file=sys.stderr)
+
+    # [F1124-92] Partial audit != complete audit: exit 3 so a caller cannot
+    # read "ran to the end" as "checked everything". Report is already out.
+    n_skipped = sum(1 for r in rows if r["verdict"] == "SKIPPED_BUDGET_EXHAUSTED")
+    if n_skipped:
+        print(f"⚠ 預算用盡:{n_skipped}/{len(rows)} 張未檢查"
+              "(--max-git-calls 調高或設 0 不限)", file=sys.stderr)
+        return 3
     return 0
 
 

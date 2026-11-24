@@ -82,8 +82,13 @@ class GitOps:
         # de-duplicates.
         self._grep_cache: dict[str, list[tuple[str, int]]] = {}
         self._commit_iso_cache: dict[str, str | None] = {}
+        # [F1124-92] Every subprocess spawn through _run, failures included —
+        # audit.run() compares this against its batch budget.
+        self.calls = 0
 
     def _run(self, args: list[str]):
+        # Counted before the call so a timeout/OSError still costs a call.
+        self.calls += 1
         try:
             # Explicit noqa below: argv list, never shell=True — every element
             # (including anything derived from ticket text via the callers
@@ -138,7 +143,12 @@ class GitOps:
             return self._commit_iso_cache[rel_path]
         result = None
         if safe_path(self.repo_root, rel_path) is not None:
-            rc, out, _ = self._run(["log", "-1", "--format=%cI", "--", rel_path])
+            # [F1124-91] `:(literal)` stops pathspec magic (`:(glob)`,
+            # `:(exclude)` ...) in the ticket-derived string from being
+            # expanded — scoped to this one call; a global
+            # --literal-pathspecs would break grep_fixed's exclude pathspec.
+            rc, out, _ = self._run(
+                ["log", "-1", "--format=%cI", "--", f":(literal){rel_path}"])
             out = out.strip()
             result = out if rc == 0 and out else None
         self._commit_iso_cache[rel_path] = result
@@ -169,8 +179,10 @@ class GitOps:
         same batch run (see __init__'s cache docstring)."""
         if not literal or len(literal) > 200:
             return []
+        # [F1124-92] Both return paths hand out a copy: a caller that mutates
+        # the list must not poison the cache for later callers.
         if literal in self._grep_cache:
-            return self._grep_cache[literal]
+            return list(self._grep_cache[literal])
         rc, out, _ = self._run(
             ["grep", "-n", "-F", "-e", literal, "--", ".", SELF_EXCLUDE_PATHSPEC])
         hits = []
@@ -180,7 +192,7 @@ class GitOps:
                 if m:
                     hits.append((m.group(1), int(m.group(2))))
         self._grep_cache[literal] = hits
-        return hits
+        return list(hits)
 
     def object_exists(self, sha: str) -> bool:
         if not HEX_SHA_RE.match(sha):

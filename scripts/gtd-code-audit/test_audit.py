@@ -4,13 +4,19 @@ wayneblacktea checkout using the frozen fixture set in testdata/.
 
 Run: python3 -m unittest test_audit -v
 """
+import contextlib
+import io
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
+import audit  # noqa: E402
 from lib import extract, rules  # noqa: E402
 from lib.gitutil import GitOps, safe_path  # noqa: E402
 
@@ -152,6 +158,7 @@ class FakeGit:
         self.line_counts = line_counts or {}       # path -> int
         self.basenames = basenames or {}
         self.contexts = contexts or {}              # (path, line) -> str
+        self.calls = 0   # [F1124-92] mirrors GitOps.calls for audit.run's budget
 
     def file_exists(self, p):
         return p in self.files
@@ -166,6 +173,7 @@ class FakeGit:
         return self.basenames.get(b)
 
     def grep_fixed(self, literal):
+        self.calls += 1
         return self.grep_results.get(literal, [])
 
     def read_context(self, path, line, radius=3):
@@ -615,6 +623,209 @@ class TestKnownFixtureRegression(unittest.TestCase):
             print(f"  [{fx['id'][:8]}] {fx['title'][:70]} -> {ev.verdict}")
         # no assertion — see README.md "Known discrepancy with dispatch" for
         # the human-readable explanation of why these 5 are handled this way
+
+
+# ── [F1124-91] git log pathspec magic must be literal ──────────────────
+
+# +08:00 not +00:00: git's %cI prints UTC as "Z", which would make the exact
+# string comparison depend on the zone spelling rather than the behaviour.
+D1 = "2020-01-01T00:00:00+08:00"
+D2 = "2021-01-01T00:00:00+08:00"
+D3 = "2022-01-01T00:00:00+08:00"
+
+
+def _git_in(repo, args, date=None):
+    env = {**os.environ, "GIT_LITERAL_PATHSPECS": "1"}
+    if date:
+        env["GIT_COMMITTER_DATE"] = date
+        env["GIT_AUTHOR_DATE"] = date
+    r = subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", *args],  # noqa: S607
+        capture_output=True, text=True, env=env, check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {args} failed: {r.stderr}")
+
+
+def _commit_file(repo, name, date):
+    (Path(repo) / name).write_text(f"{name}@{date}\n", encoding="utf-8")
+    _git_in(repo, ["add", "--", name])
+    _git_in(repo, ["commit", "-q", "-m", f"add {name}"], date=date)
+
+
+class TestPathspecLiteral(unittest.TestCase):
+    """[F1124-91] last_commit_iso must not let ticket-derived text act as
+    pathspec magic (`:(glob)`, `:(exclude)`)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls._tmp.name)
+        _git_in(cls.repo, ["init", "-q"])
+        _commit_file(cls.repo, "a.txt", D1)
+        _commit_file(cls.repo, "b.txt", D2)
+        _commit_file(cls.repo, ":(glob)x.txt", D3)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_glob_magic_is_not_expanded(self):
+        # [F1124-91] `:(glob)*.txt` would match a.txt/b.txt if expanded.
+        self.assertIsNone(GitOps(self.repo).last_commit_iso(":(glob)*.txt"))
+
+    def test_plain_path_still_resolves(self):
+        # [F1124-91] the literal prefix must not break ordinary paths.
+        self.assertEqual(GitOps(self.repo).last_commit_iso("a.txt"), D1)
+
+    def test_file_named_like_magic_is_found_literally(self):
+        # [F1124-91] discriminates literal vs magic: glob `x.txt` matches
+        # nothing, the real file named ":(glob)x.txt" does.
+        self.assertEqual(GitOps(self.repo).last_commit_iso(":(glob)x.txt"), D3)
+
+    def test_exclude_magic_is_not_expanded(self):
+        # [F1124-91] exclude-only pathspec would mean "everything but a.txt".
+        self.assertIsNone(GitOps(self.repo).last_commit_iso(":(exclude)a.txt"))
+
+    def test_nonexistent_plain_path_is_none(self):
+        self.assertIsNone(GitOps(self.repo).last_commit_iso("nope.txt"))
+
+    def test_grep_anchor_stays_in_pattern_slot(self):
+        # [F1124-91] grep path has no pathspec hole: anchor rides in -e,
+        # pathspec is fixed and keeps its magic.
+        from lib.gitutil import SELF_EXCLUDE_PATHSPEC
+        g = GitOps(self.repo)
+        seen = []
+        g._run = lambda args: (seen.append(args), (1, "", ""))[1]
+        g.grep_fixed(":(exclude)x")
+        self.assertEqual(
+            seen, [["grep", "-n", "-F", "-e", ":(exclude)x", "--", ".",
+                    SELF_EXCLUDE_PATHSPEC]])
+
+
+# ── [F1124-92] batch git-call budget, cache copies, call counter ───────
+
+def _budget_tasks(n):
+    """n tickets, each with two unmatched symbols -> exactly 2 FakeGit
+    grep calls per classified ticket."""
+    return [{
+        "id": f"{i:08d}-0000-4000-8000-000000000000",
+        "status": "pending",
+        "title": f"[wbt] ticket {i}",
+        "description": "zzUniqueSymAlpha zzUniqueSymBeta 沒找到",
+        "created_at": "2026-08-01T00:00:00+00:00",
+    } for i in range(1, n + 1)]
+
+
+class TestBatchBudget(unittest.TestCase):
+    def test_batch_budget_stops_and_marks_rest(self):
+        # [F1124-92] 5 tickets x 2 calls, budget 3: #1 (0 calls so far) and
+        # #2 (2 < 3) run, #3 starts at 4 >= 3 -> #3..#5 skipped.
+        rows = audit.run(_budget_tasks(5), Path("."), 80, git=FakeGit(),
+                         max_git_calls=3)
+        skipped = [r for r in rows if r["verdict"] == "SKIPPED_BUDGET_EXHAUSTED"]
+        self.assertEqual(len(skipped), 3)
+        self.assertEqual([r["id"][:8] for r in skipped],
+                         ["00000003", "00000004", "00000005"])
+        for r in rows[:2]:
+            self.assertNotEqual(r["verdict"], "SKIPPED_BUDGET_EXHAUSTED")
+
+    def test_skipped_rows_are_visible_in_report(self):
+        # [F1124-92] reason names the budget; render_text must show the bucket.
+        rows = audit.run(_budget_tasks(5), Path("."), 80, git=FakeGit(),
+                         max_git_calls=3)
+        for r in rows:
+            if r["verdict"] == "SKIPPED_BUDGET_EXHAUSTED":
+                self.assertIn("預算", r["reasons"][0])
+                self.assertIn("3", r["reasons"][0])
+                self.assertEqual(r["verify_commands"], [])
+        self.assertIn("## SKIPPED_BUDGET_EXHAUSTED (3)", audit.render_text(rows))
+
+    def test_zero_budget_means_unlimited(self):
+        # [F1124-92] 0 is "off", not "budget of zero".
+        rows = audit.run(_budget_tasks(5), Path("."), 80, git=FakeGit(),
+                         max_git_calls=0)
+        self.assertEqual(
+            [r for r in rows if r["verdict"] == "SKIPPED_BUDGET_EXHAUSTED"], [])
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(r["verdict"] == "SYMBOL_NOT_FOUND_POSSIBLY_RENAMED"
+                            for r in rows))
+
+    def test_default_budget_does_not_touch_real_backlog_shape(self):
+        # [F1124-92] positive control: the default budget must not hurt a
+        # normal batch (16 fixture tickets = 36 calls measured).
+        with open(HERE / "testdata" / "known_tickets.json", encoding="utf-8") as f:
+            tasks = json.load(f)
+        git = GitOps(_repo_root())
+        rows = audit.run(tasks, _repo_root(), 80, git=git)
+        self.assertEqual(len(rows), len(tasks))
+        self.assertEqual(
+            [r["id"][:8] for r in rows if r["verdict"] == "SKIPPED_BUDGET_EXHAUSTED"],
+            [])
+        self.assertLess(git.calls, audit.DEFAULT_MAX_GIT_CALLS)
+
+    def test_budget_exhausted_exits_3_and_warns_on_stderr(self):
+        # [F1124-92] offline file + budget 1 on the real repo: ticket 1 runs
+        # (>=1 call), ticket 2 is skipped -> exit 3; budget 0 -> exit 0.
+        with tempfile.TemporaryDirectory() as tmp:
+            tj = Path(tmp) / "t.json"
+            tj.write_text(json.dumps([
+                {**t, "description": "zzNoSuchSymbolAlphaXyz 只此一個"}
+                for t in _budget_tasks(2)]), encoding="utf-8")
+
+            def call(extra):
+                out, err = io.StringIO(), io.StringIO()
+                argv = ["audit.py", "--tasks-json", str(tj), "--no-write",
+                        "--repo", str(_repo_root()), *extra]
+                with mock.patch.object(sys, "argv", argv), \
+                        contextlib.redirect_stdout(out), \
+                        contextlib.redirect_stderr(err):
+                    rc = audit.main()
+                return rc, out.getvalue(), err.getvalue()
+
+            rc, out, err = call(["--max-git-calls", "1"])
+            self.assertEqual(rc, 3)
+            self.assertIn("預算用盡", err)
+            self.assertIn("SKIPPED_BUDGET_EXHAUSTED", out)
+            rc0, out0, _ = call(["--max-git-calls", "0"])
+            self.assertEqual(rc0, 0)
+            self.assertTrue(out0)
+
+    def test_negative_budget_is_rejected(self):
+        argv = ["audit.py", "--max-git-calls", "-1", "--no-write"]
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(err):
+            self.assertEqual(audit.main(), 2)
+        self.assertIn("--max-git-calls", err.getvalue())
+
+
+class TestGitOpsCacheAndCounter(unittest.TestCase):
+    def test_grep_cache_returns_copy_on_miss_and_hit(self):
+        # [F1124-92] both return paths must hand out a copy.
+        g = GitOps(HERE)
+        g._run = lambda args: (0, "a.go:1:x\n", "")
+        a = g.grep_fixed("q")                 # miss path
+        a.append(("zz", 9))
+        b = g.grep_fixed("q")                 # hit path
+        self.assertNotIn(("zz", 9), b)
+        self.assertIsNot(a, b)
+        b.append(("yy", 8))
+        c = g.grep_fixed("q")
+        self.assertNotIn(("yy", 8), c)
+        self.assertIsNot(b, c)
+
+    def test_calls_counter_counts_failures_too(self):
+        # [F1124-92] a raising subprocess still costs a call.
+        g = GitOps(HERE)
+        ok = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("lib.gitutil.subprocess.run",
+                        side_effect=[ok, OSError("boom"), ok]):
+            g._run(["status"])
+            rc, _, err = g._run(["log"])
+            g._run(["ls-files"])
+        self.assertEqual(rc, 1)
+        self.assertIn("boom", err)
+        self.assertEqual(g.calls, 3)
 
 
 if __name__ == "__main__":
