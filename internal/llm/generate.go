@@ -8,8 +8,8 @@ import (
 
 // [F1123-50] GenerateClient is the structured, capability-aware sibling of
 // JSONClient. It runs on a path parallel to Chain: Generate calls do NOT feed
-// Chain.health, so GET /api/health/llm does not see them until the 5b router
-// wires them in.
+// Chain.health, so GET /api/health/llm does not see them until slice 5c wires
+// Generate results into the health tracker. [F1124-52]
 
 // reasonInvalidRequest labels a caller-side error (e.g. an illegal tool
 // schema). It is never wrapped in *Retryable: retrying another provider
