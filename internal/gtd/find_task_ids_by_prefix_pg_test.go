@@ -26,6 +26,7 @@ func TestResolveTaskIDPrefix_PG(t *testing.T) {
 		{"two tasks sharing a prefix return both candidates, ordered by id", prefixCasePGCollide},
 		{"prefix matching zero tasks returns an empty (not nil-error) slice", prefixCasePGZero},
 		{"workspace scoping: a prefix unique within another workspace is invisible here", prefixCasePGWorkspaceScoping},
+		{"long dashed prefixes return the task and a flipped last char returns none", prefixCasePGLongPrefix},
 	}
 	for _, tc := range cases {
 		run := tc.run
@@ -164,4 +165,73 @@ func forceSharedPrefix(t *testing.T, base uuid.UUID, prefix string) uuid.UUID {
 		t.Fatalf("forceSharedPrefix: constructed an invalid UUID %q: %v", crafted, err)
 	}
 	return id
+}
+
+// prefixCasePGLongPrefix [F1124-06] covers prefixes longer than 8 characters,
+// which the resolver's canonical dashed form can send up to 35 characters
+// (31 hex digits plus 4 dashes). Every length must return exactly the task,
+// the same prefix with its last character changed must return nothing (so a
+// query that only compares the first 8 characters fails here), a dashless
+// 9-hex string must return nothing (the store takes the canonical dashed
+// form; canonicalising is the resolver's job), and another workspace must not
+// see the task through a long prefix either.
+func prefixCasePGLongPrefix(t *testing.T, pool *pgxpool.Pool) {
+	ctx := context.Background()
+	wsID := uuid.New()
+	store := newPgGTDStore(pool, &wsID)
+	task, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "prefix-pg-long"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	p := task.ID.String()
+
+	for _, n := range []int{9, 13, 23, 35} {
+		got, err := store.FindTaskIDsByPrefix(ctx, p[:n], 3)
+		if err != nil {
+			t.Fatalf("FindTaskIDsByPrefix(len %d): %v", n, err)
+		}
+		if len(got) != 1 || got[0].ID != task.ID {
+			t.Errorf("prefix len %d (%q): got %+v, want exactly [%s]", n, p[:n], got, task.ID)
+		}
+
+		flipped := p[:n-1] + flipLastPrefixChar(p[n-1])
+		gotFlipped, err := store.FindTaskIDsByPrefix(ctx, flipped, 3)
+		if err != nil {
+			t.Fatalf("FindTaskIDsByPrefix(flipped len %d): %v", n, err)
+		}
+		if len(gotFlipped) != 0 {
+			t.Errorf("flipped-last-char prefix len %d (%q): got %d rows, want 0: %+v", n, flipped, len(gotFlipped), gotFlipped)
+		}
+	}
+
+	dashless := p[:8] + p[9:10]
+	gotDashless, err := store.FindTaskIDsByPrefix(ctx, dashless, 3)
+	if err != nil {
+		t.Fatalf("FindTaskIDsByPrefix(dashless): %v", err)
+	}
+	if len(gotDashless) != 0 {
+		t.Errorf("dashless 9-hex prefix %q: got %d rows, want 0 (the store takes the canonical dashed form)", dashless, len(gotDashless))
+	}
+
+	otherWS := uuid.New()
+	gotOther, err := newPgGTDStore(pool, &otherWS).FindTaskIDsByPrefix(ctx, p[:13], 3)
+	if err != nil {
+		t.Fatalf("FindTaskIDsByPrefix(other workspace): %v", err)
+	}
+	if len(gotOther) != 0 {
+		t.Errorf("another workspace saw %d rows through a 13-char prefix, want 0: %+v", len(gotOther), gotOther)
+	}
+}
+
+// flipLastPrefixChar returns a different character for c: a dash becomes '0',
+// a hex digit becomes another hex digit.
+func flipLastPrefixChar(c byte) string {
+	switch c {
+	case '-':
+		return "0"
+	case '0':
+		return "1"
+	default:
+		return "0"
+	}
 }

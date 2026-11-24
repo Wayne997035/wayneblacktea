@@ -1270,6 +1270,14 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 // digits and dashes) — neither character is a LIKE wildcard, so no
 // LIKE-escaping is needed here (unlike Q above, which can contain a
 // caller-supplied % or _).
+//
+// Known and accepted (b046a047 item 3) [F1124-06]: id::text LIKE does not use
+// the PK index, so this is a sequential scan of the workspace's tasks;
+// accepted at single-tenant personal scale. Revisit if task count grows
+// enough to show in resolve latency; a fix would be a new migration (not
+// editing existing ones), for example an index on (id::text text_pattern_ops),
+// which is unverified. Prefixes longer than 8 characters are covered by
+// TestResolveTaskIDPrefix_PG (prefixCasePGLongPrefix).
 func (s *Store) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]TaskIDTitle, error) {
 	const q = `SELECT id, title FROM tasks
 		WHERE id::text LIKE $1 || '%' AND ($2::uuid IS NULL OR workspace_id = $2)
