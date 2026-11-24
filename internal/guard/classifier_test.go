@@ -11,6 +11,9 @@ import (
 
 // TestClassifyBash covers all 8 tiers plus pipeline/chaining and edge cases.
 // This is the primary table-driven test for the Bash classifier.
+//
+// [F1124-20] guard.ClassifyBash is now a one-line delegate to
+// risk.ClassifyBash; this table goes red if the delegate is broken.
 func TestClassifyBash(t *testing.T) {
 	t.Parallel()
 
