@@ -295,6 +295,22 @@ var ProjectIDCleanupExemptions = map[string]bool{
 	"deletion_tombstones": true,
 }
 
+// TaskIDCleanupExemptions is the sole, machine-checked exception list to
+// "every column whose name ends in task_id must be cleaned by delete_task"
+// [F1124-03], keyed "table.column". A column belongs here only when it
+// records the deletion mechanism's OWN history ("which task got deleted")
+// rather than "which task this row belongs to". Everything else is a real
+// reference and delete_task MUST clean it.
+//
+// To add an entry: put "table.column": true here with a comment saying why
+// clearing it would erase the history the column exists to keep. Both
+// backends' derived-schema tests read this map, and fail on an entry that
+// no longer exists in the schema ("stale exemption"). Today it is empty:
+// deletion_tombstones has entity_id/project_id but no *task_id column
+// (migrations/000080_deletion_tombstones.up.sql), so an empty map is the
+// correct value.
+var TaskIDCleanupExemptions = map[string]bool{}
+
 // CreateProjectParams holds parameters for creating a new project.
 type CreateProjectParams struct {
 	GoalID      *uuid.UUID // nil → no parent goal
