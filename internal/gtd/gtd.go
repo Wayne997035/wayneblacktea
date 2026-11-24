@@ -163,12 +163,29 @@ func canonicalAuditAction(action string) string {
 	return strings.ToLower(b.String())
 }
 
+// foldASCIIConfusable maps the common ASCII look-alikes onto the letter
+// they imitate [F1124-02]: 'i', '1', '|' -> 'l' (canon is already lowercased,
+// so capital I and capital L arrive as 'i' and 'l'), '0' -> 'o'. Any other
+// rune is returned unchanged. Only the reserved-name comparison uses this;
+// the stored action is never rewritten.
+func foldASCIIConfusable(r rune) rune {
+	switch r {
+	case 'i', '1', '|':
+		return 'l'
+	case '0':
+		return 'o'
+	}
+	return r
+}
+
 // isHomoglyphOf reports whether canon (already canonicalised) is a
 // same-length visual homoglyph of name (an ASCII reservedAuditActions key):
 // every rune must either equal name's rune at that position, or be a
 // non-ASCII rune belonging to Latin, Cyrillic, Greek, or Common (which
 // covers most digit/symbol/emoji code points too) — scripts outside that
-// set, e.g. CJK, are never treated as a wildcard match.
+// set, e.g. CJK, are never treated as a wildcard match. ASCII mismatches pass
+// only when both runes fold to the same letter under foldASCIIConfusable
+// (i/1/| -> l, 0 -> o).
 func isHomoglyphOf(canon, name []rune) bool {
 	if len(canon) != len(name) {
 		return false
@@ -178,6 +195,10 @@ func isHomoglyphOf(canon, name []rune) bool {
 			continue
 		}
 		if r < 0x80 {
+			// [F1124-02] ASCII look-alikes: compare after folding both sides.
+			if foldASCIIConfusable(r) == foldASCIIConfusable(name[i]) {
+				continue
+			}
 			return false
 		}
 		if !unicode.Is(unicode.Latin, r) && !unicode.Is(unicode.Cyrillic, r) && !unicode.Is(unicode.Greek, r) && !unicode.Is(unicode.Common, r) {
@@ -217,6 +238,13 @@ func containsBidiControl(s string) bool {
 // reserved: those characters are dropped for the comparison but stored, so
 // they could make an unreserved string render as a reserved name
 // [F1124-01]. Plain RTL text without those code points is unaffected.
+//
+// ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
+// for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Residual gaps:
+// multi-character look-alikes ("rn" for m, "vv" for w) are not folded
+// (the reserved names contain no m or w), and other scripts' look-alikes of
+// these ASCII letters beyond the Latin/Cyrillic/Greek/Common wildcard are not
+// covered; the full Unicode confusables table is deliberately not used.
 //
 // Known residual gaps, accepted per SEC-PR191-R2-01's P3: homoglyphs outside
 // the four scripts above (e.g. some Armenian letters) are not caught, and
