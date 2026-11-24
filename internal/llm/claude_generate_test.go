@@ -95,8 +95,8 @@ func TestClaudeProvider_Capabilities_ReportsToolCalling(t *testing.T) {
 	if !caps.Text {
 		t.Errorf("Text = false, want true")
 	}
-	if !caps.ImageInput {
-		t.Errorf("ImageInput = false, want true")
+	if caps.ImageInput {
+		t.Errorf("ImageInput = true, want false (Generate sends text only)")
 	}
 	if caps.MaxContext != 200000 {
 		t.Errorf("MaxContext = %d, want 200000", caps.MaxContext)
