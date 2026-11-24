@@ -1291,6 +1291,21 @@ func parseRequiredDueDate(raw string) (*time.Time, *mcp.CallToolResult) {
 	return &dueTime, nil
 }
 
+// mcpWarningMaxRunes bounds each validator warning on its way out of an MCP
+// tool. [F1124-13] Validator warnings are fixed text well under this length;
+// the cap only matters if a future warning interpolates caller text.
+const mcpWarningMaxRunes = 500
+
+// warningsForWire is the single exit sanitiser for validator warnings
+// returned to an MCP caller (JSON "warnings" field and the strict-mode error
+// text). [F1124-13] It neutralises boundary markers and bounds each element
+// via clipSafeSlice. nil stays nil and an empty slice stays empty, so callers
+// keep control of the null-vs-[] wire shape. TestWarningsExitsAreSanitized
+// scans tools_gtd.go and tools_vision.go to keep every exit wrapped.
+func warningsForWire(w []string) []string {
+	return clipSafeSlice(w, mcpWarningMaxRunes)
+}
+
 func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.CallToolResult, error) {
 	kind := args.Kind
 	if kind == "" {
@@ -1317,7 +1332,7 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	// result JSON body (no HTTP headers available). Strict mode → tool error.
 	allWarnings := validator.CheckTaskInput(args.Description, kind)
 	if len(allWarnings) > 0 && validator.StrictModeEnabled() {
-		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", warningsForWire(allWarnings))), nil // [F1124-13]
 	}
 
 	assignee, assigneeErrMsg := resolveAssignee(args.Assignee)
@@ -1368,7 +1383,7 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	// different session (matches the sync_repo/list_active_repos reasoning
 	// in the U13 inventory) — wire it here for consistency.
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"task": ackTask(wrapUntrustedTask(task)), "warnings": allWarnings})
+		return jsonText(map[string]any{"task": ackTask(wrapUntrustedTask(task)), "warnings": warningsForWire(allWarnings)}) // [F1124-13]
 	}
 	return jsonText(ackTask(wrapUntrustedTask(task)))
 }
@@ -1778,7 +1793,7 @@ type projectWithDecisions struct {
 func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mcp.CallToolResult, error) {
 	project, err := s.gtd.ProjectByName(ctx, args.Name)
 	if errors.Is(err, gtd.ErrNotFound) {
-		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", args.Name)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", clipSafe(args.Name, projectNameMaxRunes))), nil // [F1124-12]
 	}
 	if err != nil {
 		return storeErrorResult("loading project", err), nil

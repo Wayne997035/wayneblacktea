@@ -26,6 +26,11 @@ import (
 const (
 	reflectionSummaryMaxRunes  = 5000
 	reflectionJSONLeafMaxRunes = 20000
+
+	// reflectionTypeEchoMaxRunes bounds the caller-supplied `type` value echoed
+	// back in an "invalid type" error. [F1124-12] Valid types are short enum
+	// tokens, so anything longer is hostile or a mistake.
+	reflectionTypeEchoMaxRunes = 64
 )
 
 // wrapUntrustedReflection returns a copy of r with every free-text field
@@ -173,7 +178,7 @@ func buildReflectionCreateParams(
 			allowed = append(allowed, k)
 		}
 		return nil, mcp.NewToolResultError(fmt.Sprintf(
-			"invalid type %q; must be one of: %s", reflType, strings.Join(allowed, ", "),
+			"invalid type %q; must be one of: %s", clipSafe(reflType, reflectionTypeEchoMaxRunes), strings.Join(allowed, ", "), // [F1124-12]
 		))
 	}
 
@@ -252,7 +257,7 @@ func (s *Server) handleListReflections(ctx context.Context, req mcp.CallToolRequ
 
 	if t := stringArg(args, "type"); t != "" {
 		if !reflection.AllowedTypes[t] {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid type %q", t)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("invalid type %q", clipSafe(t, reflectionTypeEchoMaxRunes))), nil // [F1124-12]
 		}
 		params.Type = &t
 	}
@@ -281,7 +286,7 @@ func (s *Server) handleGetLatestReflection(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("type is required"), nil
 	}
 	if !reflection.AllowedTypes[reflType] {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid type %q", reflType)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("invalid type %q", clipSafe(reflType, reflectionTypeEchoMaxRunes))), nil // [F1124-12]
 	}
 
 	r, err := s.reflection.GetLatest(ctx, s.workspaceUUID(), reflType)

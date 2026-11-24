@@ -223,7 +223,7 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 	}
 	safeItem := wrapUntrustedVisionItem(item)
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"item": safeItem, "warnings": allWarnings})
+		return jsonText(map[string]any{"item": safeItem, "warnings": warningsForWire(allWarnings)}) // [F1124-13]
 	}
 	return jsonText(safeItem)
 }
