@@ -835,7 +835,7 @@ func (s *Store) applyOnePRMatch(ctx context.Context, tx pgx.Tx, qtx *db.Queries,
 		WHERE id = $2
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
 		  AND status IN ('pending', 'in_progress')`
-	// [F203-01] Run the UPDATE on the batch's own tx, not s.dbtx (which would
+	// [F1124-80] Run the UPDATE on the batch's own tx, not s.dbtx (which would
 	// commit it on a separate connection), so "mark completed" and the
 	// pr_auto_close audit row below commit or roll back together.
 	res, err := tx.Exec(ctx, upd, m.PRUrl, m.TaskID, s.workspaceID)

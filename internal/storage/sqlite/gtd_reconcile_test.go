@@ -231,9 +231,9 @@ func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
 }
 
 // TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate
-// [F203-03] pins "mark-complete and its audit row move together": when the
+// [F1124-82] pins "mark-complete and its audit row move together": when the
 // activity_log INSERT of a later match fails, the earlier match's task UPDATE
-// must roll back with it. It is the SQLite half of the PG probe F203-02
+// must roll back with it. It is the SQLite half of the PG probe F1124-81
 // (dual-backend parity); SQLite already runs the whole batch in one *sql.Tx,
 // so this probe is green today and goes red if anyone splits the batch into
 // per-match commits.
@@ -241,10 +241,10 @@ func TestSQLiteReconcilePRURLMatchPriority(t *testing.T) {
 // The failure is injected with a BEFORE INSERT trigger keyed on a marker in
 // activity_log.notes (the notes carry head_ref), so only the second match's
 // audit INSERT fails. Every assertion uses t.Errorf so one run reports all
-// violated invariants; the fixed [F203-03/N] prefixes are what the
+// violated invariants; the fixed [F1124-82/N] prefixes are what the
 // acceptance counts grep for.
 func TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate(t *testing.T) {
-	t.Parallel() // [F203-03]
+	t.Parallel() // [F1124-82]
 	store, d := openMemWithDB(t, "")
 	ctx := context.Background()
 
@@ -279,9 +279,9 @@ func TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate
 
 	switch {
 	case batchErr == nil:
-		t.Errorf("[F203-03/1] BatchCompleteTasksByPRMatch error = nil, want error containing %q", injectedMsg)
+		t.Errorf("[F1124-82/1] BatchCompleteTasksByPRMatch error = nil, want error containing %q", injectedMsg)
 	case !strings.Contains(batchErr.Error(), injectedMsg):
-		t.Errorf("[F203-03/1] BatchCompleteTasksByPRMatch error = %v, want it to contain %q", batchErr, injectedMsg)
+		t.Errorf("[F1124-82/1] BatchCompleteTasksByPRMatch error = %v, want it to contain %q", batchErr, injectedMsg)
 	}
 
 	gotA, err := store.GetTaskByID(ctx, taskA.ID)
@@ -289,7 +289,7 @@ func TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate
 		t.Fatalf("GetTaskByID A: %v", err)
 	}
 	if gotA.Status != taskStatusPending || gotA.PRUrl.Valid {
-		t.Errorf("[F203-03/2] task A status = %q pr_url = %+v, want pending with pr_url unset (rolled back with the failed batch)",
+		t.Errorf("[F1124-82/2] task A status = %q pr_url = %+v, want pending with pr_url unset (rolled back with the failed batch)",
 			gotA.Status, gotA.PRUrl)
 	}
 
@@ -298,7 +298,7 @@ func TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate
 		t.Fatalf("GetTaskByID B: %v", err)
 	}
 	if gotB.Status != taskStatusPending {
-		t.Errorf("[F203-03/3] task B status = %q, want pending (its audit INSERT failed)", gotB.Status)
+		t.Errorf("[F1124-82/3] task B status = %q, want pending (its audit INSERT failed)", gotB.Status)
 	}
 
 	var auditRowsA int
@@ -307,6 +307,6 @@ func TestSQLiteBatchCompleteTasksByPRMatch_ActivityLogFailureRollsBackTaskUpdate
 		t.Fatalf("count pr_auto_close rows for A: %v", err)
 	}
 	if auditRowsA != 0 {
-		t.Errorf("[F203-03/4] activity_log has %d pr_auto_close row(s) for task A's PR, want 0 (rolled back with the failed batch)", auditRowsA)
+		t.Errorf("[F1124-82/4] activity_log has %d pr_auto_close row(s) for task A's PR, want 0 (rolled back with the failed batch)", auditRowsA)
 	}
 }

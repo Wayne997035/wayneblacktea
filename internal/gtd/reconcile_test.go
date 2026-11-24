@@ -444,7 +444,7 @@ const (
 	// trigger installed by installActivityLogFailureTrigger. Only the match
 	// whose PRHeadRef carries it makes the activity_log INSERT fail.
 	f203FailMarker = "F203FAILMARKER"
-	// f203InjectedMsg is the message the trigger raises; assertion [F203-02/1]
+	// f203InjectedMsg is the message the trigger raises; assertion [F1124-81/1]
 	// looks for it to prove the failure came from the injected trigger.
 	f203InjectedMsg = "f203 injected activity_log failure"
 )
@@ -453,7 +453,7 @@ const (
 // activity_log that raises f203InjectedMsg for any row whose notes contain
 // f203FailMarker, and drops it again on cleanup. The function/trigger names
 // carry a random suffix because the pool (and database) is shared by the whole
-// package. [F203-02]
+// package. [F1124-81]
 func installActivityLogFailureTrigger(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -488,11 +488,11 @@ $$`, fn, f203FailMarker, f203InjectedMsg)
 }
 
 // TestBatchCompleteTasksByPRMatch_PG_ActivityLogFailureRollsBackTaskUpdate pins
-// [F203-01]: marking a task completed and writing its pr_auto_close audit row
+// [F1124-80]: marking a task completed and writing its pr_auto_close audit row
 // are one unit. A batch of two matches where the second match's activity_log
 // INSERT fails (injected by trigger) MUST roll the first match's "mark
 // completed" back too, instead of leaving task A completed with no audit row.
-// [F203-02]
+// [F1124-81]
 func TestBatchCompleteTasksByPRMatch_PG_ActivityLogFailureRollsBackTaskUpdate(t *testing.T) {
 	pool := openTestPgPool(t)
 	store := newPgGTDStore(pool, nil)
@@ -521,35 +521,35 @@ func TestBatchCompleteTasksByPRMatch_PG_ActivityLogFailureRollsBackTaskUpdate(t 
 
 	_, batchErr := store.BatchCompleteTasksByPRMatch(ctx, matches)
 
-	// [F203-02/1] the batch fails, and it fails because of the injected trigger.
+	// [F1124-81/1] the batch fails, and it fails because of the injected trigger.
 	if batchErr == nil {
-		t.Errorf("[F203-02/1] BatchCompleteTasksByPRMatch error = nil, want the injected failure %q", f203InjectedMsg)
+		t.Errorf("[F1124-81/1] BatchCompleteTasksByPRMatch error = nil, want the injected failure %q", f203InjectedMsg)
 	} else if !strings.Contains(batchErr.Error(), f203InjectedMsg) {
-		t.Errorf("[F203-02/1] BatchCompleteTasksByPRMatch error = %v, want it to contain %q", batchErr, f203InjectedMsg)
+		t.Errorf("[F1124-81/1] BatchCompleteTasksByPRMatch error = %v, want it to contain %q", batchErr, f203InjectedMsg)
 	}
 
-	// [F203-02/2] task A (whose own audit row was fine) is not left completed.
+	// [F1124-81/2] task A (whose own audit row was fine) is not left completed.
 	gotA, err := store.GetTaskByID(ctx, taskA.ID)
 	if err != nil {
 		t.Fatalf("GetTaskByID A: %v", err)
 	}
 	if gotA.Status != statusPending {
-		t.Errorf("[F203-02/2] task A status = %q, want %q (its completion must roll back with the failed batch)", gotA.Status, statusPending)
+		t.Errorf("[F1124-81/2] task A status = %q, want %q (its completion must roll back with the failed batch)", gotA.Status, statusPending)
 	}
 	if gotA.PRUrl.Valid {
-		t.Errorf("[F203-02/2] task A pr_url = %q, want unset after rollback", gotA.PRUrl.String)
+		t.Errorf("[F1124-81/2] task A pr_url = %q, want unset after rollback", gotA.PRUrl.String)
 	}
 
-	// [F203-02/3] task B (whose audit row failed) is not left completed either.
+	// [F1124-81/3] task B (whose audit row failed) is not left completed either.
 	gotB, err := store.GetTaskByID(ctx, taskB.ID)
 	if err != nil {
 		t.Fatalf("GetTaskByID B: %v", err)
 	}
 	if gotB.Status != statusPending {
-		t.Errorf("[F203-02/3] task B status = %q, want %q (its completion must roll back with the failed batch)", gotB.Status, statusPending)
+		t.Errorf("[F1124-81/3] task B status = %q, want %q (its completion must roll back with the failed batch)", gotB.Status, statusPending)
 	}
 
-	// [F203-02/4] no pr_auto_close audit row for A survived. A Scan error is
+	// [F1124-81/4] no pr_auto_close audit row for A survived. A Scan error is
 	// fatal: swallowing it into a zero count would make this check vacuously green.
 	var auditRows int64
 	if err := pool.QueryRow(
@@ -557,9 +557,9 @@ func TestBatchCompleteTasksByPRMatch_PG_ActivityLogFailureRollsBackTaskUpdate(t 
 		`SELECT count(*) FROM activity_log WHERE action = 'pr_auto_close' AND strpos(notes, $1) > 0`,
 		prURLA,
 	).Scan(&auditRows); err != nil {
-		t.Fatalf("[F203-02/4] count activity_log rows for task A: %v", err)
+		t.Fatalf("[F1124-81/4] count activity_log rows for task A: %v", err)
 	}
 	if auditRows != 0 {
-		t.Errorf("[F203-02/4] activity_log pr_auto_close rows for task A = %d, want 0 (audit row must roll back with the batch)", auditRows)
+		t.Errorf("[F1124-81/4] activity_log pr_auto_close rows for task A = %d, want 0 (audit row must roll back with the batch)", auditRows)
 	}
 }
