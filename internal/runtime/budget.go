@@ -62,3 +62,16 @@ func (b Budget) CheckExceeded(e Elapsed) (exceeded bool, reason FinishReason) {
 	}
 	return false, ""
 }
+
+// NewInteractiveBudget returns the default budget for an interactive run.
+// MaxCostMicroUSD stays 0 (no default cost ceiling, see above). [F1124-33]
+// Wiring layers use this instead of a zero Budget{}: RunLoop rejects a
+// non-positive MaxTurns/MaxDuration, while CheckExceeded keeps treating
+// <= 0 as "dimension disabled".
+func NewInteractiveBudget() Budget {
+	return Budget{
+		MaxTurns:     DefaultInteractiveMaxTurns,
+		MaxToolCalls: DefaultInteractiveMaxToolCalls,
+		MaxDuration:  DefaultInteractiveMaxDuration,
+	}
+}
