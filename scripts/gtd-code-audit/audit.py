@@ -56,7 +56,18 @@ VERDICT_ORDER = [
     # [F1124-92] A bucket missing from this list is silently dropped by
     # render_text — every new verdict MUST be added here.
     "SKIPPED_BUDGET_EXHAUSTED",
+    # [F1124-95] expected filtering, not a failure — does not affect exit code.
+    "SKIPPED_OTHER_REPO",
 ]
+
+# [F1124-95] Title-tag values (lowercase) meaning "this ticket belongs to a
+# different repo". Exclusion list, not an allow list: an allow list would also
+# drop untagged and `[PR#204 backlog]`-style real tickets. Override with
+# --exclude-repo-tags. Observed counts in the backlog: CoverOnes 62,
+# intel-flow 8, HiTRUST 1 (spec sampling); untagged other-repo tickets are
+# still audited (README Known limitations).
+DEFAULT_EXCLUDE_REPO_TAGS = frozenset(
+    {"coverones", "intel-flow", "intelligence-flow", "hitrust"})
 
 # [F1124-92] Batch-wide cap on git subprocess calls (0 = unlimited). The check
 # runs BEFORE each ticket, so the batch can overshoot by at most one ticket's
@@ -84,12 +95,22 @@ def find_repo_root(start: Path) -> Path:
 
 
 def run(tasks: list[dict], repo_root: Path, window: int, git=None,
-        max_git_calls: int = DEFAULT_MAX_GIT_CALLS) -> list[dict]:
+        max_git_calls: int = DEFAULT_MAX_GIT_CALLS,
+        exclude_repo_tags=DEFAULT_EXCLUDE_REPO_TAGS) -> list[dict]:
     if git is None:
         git = GitOps(repo_root)
     rows = []
     total = len(tasks)
     for k, t in enumerate(tasks, start=1):
+        # [F1124-95] Repo filter FIRST, then the budget check: a filtered
+        # ticket makes no git call, so it must not be able to eat budget or
+        # be mislabelled "budget exhausted".
+        tag = rules.ticket_repo_tag(t["title"])
+        if tag is not None and tag in exclude_repo_tags:
+            rows.append(_make_row(
+                t, "SKIPPED_OTHER_REPO",
+                [f"標籤 [{tag}] 屬其他 repo,未對 {repo_root.name} 比對"], []))
+            continue
         # [F1124-92] Budget exhausted -> this ticket and every later one is
         # reported as skipped (visible in the report), never silently dropped.
         if max_git_calls > 0 and git.calls >= max_git_calls:
@@ -160,7 +181,16 @@ def main():
                      help="[F1124-92] 整批 git 子行程呼叫總預算(預設 "
                           f"{DEFAULT_MAX_GIT_CALLS});用盡後剩餘單標 "
                           "SKIPPED_BUDGET_EXHAUSTED 並 exit 3。0 = 不限(關閉保護)")
+    ap.add_argument("--exclude-repo-tags", default=None,
+                     help="[F1124-95] 逗號分隔的 title 開頭標籤(不分大小寫),命中者標 "
+                          "SKIPPED_OTHER_REPO、不比對;預設 "
+                          f"{','.join(sorted(DEFAULT_EXCLUDE_REPO_TAGS))};"
+                          "給空字串 = 不排除任何標籤")
     a = ap.parse_args()
+    exclude_tags = (
+        DEFAULT_EXCLUDE_REPO_TAGS if a.exclude_repo_tags is None
+        else frozenset(x.strip().lower() for x in a.exclude_repo_tags.split(",")
+                       if x.strip()))
     if a.max_git_calls < 0:
         print("錯誤: --max-git-calls 不可為負數(0 = 不限)", file=sys.stderr)
         return 2
@@ -198,7 +228,8 @@ def main():
                   file=sys.stderr)
             return 2
 
-    rows = run(tasks, repo_root, a.window, max_git_calls=a.max_git_calls)
+    rows = run(tasks, repo_root, a.window, max_git_calls=a.max_git_calls,
+               exclude_repo_tags=exclude_tags)
 
     if a.json:
         text = json.dumps(rows, ensure_ascii=False, indent=2)

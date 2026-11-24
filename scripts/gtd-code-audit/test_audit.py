@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1034,6 +1035,103 @@ class TestDbFailureExitCode(unittest.TestCase):
                 {"PATH": os.environ.get("PATH", "")})
         self.assertEqual(rc, 0)
         self.assertIn("NO_ANCHOR_NEEDS_HUMAN", out)
+
+
+# ── [F1124-95] false-positive positive controls, stoplist, repo filter ──
+
+class TestFalsePositiveControls(unittest.TestCase):
+    """No percentage thresholds anywhere in this class, by design: each test
+    pins ONE named ticket shape to ONE verdict."""
+
+    def test_control_df2f2386_unfixed_not_flagged_fixed(self):
+        # [F1124-95] df2f2386 shape: the cited file does not exist, and the
+        # bare symbol `Marshal` matches an unrelated line elsewhere. A symbol
+        # hit with no recency evidence must stay UNKNOWN (rules.py `if
+        # touched_after:`); the pre-b6a8ffe OR form calls it fixed.
+        git = FakeGit(grep_results={"Marshal": [("cmd/wbt-eval/main.go", 125)]},
+                      files=set())
+        ev = rules.classify(
+            "[wbt][PR173 一軍 🟠] autopropose_marshal_test.go 五處死引用",
+            "autopropose_marshal_test.go 引用已刪除的 Marshal 輔助函式",
+            "2026-08-01T00:00:00+00:00", git)
+        self.assertEqual(ev.verdict, "UNKNOWN_NEEDS_HUMAN")
+
+    def test_control_5cbc859e_cross_repo_skipped(self):
+        # [F1124-95] 5cbc859e shape: a [HiTRUST] ticket whose symbol
+        # `Browser` happens to exist here. Must be filtered, with zero git
+        # calls (real GitOps, counter must stay at 0).
+        git = GitOps(_repo_root())
+        task = {"id": "5cbc859e-0000-4000-8000-000000000000", "status": "pending",
+                "title": "[HiTRUST] payment-pg-claude 3DSS SIT SG 串接",
+                "description": "Browser 流程", "created_at": "2026-08-01T00:00:00+00:00"}
+        rows = audit.run([task], _repo_root(), 80, git=git)
+        self.assertEqual(rows[0]["verdict"], "SKIPPED_OTHER_REPO")
+        self.assertEqual(git.calls, 0)
+        self.assertIn("hitrust", rows[0]["reasons"][0])
+
+    def test_control_fixed_ticket_still_flagged(self):
+        # [F1124-95] the other side: the filters/stoplist must not blind the
+        # label+PR co-citation rule.
+        git = FakeGit(grep_results={
+            "PR #157": [("internal/mcp/resources.go", 100)],
+            "PR#157": [],
+            "C-1": [("internal/mcp/resources.go", 110)],
+        })
+        ev = rules.classify("[wbt][PR#157 一軍 🟠 C-1] 範例", "PR #157 C-1 已落地",
+                             "2026-08-01T00:00:00+00:00", git)
+        self.assertEqual(ev.verdict, "SUSPECT_ALREADY_FIXED")
+
+    def test_prose_tokens_not_symbols(self):
+        # [F1124-95]
+        a = extract.extract_anchors(
+            "t", "fail-closed trade-offs pre-existing security-engineer Complete "
+                 "non-goals success-criteria defense-in-depth")
+        self.assertEqual(a["symbols"], [])
+
+    def test_real_project_identifiers_still_extracted(self):
+        # [F1124-95] the stoplist must not eat strong project identifiers.
+        a = extract.extract_anchors("t", "file_map checkCommandField")
+        self.assertIn("file_map", a["symbols"])
+        self.assertIn("checkCommandField", a["symbols"])
+
+    def test_every_row_is_rendered(self):
+        # [F1124-95] a verdict missing from VERDICT_ORDER is dropped by
+        # render_text without any error; header counts must sum to the batch.
+        tasks = [_one_ticket(t, id=f"{i:08d}-0000-4000-8000-000000000000")
+                 for i, t in enumerate([
+                     "[HiTRUST] payment-pg-claude 3DSS SIT SG 串接",
+                     "[wbt] 一般的單",
+                     "沒有標籤的單",
+                     "[PR#204 backlog] 非 repo 名的標籤",
+                 ], start=1)]
+        rows = audit.run(tasks, Path("."), 80, git=FakeGit())
+        out = audit.render_text(rows)
+        counts = [int(m) for m in re.findall(r"^## [A-Z_]+ \((\d+)\)$", out, re.M)]
+        self.assertEqual(sum(counts), 4, out)
+        self.assertIn("## SKIPPED_OTHER_REPO (1)", out)
+
+    def test_ticket_repo_tag_parsing(self):
+        # [F1124-95]
+        self.assertEqual(rules.ticket_repo_tag("[HiTRUST] x"), "hitrust")
+        self.assertEqual(rules.ticket_repo_tag("[wbt][PR1] x"), "wbt")
+        self.assertIsNone(rules.ticket_repo_tag("無標籤"))
+        self.assertEqual(rules.ticket_repo_tag("[PR#204 backlog] x"), "pr#204 backlog")
+        # edge: empty tag, non-leading tag, non-str
+        self.assertIsNone(rules.ticket_repo_tag("[] x"))
+        self.assertIsNone(rules.ticket_repo_tag("x [hitrust]"))
+        self.assertIsNone(rules.ticket_repo_tag(None))
+
+    def test_exclude_repo_tags_override_and_budget_order(self):
+        # [F1124-95] override: empty set filters nothing. Order: a filtered
+        # ticket must not consume (or be mislabelled by) the budget.
+        hit = _one_ticket("[HiTRUST] x zzUniqueSymAlpha")
+        rows = audit.run([hit], Path("."), 80, git=FakeGit(),
+                         exclude_repo_tags=frozenset())
+        self.assertNotEqual(rows[0]["verdict"], "SKIPPED_OTHER_REPO")
+        git = FakeGit()
+        git.calls = 10   # budget already blown
+        rows = audit.run([hit], Path("."), 80, git=git, max_git_calls=3)
+        self.assertEqual(rows[0]["verdict"], "SKIPPED_OTHER_REPO")
 
 
 if __name__ == "__main__":

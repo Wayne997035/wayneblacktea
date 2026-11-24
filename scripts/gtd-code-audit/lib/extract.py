@@ -54,7 +54,18 @@ ACCEPT_RE = re.compile(r'acceptance[:：]', re.I)
 CONTROL_CHARS = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
 MIN_SYMBOL_LEN = 5
-_SYMBOL_STOPLIST = {"e_g", "i_e", "vs_the"}
+# [F1124-95] Prose words measured to match the backlog as bogus symbols (the
+# 7-element dispatch template headings and review-prose compounds). This is
+# a whack-a-mole list of OBSERVED words only — unseen prose words still
+# match; README "Known limitations" says so. `task_id` is deliberately NOT
+# here: it is a real field name and listing it would blind tickets that are
+# genuinely about it. `file_map` / `checkCommandField` must stay extractable
+# (test_real_project_identifiers_still_extracted).
+_SYMBOL_STOPLIST = {
+    "e_g", "i_e", "vs_the",
+    "security-engineer", "fail-closed", "trade-offs", "pre-existing",
+    "non-goals", "success-criteria", "defense-in-depth",
+}
 
 # Anchor-count cap per category (DoS guard — GTD ticket description is an
 # unbounded TEXT column with no length cap at the add_task MCP tool layer
@@ -90,6 +101,7 @@ _PASCAL_STOPLIST = {
     "Minor", "Major", "Critical", "Blocking", "Suggestion", "Accepted",
     "Round", "Review", "Format", "General", "Feature", "Refactor",
     "Research", "Chore",
+    "Complete",  # [F1124-95] status word in ticket prose, not an identifier
 }
 
 
