@@ -228,9 +228,9 @@ fields matter:
   `go build` or `go test`, or a container build where
   `RAILWAY_GIT_COMMIT_SHA` never reached `build/Dockerfile`. The `-ldflags`
   injection always runs; without that arg it injects the `none` default that
-  `COMMIT` carries, and `BuildID()` returns the sentinel rather than deriving
+  `WBT_COMMIT` carries, and `BuildID()` returns the sentinel rather than deriving
   an identifier from it. (A *malformed* — non-hex — value is a different
-  path: the build fails closed, `build/Dockerfile:74-77`. A blocked deploy is
+  path: the build fails closed in the `build/Dockerfile` build-identity guard. A blocked deploy is
   loud; a forged build identity would be silent.) The sentinel is
   deliberately not version-shaped so an identity-less build can never be
   mistaken for a real one. **A Railway deploy reporting `"dev"` is a defect,

@@ -23,8 +23,11 @@ from pathlib import Path
 CSV_COLUMNS = ["id", "status", "kind", "priority", "title", "description",
                "created_at", "updated_at"]
 ALLOWED_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+# [F1124-42] No `$` terminator: `$` also matches before a trailing "\n", so a
+# `.match` against the old pattern accepted "<uuid>\n". Callers MUST use
+# `.fullmatch`, which anchors both ends.
 UUID_RE = re.compile(
-    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+    r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
 
 
 
@@ -83,7 +86,7 @@ def fetch_tasks(env_local: Path, status: str = "pending",
     dsn, sslrootcert = _resolve_credentials(env_local)
 
     if ids:
-        bad = [i for i in ids if not UUID_RE.match(i)]
+        bad = [i for i in ids if not UUID_RE.fullmatch(i)]  # [F1124-42]
         if bad:
             raise ValueError(f"--ids 含非 UUID 格式的值: {bad}")
         id_list = ",".join(f"'{i}'" for i in ids)  # each element regex-verified above

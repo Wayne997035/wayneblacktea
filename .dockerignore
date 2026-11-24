@@ -9,3 +9,13 @@ web/node_modules/
 *.md
 .git/
 .gitignore
+# [F1124-43] Credential-shaped files must never reach the builder stage via
+# `COPY . .`. A pattern without the **/ prefix only matches the context root,
+# so nested files (e.g. web/certs/server.key) would still be copied.
+**/*.pem
+**/*.key
+**/*.p12
+**/credentials*.json
+**/secrets/
+.github/
+.reviews/

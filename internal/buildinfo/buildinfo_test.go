@@ -76,7 +76,7 @@ func TestBuildID_RealValues(t *testing.T) {
 
 // TestBuildID_MalformedDate is U6's other bad-case: Commit is a real-looking
 // SHA but Date fails to parse as RFC3339 (e.g. a build pipeline that sets
-// COMMIT but leaves BUILD_DATE at a non-timestamp value, or a future date
+// WBT_COMMIT but leaves WBT_BUILD_DATE at a non-timestamp value [F1124-41], or a future date
 // format change nobody wired through here yet). BuildID must fall back to
 // "dev" rather than embedding an unparsed or zero-value timestamp into
 // something that otherwise looks like a real build identity.

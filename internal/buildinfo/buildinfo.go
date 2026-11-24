@@ -63,7 +63,7 @@ func moduleIdentity() (string, string) {
 //	-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date=<iso8601>
 //
 // build/Dockerfile sets Commit/Date for the Railway production image via
-// COMMIT/BUILD_DATE build args (see that file's builder stage); it leaves
+// WBT_COMMIT/WBT_BUILD_DATE build args [F1124-41] (see that file's builder stage); it leaves
 // Version at the sentinel, because a branch build is not a release.
 //
 // **Nothing sets Version any more.** The binary-release pipeline that used to
