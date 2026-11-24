@@ -966,5 +966,75 @@ class TestReportNeutralisation(unittest.TestCase):
         self.assertEqual(extract.neutralize_report_text("\ud800"), "\\ud800")
 
 
+# ── [F1124-94] DB-path failures are exit 2, offline stays exit 0 ───────
+
+_DB_ENV = {"DATABASE_URL": "postgres://u:SECRETPW@h/x", "PGSSLROOTCERT": "/nonexistent"}
+
+
+def _call_main(argv, env):
+    """Run audit.main() in-process with a fully controlled environment."""
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.object(sys, "argv", ["audit.py", *argv]), \
+            mock.patch.dict(os.environ, env, clear=True), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = audit.main()
+    return rc, out.getvalue(), err.getvalue()
+
+
+class TestDbFailureExitCode(unittest.TestCase):
+    """[F1124-94] The program already exited 2 on DB failure; these pin it
+    (nothing in test_audit.py asserted any exit code before)."""
+
+    def test_missing_psql_exits_2_with_empty_stdout(self):
+        # [F1124-94] real child process, PATH has no psql: deterministic and
+        # offline. returncode comes from the process itself, not a pipe.
+        r = subprocess.run(  # noqa: S603
+            [sys.executable, str(HERE / "audit.py"), "--no-write",
+             "--env-local", "/nonexistent/.env.local"],
+            env={"PATH": "/nonexistent-bin", **_DB_ENV},
+            capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("未稽核任何單", r.stderr)
+
+    def test_timeout_is_exit_2_and_password_masked(self):
+        # [F1124-94] TimeoutExpired's str() prints the whole argv incl. DSN.
+        exc = subprocess.TimeoutExpired(
+            cmd=["psql", _DB_ENV["DATABASE_URL"]], timeout=30)
+        with mock.patch("lib.db.subprocess.run", side_effect=exc):
+            rc, out, err = _call_main(["--no-write"], _DB_ENV)
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("未稽核任何單", err)
+        self.assertNotIn("SECRETPW", err)
+
+    def test_missing_credentials_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / ".env.local"
+            empty.write_text("", encoding="utf-8")
+            rc, out, err = _call_main(["--no-write", "--env-local", str(empty)], {})
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("缺 DATABASE_URL", err)
+
+    def test_bad_ids_exits_2(self):
+        rc, out, err = _call_main(["--no-write", "--ids", "not-a-uuid"], _DB_ENV)
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("非 UUID", err)
+
+    def test_offline_tasks_json_still_exits_0(self):
+        # [F1124-94] positive control: the new error handling must not
+        # catch the offline path.
+        with tempfile.TemporaryDirectory() as tmp:
+            tj = Path(tmp) / "t.json"
+            tj.write_text(json.dumps([_one_ticket("沒有錨點的單")]), encoding="utf-8")
+            rc, out, _ = _call_main(
+                ["--tasks-json", str(tj), "--no-write", "--repo", str(_repo_root())],
+                {"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(rc, 0)
+        self.assertIn("NO_ANCHOR_NEEDS_HUMAN", out)
+
+
 if __name__ == "__main__":
     unittest.main()

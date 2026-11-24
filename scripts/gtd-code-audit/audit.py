@@ -191,7 +191,11 @@ def main():
         try:
             tasks = db_mod.fetch_tasks(env_local, status=a.status, ids=ids)
         except (RuntimeError, ValueError) as e:
-            print(f"錯誤: {e}", file=sys.stderr)
+            # [F1124-94] Any failure to FETCH tickets is exit 2 with nothing
+            # on stdout — never an empty "0 張單" report that reads as a
+            # clean audit. {e} already went through db.mask_dsn.
+            print(f"錯誤: 無法取得 GTD 單(連線或查詢失敗),本次未稽核任何單 —— {e}",
+                  file=sys.stderr)
             return 2
 
     rows = run(tasks, repo_root, a.window, max_git_calls=a.max_git_calls)
