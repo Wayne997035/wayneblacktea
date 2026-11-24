@@ -156,30 +156,38 @@ func scanWarningsExits(t *testing.T, filename string, src []byte) []warningsExit
 				})
 			}
 		case *ast.CallExpr:
-			sel, ok := x.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok || pkg.Name != "fmt" || (sel.Sel.Name != "Sprintf" && sel.Sel.Name != "Errorf") {
-				return true
-			}
-			mentioned, wrapped := false, true
-			for _, a := range x.Args {
-				if mentionsIdent(a, "allWarnings") {
-					mentioned = true
-					if !containsWireCall(a) {
-						wrapped = false
-					}
-				}
-			}
-			if mentioned {
-				exits = append(exits, warningsExit{pos: fset.Position(x.Pos()).String(), ok: wrapped})
+			if e, found := formatExit(fset, x); found {
+				exits = append(exits, e)
 			}
 		}
 		return true
 	})
 	return exits
+}
+
+const fmtPkgName = "fmt"
+
+// formatExit reports a fmt.Sprintf/Errorf call that formats allWarnings, and
+// whether every such argument is wrapped by warningsForWire.
+func formatExit(fset *token.FileSet, x *ast.CallExpr) (warningsExit, bool) {
+	sel, ok := x.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return warningsExit{}, false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Name != fmtPkgName || (sel.Sel.Name != "Sprintf" && sel.Sel.Name != "Errorf") {
+		return warningsExit{}, false
+	}
+	mentioned, wrapped := false, true
+	for _, a := range x.Args {
+		if mentionsIdent(a, "allWarnings") {
+			mentioned = true
+			if !containsWireCall(a) {
+				wrapped = false
+			}
+		}
+	}
+	return warningsExit{pos: fset.Position(x.Pos()).String(), ok: wrapped}, mentioned
 }
 
 func TestWarningsExitsAreSanitized(t *testing.T) {
@@ -230,7 +238,8 @@ func f(allWarnings []string) {
 	var all []warningsExit
 	perFile := map[string]int{}
 	for _, name := range files {
-		src, err := os.ReadFile(name)
+		// name comes from the fixed two-element allowlist above, never input.
+		src, err := os.ReadFile(name) //nolint:gosec // G304: fixed allowlist of source files in this package dir
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}

@@ -315,9 +315,20 @@ func TestHandleAddVisionItem_NeutralizesForgedMarker(t *testing.T) {
 	}
 	plainGot := resultText(plainRes)
 	assertMarkerNeutralized(t, plainGot, marker)
-	if strings.Contains(plainGot, `"warnings"`) {
-		t.Fatalf("expected the no-warnings branch, got a warnings response: %s", plainGot)
+	// [F1124-14] Fixed shape: the plain branch carries `"warnings":[]` and the
+	// neutralised marker lives under "item".
+	if !strings.Contains(plainGot, `"warnings":[]`) {
+		t.Fatalf("expected the no-warnings branch to carry \"warnings\":[], got: %s", plainGot)
 	}
+	var plainBody struct {
+		Item struct {
+			WhyBlocked string `json:"why_blocked"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(plainGot), &plainBody); err != nil {
+		t.Fatalf("parse plain branch: %v (%s)", err, plainGot)
+	}
+	assertMarkerNeutralized(t, plainBody.Item.WhyBlocked, marker)
 }
 
 // TestHandleListVisionItems_NeutralizesForgedMarker proves

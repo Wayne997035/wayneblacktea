@@ -612,8 +612,9 @@ const (
 // ValidateBranchName (internal/validator/branch_name.go) only rejects
 // length>255 and control characters, and githubPRURLRe's owner/repo segments
 // are `[^/]+`. Neither rejects a printable, no-slash, control-character-free
-// forged boundary marker; PoC-verified end to end (update_task accepts it,
-// get_task echoes it back).
+// forged boundary marker; verified end to end (update_task accepts it,
+// get_task echoes it back neutralised) — see
+// TestSEC171_19_UpdateTaskThenGetTaskNeutralisesBranchName. [F1124-15]
 //
 // [SEC171-09] Artifact is clipped for the same class of reason: the claim
 // that applyArtifactSideEffects/validateBeginTaskLinkageArgs shape-constrain
@@ -634,8 +635,8 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	}
 	// [SEC171-19] See wrapUntrustedTask's doc comment: write-time validation
 	// does not shape-constrain these against a printable, no-slash forged
-	// marker. gtdTitleMaxRunes is 2000 (:503) and validator.MaxBranchNameLen
-	// is 255 (internal/validator/branch_name.go:8), so for branch_name the
+	// marker. gtdTitleMaxRunes is 2000 and validator.MaxBranchNameLen
+	// is 255 (line refs dropped — they rot; find the consts by name) [F1124-16], so for branch_name the
 	// write-time cap always binds first and this clip only neutralises.
 	if t.BranchName.Valid {
 		out.BranchName.String = clipSafe(t.BranchName.String, gtdTitleMaxRunes)

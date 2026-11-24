@@ -536,7 +536,9 @@ func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolReq
 		}
 		id, err := uuid.Parse(rawStr)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("ids[%d] %q is not a valid UUID", i, clipSafe(rawStr, proposalIDEchoMaxRunes))), nil // [F1124-12]
+			// [F1124-12] caller text: clipped before it is echoed back.
+			safeID := clipSafe(rawStr, proposalIDEchoMaxRunes)
+			return mcp.NewToolResultError(fmt.Sprintf("ids[%d] %q is not a valid UUID", i, safeID)), nil
 		}
 		ids = append(ids, id)
 	}

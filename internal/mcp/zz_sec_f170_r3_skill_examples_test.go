@@ -111,7 +111,7 @@ func TestF170SECR301_SkillExamplesNeutralisesEveryKeyAndValue(t *testing.T) {
 // zz_sec_f170_r3_outcome_id_test.go. It used to be named after SEC171-01,
 // which is a DIFFERENT finding (examples' entry count, closed by
 // F0906-11..13) — grepping SEC171-01 returned green tests for a
-// finding this commit does not close. grep '[SEC171-08]' tools_skill.go for
+// finding this commit does not close. grep -nF '[SEC171-08]' internal/mcp/tools_skill.go (run at repo root) [F1124-16] for
 // the matching anchors (line numbers rot; the tag doesn't).
 //
 // The defect itself is F170-SEC-R3-01 in a different field, found because

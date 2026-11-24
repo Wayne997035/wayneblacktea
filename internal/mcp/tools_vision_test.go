@@ -229,10 +229,10 @@ func TestHandleAddVisionItem_VaguenessWarningsEmbedded(t *testing.T) {
 }
 
 // TestHandleAddVisionItem_NoVaguenessWhenDescriptive verifies the inverse:
-// descriptive text with a file:line reference produces zero warnings, and
-// the response stays unwrapped (item fields at the top level) exactly like
-// it did before the vagueness check was added — no regression for callers
-// that read "id" directly off the top-level result.
+// descriptive text with a file:line reference produces zero warnings. [F1124-14]
+// The response shape is fixed regardless of warnings: the item is always
+// under "item" and "warnings" is an empty array `[]` (not null); there is no
+// top-level "id" any more (callers read item.id).
 func TestHandleAddVisionItem_NoVaguenessWhenDescriptive(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
@@ -248,11 +248,15 @@ func TestHandleAddVisionItem_NoVaguenessWhenDescriptive(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		t.Fatalf("parse result: %v (%s)", err, raw)
 	}
-	if _, ok := result["id"]; !ok {
-		t.Errorf("expected unwrapped 'id' at top level when no warnings fire, got: %s", raw)
+	if _, ok := result["item"].(map[string]any); !ok {
+		t.Errorf("expected 'item' object, got: %s", raw)
 	}
-	if _, ok := result["warnings"]; ok {
-		t.Errorf("expected no 'warnings' key for descriptive input, got: %s", raw)
+	if _, ok := result["id"]; ok {
+		t.Errorf("expected no top-level 'id' (fixed shape), got: %s", raw)
+	}
+	warnings, ok := result["warnings"].([]any)
+	if !ok || len(warnings) != 0 {
+		t.Errorf("expected 'warnings' to be an empty array [] for descriptive input, got: %s", raw)
 	}
 }
 
