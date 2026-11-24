@@ -1771,8 +1771,9 @@ type PGDeleteLockTable struct {
 
 // PGDeleteLockTables lists every such table in the order both deletes lock them; the order is the lock
 // order, so a table added or moved here changes it for both. Within a table the rows are locked in id
-// order (ORDER BY is applied before the locking clause, and no statement updates an id), so two deletes
-// that need the same rows of one table take them in the same order too. Both adapters build their SQL
+// order (ORDER BY id before the locking clause; no statement updates an id, though no test proves the
+// resulting lock order, see LockTaskRows), so two deletes that need the same rows of one table are
+// meant to take them in the same order too. Both adapters build their SQL
 // from this list, and it is exported so the schema-derived guard
 // (TestPGDeleteLocks_PrelockCoversEveryProjectAndTaskRefTable, [F1013-24]) can fail when a table with
 // both a project_id and a task column is missing from it. SQLite has no counterpart: its single
@@ -1863,13 +1864,23 @@ func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, e
 	return exists, nil
 }
 
-// LockTaskRows locks the project's task rows in id order and remembers their
-// ids for the snapshot and the cleanups. delete_task also takes its task row
-// before it touches any reference row (pgDeleteTaskAdapter.WorkspacePrecheck),
-// so a delete_project and a delete_task on the same task both go task row
-// first and queue behind one another instead of waiting in a cycle. While the
-// lock is held an update_task that moves one of them out waits until this
-// delete ends.
+// LockTaskRows locks the project's task rows (ORDER BY id before FOR UPDATE)
+// and remembers their ids for the snapshot and the cleanups. delete_task also
+// takes its task row before it touches any reference row
+// (pgDeleteTaskAdapter.WorkspacePrecheck), so a delete_project and a
+// delete_task on the same task both start from the task row. While the lock
+// is held an update_task that moves one of them out waits until this delete
+// ends, and a second delete_project of the same project queues behind it
+// (TestDeleteProjectOrchestration_PGSecondDeleterRefused).
+//
+// What is NOT proven [F1124-05]: lock order and deadlock freedom. PostgreSQL
+// documents, at https://www.postgresql.org/docs/current/sql-select.html (The
+// Locking Clause, Caution): "It is possible for a SELECT command running at
+// the READ COMMITTED transaction isolation level and using ORDER BY and a
+// locking clause to return rows out of order." That caveat is about ordering
+// columns changed by a concurrent update (tasks.id is never updated), but no
+// test makes dropping ORDER BY fail, so this comment asserts no deadlock
+// freedom; a residual 40P01 is retried by the MCP delete tools (F203-01).
 //
 // Once the task rows are locked it also locks, table by table (prelockRefRows), the reference rows that match when it runs; a row
 // committed later is taken by the cleanups in their own order, and the MCP delete tools retry that 40P01 (F203-01). [F1013-23] [F203-02]
