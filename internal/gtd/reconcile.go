@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -244,7 +245,7 @@ func MatchMergedPRs(
 // authoritative signal). branch_name CAN be ambiguous — multiple in-flight
 // tasks may share the same branch slug (e.g. when a task was split mid-stream).
 //
-// [F981-03] Exception: kind="fix-pr" tasks are excluded from pr_url_exact
+// [F981-03] Exception: validator.KindFixPR tasks are excluded from pr_url_exact
 // candidacy (GTD 7261e78b). By this repo's convention a fix-pr task's pr_url
 // points at the PR that EXPOSED the bug, not the one fixing it, so pr_url_exact
 // on a fix-pr task is a false-positive risk — it would silently auto-complete
@@ -270,7 +271,7 @@ func matchSinglePR(
 			// array so we never mutate prURLIndex's own stored slice.
 			candidates := hits[:0:0]
 			for _, t := range hits {
-				if t.Kind == "fix-pr" {
+				if t.Kind == validator.KindFixPR { // [F1124-11]
 					continue
 				}
 				candidates = append(candidates, t)

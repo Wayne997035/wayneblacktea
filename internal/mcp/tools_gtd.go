@@ -655,9 +655,10 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t.Artifact.Valid {
 		out.Artifact.String = clipSafe(t.Artifact.String, gtdBodyMaxRunes)
 	}
-	// len()>0 guard preserves nil so `"commit_shas":null` does not silently
-	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
-	// wrapUntrustedAtom (tools_atom.go).
+	// [F1124-11] clipSafeSlice (tools_atom.go) already returns nil for nil
+	// input, so this len()>0 guard is belt-and-braces (defensive, not
+	// load-bearing): `"commit_shas":null` stays null either way. Same note
+	// as wrapUntrustedAtom (tools_atom.go).
 	if len(t.CommitSHAs) > 0 {
 		out.CommitSHAs = clipSafeSlice(t.CommitSHAs, commitSHAMaxRunes)
 	}

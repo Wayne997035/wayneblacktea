@@ -81,10 +81,10 @@ const conceptTagMaxRunes = 200
 // pinned in knownUnprotectedFields; it is the same escape class as F160-10,
 // just a different field.
 //
-// The len()>0 guard mirrors wrapUntrustedAtom (tools_atom.go): clipSafeSlice
-// allocates unconditionally, so calling it on a nil slice would turn a JSON
-// `null` into `[]` — a silent wire-contract change for every concept that has
-// no tags.
+// [F1124-11] The len()>0 guard mirrors wrapUntrustedAtom (tools_atom.go):
+// clipSafeSlice already returns nil for nil input, so the guard is
+// belt-and-braces (defensive, not load-bearing) for concepts that have no
+// tags — a JSON `null` stays `null`.
 func wrapUntrustedConcept(c *db.Concept) *db.Concept {
 	if c == nil {
 		return nil

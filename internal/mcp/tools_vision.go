@@ -74,8 +74,9 @@ func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
 	out.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
 	out.ContextMD = clipSafe(v.ContextMD, visionContextMDMaxRunes)
 	out.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
-	// len()>0 guard preserves nil so `"depends_on":null` does not silently
-	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
+	// [F1124-11] clipSafeSlice (tools_atom.go) already returns nil for nil
+	// input, so this len()>0 guard is belt-and-braces (defensive, not
+	// load-bearing): `"depends_on":null` stays null either way. Same note as
 	// wrapUntrustedAtom (tools_atom.go) and wrapUntrustedConcept.
 	if len(v.DependsOn) > 0 {
 		out.DependsOn = clipSafeSlice(v.DependsOn, visionDependsOnMaxRunes)
