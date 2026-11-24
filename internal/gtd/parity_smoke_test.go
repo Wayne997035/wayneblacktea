@@ -15,6 +15,8 @@ import (
 // Postgres backend, closing the F0929-73 parity gap: 0 shared behaviour
 // assertions ran against both backends before this ticket. Skips under
 // -short (openTestPgPool, store_postgres_test.go).
+// [F1124-45] RunGTDSmoke row 14 (DeleteProject_CrossWorkspaceTaskIgnored)
+// runs here as subtest postgres/DeleteProject_CrossWorkspaceTaskIgnored.
 func TestGTDConformance_Postgres(t *testing.T) {
 	pool := openTestPgPool(t)
 	wsA := uuid.New()
@@ -47,6 +49,8 @@ func gtdParitySmokeMigrator(ctx context.Context, path string) error {
 // TestGTDConformance_SQLite runs conformance.RunGTDSmoke against the SQLite
 // backend. Unlike the Postgres twin, this always runs (no -short gate) —
 // SQLite needs no Docker.
+// [F1124-45] RunGTDSmoke row 14 runs here as subtest
+// sqlite/DeleteProject_CrossWorkspaceTaskIgnored.
 func TestGTDConformance_SQLite(t *testing.T) {
 	ctx := context.Background()
 	path := sqlitetemplate.Path(t, gtdParitySmokeTemplateKey, gtdParitySmokeMigrator, "gtd-parity.db")

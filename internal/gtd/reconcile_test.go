@@ -302,6 +302,9 @@ func TestReconcileMergedPRs_PG_CaseInsensitivePRURL(t *testing.T) {
 // automatically): reverting the kind=="fix-pr" filter in matchSinglePR's
 // pr_url_exact block makes this test fail — the task reappears in
 // result.Matches with Reason=pr_url_exact.
+//
+// [F1124-11] Also guards validator.KindFixPR: the filter now compares
+// against that constant, so changing its value turns this test red.
 func TestMatchMergedPRs_FixPRIgnoresPRURL(t *testing.T) {
 	pool := openTestPgPool(t)
 	store := newPgGTDStore(pool, nil)
