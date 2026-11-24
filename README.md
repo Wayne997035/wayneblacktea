@@ -20,7 +20,7 @@
 
 ## Install
 
-Prerequisites: Go **1.26.4+** (tracks the `go` directive in [`go.mod`](./go.mod) — check that file if this number looks stale), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`).
+Prerequisites: Go **1.26.11+** (tracks the `go` directive in [`go.mod`](./go.mod) — check that file if this number looks stale), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`).
 
 Build `wbt` and `wayneblacktea-server` from the same clone. `go install .../cmd/wbt@latest` resolves to the latest tagged release from the Go module proxy — mixing that with a server built from your clone (whatever commit that is) gives you two binaries from two different versions with no warning:
 

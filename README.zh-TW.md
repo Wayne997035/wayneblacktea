@@ -20,7 +20,7 @@
 
 ## 安裝
 
-前置需求：Go **1.26.4+**（版本以 [`go.mod`](./go.mod) 的 `go` 指令為準，這個數字若看起來過期以該檔為準）、Node.js 22+、[Task](https://taskfile.dev/)（`go install github.com/go-task/task/v3/cmd/task@latest`）。
+前置需求：Go **1.26.11+**（版本以 [`go.mod`](./go.mod) 的 `go` 指令為準，這個數字若看起來過期以該檔為準）、Node.js 22+、[Task](https://taskfile.dev/)（`go install github.com/go-task/task/v3/cmd/task@latest`）。
 
 `wbt` 跟 `wayneblacktea-server` 要從同一份 clone 建出來。`go install .../cmd/wbt@latest` 會從 Go module proxy 解到最新的 release tag —— 混著用本機 clone 建出來的 server（不管你 clone 到哪個 commit），會讓你手上兩支 binary 是不同版本，而且不會有任何警告：
 

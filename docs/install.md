@@ -7,7 +7,7 @@
 | macOS | 13+ (lsof + setsid compatibility) |
 | Linux | kernel 4.18+, glibc 2.28+ (for ss fallback and nohup) |
 | Windows | Not supported in Phase 2 — the lifecycle package returns `ErrUnsupported`; use `wbt mcp` (stdio) manually |
-| Go | 1.26.4+ (tracks the `go` directive in [`go.mod`](../go.mod) — check that file if this number looks stale) |
+| Go | 1.26.11+ (tracks the `go` directive in [`go.mod`](../go.mod) — check that file if this number looks stale) |
 | Node.js | 22+ (build-from-source only) |
 | Task | latest (build-from-source only — `go install github.com/go-task/task/v3/cmd/task@latest`) |
 
@@ -243,8 +243,8 @@ If missing, add the appropriate directory to your shell profile and restart your
 
 | Channel | Command | Notes |
 |---------|---------|-------|
-| **Clone + build both binaries** (recommended) | See [Quick start](#quick-start) above | Requires Go 1.26.4+, Node.js 22+, Task. Works today. |
-| **Build from source (full dev setup)** | See [Build from source](#build-from-source) below | Requires Go 1.26.4+, Node.js 22+, Task. |
+| **Clone + build both binaries** (recommended) | See [Quick start](#quick-start) above | Requires Go 1.26.11+, Node.js 22+, Task. Works today. |
+| **Build from source (full dev setup)** | See [Build from source](#build-from-source) below | Requires Go 1.26.11+, Node.js 22+, Task. |
 
 There is no pre-built-binary channel. Distribution is the git tag plus the Go module proxy —
 `go install …@v1.0.1` fetches, verifies against the checksum database, and builds. Homebrew
@@ -302,7 +302,7 @@ docker build --build-arg VITE_API_KEY="${API_KEY}" -f build/Dockerfile -t wayneb
 docker run --rm -p "${PORT:-8420}:${PORT:-8420}" --env-file .env wayneblacktea
 ```
 
-Three-stage build: Node 22-alpine builds the React dashboard → golang:1.26.4-alpine builds the Go binary with the dashboard embedded → alpine:3.21 runtime (non-root, `ca-certificates` only). Healthcheck: `GET /health` returns `200 OK`.
+Three-stage build: Node 22-alpine builds the React dashboard → golang:1.26.11-alpine builds the Go binary with the dashboard embedded → alpine:3.21 runtime (non-root, `ca-certificates` only). Healthcheck: `GET /health` returns `200 OK`.
 
 ## Railway / production deploy
 
@@ -319,7 +319,7 @@ matrix has to be maintained or kept in sync with the platforms people actually r
 
 ## Build from source
 
-Prerequisites: Go 1.26.4+ (tracks the `go` directive in [`go.mod`](../go.mod)), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`), and PostgreSQL 14+ with pgvector (Postgres mode only).
+Prerequisites: Go 1.26.11+ (tracks the `go` directive in [`go.mod`](../go.mod)), Node.js 22+, [Task](https://taskfile.dev/) (`go install github.com/go-task/task/v3/cmd/task@latest`), and PostgreSQL 14+ with pgvector (Postgres mode only).
 
 ```bash
 cd build
