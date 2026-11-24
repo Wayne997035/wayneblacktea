@@ -304,8 +304,10 @@ func (s *GTDStore) ActiveProjectsPage(ctx context.Context, limit, offset int32) 
 
 // ProjectsFiltered returns projects matching status, scoped to the
 // configured workspace. Status "" or "active" → active only, ordered
-// identically to ListActiveProjects (priority ASC, updated_at DESC); "all"
-// → every status; any other value → exact match. Mirrors
+// identically to ListActiveProjects; "all" → every status; any other value →
+// exact match. All three branches share one total order, priority ASC,
+// updated_at DESC, id ASC (TestSQLiteStore_ProjectsFiltered_TieBreaksByID)
+// [F1124-04]. Mirrors
 // gtd.Store.ProjectsFiltered (Postgres) and TasksFiltered's
 // switch-by-status pattern.
 func (s *GTDStore) ProjectsFiltered(ctx context.Context, status string) ([]db.Project, error) {
@@ -328,13 +330,13 @@ func (s *GTDStore) ProjectsFiltered(ctx context.Context, status string) ([]db.Pr
 	case "all":
 		const q = `SELECT ` + projectsSelectCols + ` FROM projects
 			WHERE (?1 IS NULL OR workspace_id = ?1)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.db.conn.QueryContext(ctx, q, s.db.workspaceArg())
 	default:
 		const q = `SELECT ` + projectsSelectCols + ` FROM projects
 			WHERE status = ?1
 			  AND (?2 IS NULL OR workspace_id = ?2)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.db.conn.QueryContext(ctx, q, status, s.db.workspaceArg())
 	}
 	if err != nil {

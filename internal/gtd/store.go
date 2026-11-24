@@ -86,10 +86,12 @@ func (s *Store) ActiveProjectsPage(ctx context.Context, limit, offset int32) ([]
 
 // ProjectsFiltered returns projects matching status, scoped to the
 // configured workspace. Status "" or "active" → active only, ordered
-// identically to ListActiveProjects (priority ASC, updated_at DESC) so the
-// default (unset status) query is byte-identical to the pre-existing
-// GET /api/projects contract; "all" → every status; any other value → exact
-// match. Callers (the HTTP handler) validate status against an allowlist
+// identically to ListActiveProjects so the default (unset status) query is
+// byte-identical to the pre-existing GET /api/projects contract; "all" →
+// every status; any other value → exact match. All three branches share one
+// total order, priority ASC, updated_at DESC, id ASC, so equal-priority rows
+// with the same updated_at never come back in an unstable order
+// (TestPGStore_ProjectsFiltered_TieBreaksByID) [F1124-04]. Callers (the HTTP handler) validate status against an allowlist
 // before calling — this method does not itself reject unrecognised values,
 // mirroring TasksFiltered's contract.
 //
@@ -118,14 +120,14 @@ func (s *Store) ProjectsFiltered(ctx context.Context, status string) ([]db.Proje
 		q := `SELECT ` + selectCols + `
 			FROM projects
 			WHERE ($1::uuid IS NULL OR workspace_id = $1)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.dbtx.Query(ctx, q, s.workspaceID)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM projects
 			WHERE status = $1
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.dbtx.Query(ctx, q, status, s.workspaceID)
 	}
 	if err != nil {

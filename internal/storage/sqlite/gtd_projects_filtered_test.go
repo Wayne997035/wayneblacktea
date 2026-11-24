@@ -2,7 +2,10 @@ package sqlite_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
@@ -292,5 +295,74 @@ func TestSQLiteStore_ProjectsFiltered_EmptyDB_NoError(t *testing.T) {
 	}
 	if len(projects) != 0 {
 		t.Errorf("empty DB should return 0 projects, got %d", len(projects))
+	}
+}
+
+// TestSQLiteStore_ProjectsFiltered_TieBreaksByID [F1124-04] pins the total
+// order on the "all" and exact-status branches: six projects with equal
+// priority and an identical updated_at must come back sorted by id ASC. The
+// same rows with DISTINCT updated_at still sort by updated_at DESC first, so
+// the tiebreaker cannot have overridden the primary order.
+func TestSQLiteStore_ProjectsFiltered_TieBreaksByID(t *testing.T) {
+	t.Parallel()
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	s := sqlite.NewGTDStore(d)
+	ctx := context.Background()
+
+	for _, status := range []string{"all", "completed"} {
+		t.Run("status="+status, func(t *testing.T) {
+			// Fresh workspace-wide state per status: clear projects, then seed 6.
+			mustExec(t, d, "clear projects", `DELETE FROM projects`)
+			ids := make([]string, 0, 6)
+			for range 6 {
+				id := seedSQLiteProject(t, s, "completed")
+				ids = append(ids, id.String())
+			}
+			// Negative-for-the-filter: an active project must not appear for "completed".
+			activeID := seedSQLiteProject(t, s, statusActive)
+			mustExec(t, d, "tie updated_at", `UPDATE projects SET updated_at = ?1`, dpTS)
+
+			got, err := s.ProjectsFiltered(ctx, status)
+			if err != nil {
+				t.Fatalf("ProjectsFiltered(%q): %v", status, err)
+			}
+			want := append([]string(nil), ids...)
+			if status == "all" {
+				want = append(want, activeID.String())
+			}
+			sort.Strings(want)
+			gotIDs := make([]string, 0, len(got))
+			for _, p := range got {
+				gotIDs = append(gotIDs, p.ID.String())
+			}
+			if !slices.Equal(gotIDs, want) {
+				t.Errorf("ProjectsFiltered(%q) tie order = %v, want id ASC %v", status, gotIDs, want)
+			}
+
+			// Distinct updated_at: newest first regardless of id order.
+			sortedIDs := append([]string(nil), ids...)
+			sort.Strings(sortedIDs)
+			// Give the id-largest project the newest timestamp, so DESC order
+			// is the reverse of the id order.
+			for i, id := range sortedIDs {
+				mustExec(t, d, "distinct updated_at",
+					`UPDATE projects SET updated_at = ?2 WHERE id = ?1`, id,
+					fmt.Sprintf("2026-09-%02dT00:00:00.000Z", 10+i))
+			}
+			got, err = s.ProjectsFiltered(ctx, "completed")
+			if err != nil {
+				t.Fatalf("ProjectsFiltered(completed): %v", err)
+			}
+			for i, p := range got {
+				if p.ID.String() != sortedIDs[len(sortedIDs)-1-i] {
+					t.Fatalf("distinct updated_at: position %d = %s, want %s (updated_at DESC must beat id ASC)",
+						i, p.ID, sortedIDs[len(sortedIDs)-1-i])
+				}
+			}
+		})
 	}
 }
