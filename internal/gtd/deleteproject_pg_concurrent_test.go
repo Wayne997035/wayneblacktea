@@ -879,7 +879,14 @@ func TestDeleteProjectOrchestration_PGSecondDeleterRefused(t *testing.T) {
 		t.Fatalf("second deleter = (%d, %v), want ErrProjectTasksChanged", b.n, b.err)
 	}
 
-	// Only A's deletion group exists: 2 task rows, one deletion_id.
+	assertOnlyFirstDeleteRecorded(ctx, t, pool, store, target)
+}
+
+// assertOnlyFirstDeleteRecorded checks that only the first deleter's group
+// exists (2 task tombstones in one deletion group), the project is gone, and
+// the first delete's snapshot restores both tasks. [F1124-05]
+func assertOnlyFirstDeleteRecorded(ctx context.Context, t *testing.T, pool *pgxpool.Pool, store *gtd.Store, target uuid.UUID) {
+	t.Helper()
 	var taskRows, groups int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FILTER (WHERE entity_kind = 'task'), count(DISTINCT deletion_id)

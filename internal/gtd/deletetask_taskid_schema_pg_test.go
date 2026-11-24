@@ -83,6 +83,30 @@ func derivePGTaskIDColumns(t *testing.T, pool *pgxpool.Pool) (derived, raw []str
 	return derived, raw
 }
 
+// requirePGTaskIDRegistriesInSync fails when an exemption names a column that
+// no longer exists, or when the check/seed registries differ from the
+// schema-derived column list.
+func requirePGTaskIDRegistriesInSync(t *testing.T, derived, raw []string) {
+	t.Helper()
+	rawSet := make(map[string]bool, len(raw))
+	for _, k := range raw {
+		rawSet[k] = true
+	}
+	for k := range gtd.TaskIDCleanupExemptions {
+		if !rawSet[k] {
+			t.Errorf("stale exemption %q: no such column in the migrated PG schema", k)
+		}
+	}
+	if diff := tableListDiff(derived, sortedKeys(pgTaskIDCheckQueries)); diff != "" {
+		t.Fatalf("pgTaskIDCheckQueries is out of sync with the migrated PG schema "+
+			"(derived, minus gtd.TaskIDCleanupExemptions): %s — register a check+seed pair and make "+
+			"delete_task clean it, or add an exemption with a reason", diff)
+	}
+	if diff := tableListDiff(derived, sortedKeys(pgTaskIDSeedStatements)); diff != "" {
+		t.Fatalf("pgTaskIDSeedStatements is out of sync with the migrated PG schema: %s", diff)
+	}
+}
+
 // TestPGDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema [F1124-03] is
 // the Postgres half of the schema-derived delete_task guard.
 func TestPGDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema(t *testing.T) {
@@ -93,25 +117,7 @@ func TestPGDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema(t *testing.T) {
 
 	derived, raw := derivePGTaskIDColumns(t, pool)
 	t.Logf("derived task_id columns (%d): %v", len(derived), derived)
-
-	rawSet := make(map[string]bool, len(raw))
-	for _, k := range raw {
-		rawSet[k] = true
-	}
-	for k := range gtd.TaskIDCleanupExemptions {
-		if !rawSet[k] {
-			t.Errorf("stale exemption %q: no such column in the migrated PG schema", k)
-		}
-	}
-
-	if diff := tableListDiff(derived, sortedKeys(pgTaskIDCheckQueries)); diff != "" {
-		t.Fatalf("pgTaskIDCheckQueries is out of sync with the migrated PG schema "+
-			"(derived, minus gtd.TaskIDCleanupExemptions): %s — register a check+seed pair and make "+
-			"delete_task clean it, or add an exemption with a reason", diff)
-	}
-	if diff := tableListDiff(derived, sortedKeys(pgTaskIDSeedStatements)); diff != "" {
-		t.Fatalf("pgTaskIDSeedStatements is out of sync with the migrated PG schema: %s", diff)
-	}
+	requirePGTaskIDRegistriesInSync(t, derived, raw)
 
 	doomed, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f1124-03-pg-doomed"})
 	if err != nil {

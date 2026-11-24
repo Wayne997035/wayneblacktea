@@ -687,6 +687,30 @@ func deriveTaskIDColumns(t *testing.T, d *sqlite.DB) (derived, raw []string) {
 	return derived, raw
 }
 
+// requireTaskIDRegistriesInSync [F1124-03] fails when an exemption names a
+// column that no longer exists, or when the check/seed registries differ
+// from the schema-derived column list.
+func requireTaskIDRegistriesInSync(t *testing.T, derived, raw []string) {
+	t.Helper()
+	rawSet := make(map[string]bool, len(raw))
+	for _, k := range raw {
+		rawSet[k] = true
+	}
+	for k := range gtd.TaskIDCleanupExemptions {
+		if !rawSet[k] {
+			t.Errorf("stale exemption %q: no such column in the migrated schema", k)
+		}
+	}
+	if diff := tableListDiff(derived, sortedKeys(taskIDCheckQueries)); diff != "" {
+		t.Fatalf("taskIDCheckQueries is out of sync with the migrated schema "+
+			"(derived, minus gtd.TaskIDCleanupExemptions): %s — register a check+seed pair and make "+
+			"delete_task clean it, or add an exemption with a reason", diff)
+	}
+	if diff := tableListDiff(derived, sortedKeys(taskIDSeedStatements)); diff != "" {
+		t.Fatalf("taskIDSeedStatements is out of sync with the migrated schema: %s", diff)
+	}
+}
+
 // TestDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema [F1124-03] is the
 // SQLite half of the schema-derived delete_task guard (same pattern as
 // F191-02 for project_id). The column list comes from the migrated schema,
@@ -704,25 +728,7 @@ func TestDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema(t *testing.T) {
 
 	derived, raw := deriveTaskIDColumns(t, d)
 	t.Logf("derived task_id columns (%d): %v", len(derived), derived)
-
-	rawSet := make(map[string]bool, len(raw))
-	for _, k := range raw {
-		rawSet[k] = true
-	}
-	for k := range gtd.TaskIDCleanupExemptions {
-		if !rawSet[k] {
-			t.Errorf("stale exemption %q: no such column in the migrated schema", k)
-		}
-	}
-
-	if diff := tableListDiff(derived, sortedKeys(taskIDCheckQueries)); diff != "" {
-		t.Fatalf("taskIDCheckQueries is out of sync with the migrated schema "+
-			"(derived, minus gtd.TaskIDCleanupExemptions): %s — register a check+seed pair and make "+
-			"delete_task clean it, or add an exemption with a reason", diff)
-	}
-	if diff := tableListDiff(derived, sortedKeys(taskIDSeedStatements)); diff != "" {
-		t.Fatalf("taskIDSeedStatements is out of sync with the migrated schema: %s", diff)
-	}
+	requireTaskIDRegistriesInSync(t, derived, raw)
 
 	doomed, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f1124-03-doomed"})
 	if err != nil {
