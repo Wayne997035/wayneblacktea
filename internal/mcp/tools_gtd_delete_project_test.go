@@ -345,6 +345,21 @@ func TestDeleteProject_ConfirmRefusedWhenTasksChanged(t *testing.T) {
 		wantRefused(t, s, confirm(t, s, target, token), target, kept, mover)
 	})
 
+	// [F1124-46] A pure move-out leaves a set that is a strict subset of the
+	// previewed one: the digest must differ even though nothing was added.
+	t.Run("task moved out", func(t *testing.T) {
+		t.Parallel()
+		s := newTestWorkSessionServer(t)
+		target, _ := seedProjectWithTasks(t, s, 0)
+		other, _ := seedProjectWithTasks(t, s, 0)
+		kept := newTask(t, s, target)
+		leaving := newTask(t, s, target)
+
+		token := preview(t, s, target)
+		move(t, s, leaving, other)
+		wantRefused(t, s, confirm(t, s, target, token), target, kept, leaving)
+	})
+
 	t.Run("swap keeps the count", func(t *testing.T) {
 		t.Parallel()
 		s := newTestWorkSessionServer(t)
