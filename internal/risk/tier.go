@@ -1,7 +1,8 @@
 // Package risk holds the T0-T7 risk-tier taxonomy and the Bash command classifier.
 // [F1123-20] Tier and ClassifyBash are a line-for-line copy of internal/guard/classifier.go
 // (only RiskTier -> Tier); [F1123-21] the wrapper blocklist helpers are copied with it.
-// The two copies coexist until WBT3 slice 2b deletes the guard copy.
+// internal/guard delegates its classification to this package (guard.RiskTier is an
+// alias of Tier); there is no second copy. [F1124-22]
 package risk
 
 import (

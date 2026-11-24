@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/aicost"
+	"github.com/Wayne997035/wayneblacktea/internal/llm"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
@@ -62,7 +63,8 @@ func (r *Reflector) costRecorder() aicost.Recorder {
 
 // NewReflector creates a Reflector using the given Claude API key.
 func NewReflector(apiKey string) *Reflector {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// [F1124-73] 1 MiB response cap.
+	client := anthropic.NewClient(option.WithAPIKey(apiKey), llm.AnthropicResponseCap())
 	return &Reflector{client: &client, model: reflectionModel}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ const (
 	// classifier/reviewer/analyzer call sites.
 	defaultClaudeModel = "claude-haiku-4-5"
 	claudeTimeout      = 30 * time.Second
+	claudeMaxBody      = 1 << 20 // response cap, same as groqMaxBody [F1124-60]
 
 	// claudeProviderName is the stable provider label returned by Name().
 	claudeProviderName = "claude"
@@ -49,8 +51,34 @@ func NewClaudeClient(cfg ClaudeConfig) (*ClaudeClient, error) {
 	if model == "" {
 		model = defaultClaudeModel
 	}
-	c := anthropic.NewClient(option.WithAPIKey(cfg.APIKey))
-	return &ClaudeClient{client: &c, model: model}, nil
+	return newClaudeClientOpts(cfg, model), nil
+}
+
+// newClaudeClientOpts is the single production construction path. It installs
+// the response-body cap middleware so every Messages.New call (CompleteJSON and
+// Generate) is bounded. extra options (e.g. option.WithBaseURL) are applied
+// after the defaults; tests use them to reach an httptest server through the
+// real construction path. [F1124-60]
+func newClaudeClientOpts(cfg ClaudeConfig, model string, extra ...option.RequestOption) *ClaudeClient {
+	opts := []option.RequestOption{
+		option.WithAPIKey(cfg.APIKey),
+		option.WithMiddleware(capResponseBody),
+	}
+	opts = append(opts, extra...)
+	c := anthropic.NewClient(opts...)
+	return &ClaudeClient{client: &c, model: model}
+}
+
+// capResponseBody wraps the response body in a 1 MiB reader (client.go package
+// doc SECURITY rule). Exceeding the cap surfaces as a read error inside the SDK,
+// which the callers wrap as *Retryable. [F1124-60]
+func capResponseBody(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+	resp, err := next(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+	resp.Body = http.MaxBytesReader(nil, resp.Body, claudeMaxBody)
+	return resp, nil
 }
 
 // NewClaudeClientWithSDK is intended for tests with a pre-configured client
@@ -96,7 +124,7 @@ func (c *ClaudeClient) CompleteJSON(ctx context.Context, req JSONRequest) (strin
 		// transport / 5xx errors come back as plain errors; we tag the
 		// reason heuristically based on the error string and treat all of
 		// them as retryable so the chain falls through.
-		return "", &Retryable{Provider: c.Name(), Reason: classifyClaudeErr(err), Err: sanitiseTransportErr(err)}
+		return "", &Retryable{Provider: c.Name(), Reason: classifyClaudeErr(err), Err: sanitiseClaudeErr(err)}
 	}
 	if len(resp.Content) == 0 {
 		return "", &Retryable{Provider: c.Name(), Reason: reasonEmptyContent, Err: errors.New("no content blocks")}
@@ -137,6 +165,20 @@ func classifyClaudeErr(err error) string {
 	return reasonProviderErr
 }
 
+// sanitiseClaudeErr reduces an Anthropic API error to status + request-id only.
+// *anthropic.Error.Error() embeds the full request URL (which may carry base-URL
+// userinfo such as a proxy password) and the raw response body; client.go forbids
+// both in Retryable.Err. Classification MUST use the ORIGINAL err (see
+// classifyClaudeErr), never this sanitised copy. Other errors fall back to
+// sanitiseTransportErr. [F1124-61]
+func sanitiseClaudeErr(err error) error {
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		return fmt.Errorf("anthropic API error: status=%d request_id=%s", apiErr.StatusCode, apiErr.RequestID)
+	}
+	return sanitiseTransportErr(err)
+}
+
 // Compile-time assertion that ClaudeClient satisfies JSONClient.
 var _ JSONClient = (*ClaudeClient)(nil)
 
@@ -150,13 +192,13 @@ const claudeMaxContext = 200_000
 
 // Capabilities implements GenerateClient. [F1123-50]
 //
-// ImageInput is a provider capability. 送圖路徑由 slice 11 加入,在那之前
-// Generate 只送文字: the 5b router MUST NOT route image-input tasks to
-// Generate before slice 11.
+// ImageInput is false [F1124-63]: Generate only sends text today. The image
+// path lands in slice 11; whoever adds it MUST flip ImageInput to true here and
+// update TestClaudeProvider_Capabilities_ImageInputMatchesGeneratePath.
 func (c *ClaudeClient) Capabilities() Capabilities {
 	return Capabilities{
 		Text:        true,
-		ImageInput:  true,
+		ImageInput:  false,
 		ToolCalling: true,
 		MaxContext:  claudeMaxContext,
 	}
@@ -211,7 +253,7 @@ func (c *ClaudeClient) Generate(ctx context.Context, req GenerateRequest) (Gener
 	res.Latency = time.Since(start) // [F1123-51]
 	if err != nil {
 		res.ErrorClass = classifyClaudeErr(err)
-		return res, &Retryable{Provider: c.Name(), Reason: res.ErrorClass, Err: sanitiseTransportErr(err)}
+		return res, &Retryable{Provider: c.Name(), Reason: res.ErrorClass, Err: sanitiseClaudeErr(err)}
 	}
 	if len(resp.Content) == 0 {
 		res.ErrorClass = reasonEmptyContent
@@ -230,6 +272,12 @@ func (c *ClaudeClient) Generate(ctx context.Context, req GenerateRequest) (Gener
 	res.Text = text.String()
 	res.StopReason = string(resp.StopReason)
 	res.Usage = Usage{InputTokens: int(resp.Usage.InputTokens), OutputTokens: int(resp.Usage.OutputTokens)}
+	// [F1124-62] Blocks present but neither text nor tool_use (e.g. thinking
+	// only) is an empty answer; tool-only responses remain successful.
+	if res.Text == "" && len(res.ToolCalls) == 0 {
+		res.ErrorClass = reasonEmptyContent
+		return res, &Retryable{Provider: c.Name(), Reason: reasonEmptyContent, Err: errors.New("no text or tool_use content")}
+	}
 	return res, nil
 }
 

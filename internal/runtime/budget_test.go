@@ -132,3 +132,19 @@ func TestBudget_FinishReasonValues(t *testing.T) {
 		}
 	}
 }
+
+// F1124-33
+func TestBudget_NewInteractiveBudget_UsesDefaults(t *testing.T) {
+	want := Budget{
+		MaxTurns:        DefaultInteractiveMaxTurns,
+		MaxToolCalls:    DefaultInteractiveMaxToolCalls,
+		MaxDuration:     DefaultInteractiveMaxDuration,
+		MaxCostMicroUSD: 0,
+	}
+	if got := NewInteractiveBudget(); got != want {
+		t.Errorf("NewInteractiveBudget() = %+v, want %+v", got, want)
+	}
+	if got := NewInteractiveBudget(); got.MaxTurns != 12 || got.MaxToolCalls != 20 || got.MaxDuration != 120*time.Second {
+		t.Errorf("NewInteractiveBudget() literal defaults drifted: %+v", got)
+	}
+}
