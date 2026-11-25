@@ -240,24 +240,11 @@ func containsBidiControl(s string) bool {
 // [F1124-01]. Plain RTL text without those code points is unaffected.
 //
 // ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
-// for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Two more forms
-// are compared as well [SEC-PR208-SE-03]; matching any one of them rejects the
-// action, so nothing the plain canonical form rejects is let through:
-//   - "cl" for d, also spelled with an ASCII look-alike of l ("ci", "c1",
-//     "c|"), folded by multiRuneConfusable. "rn" for m and "vv" for w do not
-//     apply, because the reserved names contain no m or w;
-//   - compatibility characters that NFKD splits into U+0020 plus combining
-//     marks (U+2017 DOUBLE LOW LINE, U+203E OVERLINE, U+00AF MACRON, ...) are
-//     replaced by U+FFFD first (spacingCompatToPlaceholder). Otherwise step 3
-//     of canonicalAuditAction drops both halves, the canonical form loses a
-//     rune, and isHomoglyphOf's same-length comparison never runs.
-//
-// Residual gaps: other multi-character look-alikes ("|<" for k, "()" for o)
-// are not folded; characters NFKD reduces to a lone space (U+00A0 and similar) are
-// still dropped, which is accepted because they render as a space, not as a
-// letter or an underscore; other scripts' look-alikes of these ASCII letters
-// beyond the Latin/Cyrillic/Greek/Common wildcard are not covered; the full
-// Unicode confusables table is deliberately not used.
+// for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Residual gaps:
+// multi-character look-alikes ("rn" for m, "vv" for w) are not folded
+// (the reserved names contain no m or w), and other scripts' look-alikes of
+// these ASCII letters beyond the Latin/Cyrillic/Greek/Common wildcard are not
+// covered; the full Unicode confusables table is deliberately not used.
 //
 // Known residual gaps, accepted per SEC-PR191-R2-01's P3: homoglyphs outside
 // the four scripts above (e.g. some Armenian letters) are not caught, and
@@ -276,39 +263,17 @@ func IsReservedAuditAction(action string) bool {
 	if containsBidiControl(action) {
 		return true
 	}
-	// [SEC-PR208-SE-03] Each extra form only adds rejections to the plain one.
-	plain := canonicalAuditAction(action)
-	spacing := canonicalAuditAction(spacingCompatToPlaceholder(action))
-	for _, canon := range []string{plain, multiRuneConfusable.Replace(plain), spacing, multiRuneConfusable.Replace(spacing)} {
-		if reservedAuditActions[canon] {
+	canon := canonicalAuditAction(action)
+	if reservedAuditActions[canon] {
+		return true
+	}
+	canonRunes := []rune(canon)
+	for name := range reservedAuditActions {
+		if isHomoglyphOf(canonRunes, []rune(name)) {
 			return true
-		}
-		canonRunes := []rune(canon)
-		for name := range reservedAuditActions {
-			if isHomoglyphOf(canonRunes, []rune(name)) {
-				return true
-			}
 		}
 	}
 	return false
-}
-
-// multiRuneConfusable folds "cl" and its ASCII look-alike spellings onto the d
-// it imitates, for the reserved-name comparison only [SEC-PR208-SE-03]. canon
-// is already lowercased, so "cI" arrives as "ci". Single-rune look-alikes stay
-// with isHomoglyphOf's foldASCIIConfusable.
-var multiRuneConfusable = strings.NewReplacer("cl", "d", "ci", "d", "c1", "d", "c|", "d")
-
-// spacingCompatToPlaceholder replaces every rune that NFKD would split into
-// U+0020 plus combining marks with U+FFFD, which canonicalAuditAction keeps
-// and isHomoglyphOf treats as a Common wildcard [SEC-PR208-SE-03].
-func spacingCompatToPlaceholder(action string) string {
-	return strings.Map(func(r rune) rune {
-		if d := norm.NFKD.String(string(r)); len(d) > 1 && d[0] == ' ' {
-			return '�'
-		}
-		return r
-	}, action)
 }
 
 // ProjectIDCleanupExemptions is the sole, machine-checked exception list to

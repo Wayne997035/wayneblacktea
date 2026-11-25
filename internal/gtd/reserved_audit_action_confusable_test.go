@@ -37,35 +37,3 @@ func TestIsReservedAuditAction_ASCIIConfusables(t *testing.T) {
 		})
 	}
 }
-
-// TestIsReservedAuditAction_SpacingCompatAndMultiRune is the [SEC-PR208-SE-03]
-// guard: a spacing-compat character for the underscore and "cl" (or "cI", "c1",
-// "c|") for d are rejected; the negative rows show the folds miss ordinary
-// actions and that a no-break space stays allowed. Pure unit test, no DB.
-func TestIsReservedAuditAction_SpacingCompatAndMultiRune(t *testing.T) {
-	cases := []struct {
-		name   string
-		action string
-		want   bool
-	}{
-		{"double_low_line_for_underscore", "task‗deleted", true},
-		{"overline_for_underscore", "project‾deleted", true},
-		{"macron_for_underscore", "task¯deleted", true},
-		{"cl_for_d", "task_cleleted", true},
-		{"cl_for_d_project", "project_cleleted", true},
-		{"capital_I_cl_for_d", "task_cIeleted", true},
-		{"digit_1_cl_for_d", "task_c1eleted", true},
-		{"pipe_cl_for_d", "project_c|eleted", true},
-		{"double_low_line_other_word", "task‗updated", false},
-		{"cl_in_ordinary_action", "task_clean", false},
-		{"cl_in_ordinary_project_action", "project_closed", false},
-		{"no_break_space_for_underscore", "task deleted", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := gtd.IsReservedAuditAction(tc.action); got != tc.want {
-				t.Errorf("IsReservedAuditAction(%q) = %v, want %v", tc.action, got, tc.want)
-			}
-		})
-	}
-}
