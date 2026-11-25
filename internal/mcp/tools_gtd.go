@@ -612,8 +612,9 @@ const (
 // ValidateBranchName (internal/validator/branch_name.go) only rejects
 // length>255 and control characters, and githubPRURLRe's owner/repo segments
 // are `[^/]+`. Neither rejects a printable, no-slash, control-character-free
-// forged boundary marker; PoC-verified end to end (update_task accepts it,
-// get_task echoes it back).
+// forged boundary marker; verified end to end (update_task accepts it,
+// get_task echoes it back neutralised) — see
+// TestSEC171_19_UpdateTaskThenGetTaskNeutralisesBranchName. [F1124-15]
 //
 // [SEC171-09] Artifact is clipped for the same class of reason: the claim
 // that applyArtifactSideEffects/validateBeginTaskLinkageArgs shape-constrain
@@ -634,8 +635,8 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	}
 	// [SEC171-19] See wrapUntrustedTask's doc comment: write-time validation
 	// does not shape-constrain these against a printable, no-slash forged
-	// marker. gtdTitleMaxRunes is 2000 (:503) and validator.MaxBranchNameLen
-	// is 255 (internal/validator/branch_name.go:8), so for branch_name the
+	// marker. gtdTitleMaxRunes is 2000 and validator.MaxBranchNameLen
+	// is 255 (line refs dropped — they rot; find the consts by name) [F1124-16], so for branch_name the
 	// write-time cap always binds first and this clip only neutralises.
 	if t.BranchName.Valid {
 		out.BranchName.String = clipSafe(t.BranchName.String, gtdTitleMaxRunes)
@@ -655,9 +656,10 @@ func wrapUntrustedTask(t *db.Task) *db.Task {
 	if t.Artifact.Valid {
 		out.Artifact.String = clipSafe(t.Artifact.String, gtdBodyMaxRunes)
 	}
-	// len()>0 guard preserves nil so `"commit_shas":null` does not silently
-	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
-	// wrapUntrustedAtom (tools_atom.go).
+	// [F1124-11] clipSafeSlice (tools_atom.go) already returns nil for nil
+	// input, so this len()>0 guard is belt-and-braces (defensive, not
+	// load-bearing): `"commit_shas":null` stays null either way. Same note
+	// as wrapUntrustedAtom (tools_atom.go).
 	if len(t.CommitSHAs) > 0 {
 		out.CommitSHAs = clipSafeSlice(t.CommitSHAs, commitSHAMaxRunes)
 	}
@@ -1290,6 +1292,21 @@ func parseRequiredDueDate(raw string) (*time.Time, *mcp.CallToolResult) {
 	return &dueTime, nil
 }
 
+// mcpWarningMaxRunes bounds each validator warning on its way out of an MCP
+// tool. [F1124-13] Validator warnings are fixed text well under this length;
+// the cap only matters if a future warning interpolates caller text.
+const mcpWarningMaxRunes = 500
+
+// warningsForWire is the single exit sanitiser for validator warnings
+// returned to an MCP caller (JSON "warnings" field and the strict-mode error
+// text). [F1124-13] It neutralises boundary markers and bounds each element
+// via clipSafeSlice. nil stays nil and an empty slice stays empty, so callers
+// keep control of the null-vs-[] wire shape. TestWarningsExitsAreSanitized
+// scans tools_gtd.go and tools_vision.go to keep every exit wrapped.
+func warningsForWire(w []string) []string {
+	return clipSafeSlice(w, mcpWarningMaxRunes)
+}
+
 func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.CallToolResult, error) {
 	kind := args.Kind
 	if kind == "" {
@@ -1316,7 +1333,7 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	// result JSON body (no HTTP headers available). Strict mode → tool error.
 	allWarnings := validator.CheckTaskInput(args.Description, kind)
 	if len(allWarnings) > 0 && validator.StrictModeEnabled() {
-		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", allWarnings)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("vagueness check failed: %v", warningsForWire(allWarnings))), nil // [F1124-13]
 	}
 
 	assignee, assigneeErrMsg := resolveAssignee(args.Assignee)
@@ -1367,7 +1384,7 @@ func (s *Server) handleAddTask(ctx context.Context, args AddTaskArgs) (*mcp.Call
 	// different session (matches the sync_repo/list_active_repos reasoning
 	// in the U13 inventory) — wire it here for consistency.
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"task": ackTask(wrapUntrustedTask(task)), "warnings": allWarnings})
+		return jsonText(map[string]any{"task": ackTask(wrapUntrustedTask(task)), "warnings": warningsForWire(allWarnings)}) // [F1124-13]
 	}
 	return jsonText(ackTask(wrapUntrustedTask(task)))
 }
@@ -1777,7 +1794,7 @@ type projectWithDecisions struct {
 func (s *Server) handleGetProject(ctx context.Context, args GetProjectArgs) (*mcp.CallToolResult, error) {
 	project, err := s.gtd.ProjectByName(ctx, args.Name)
 	if errors.Is(err, gtd.ErrNotFound) {
-		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", args.Name)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("project %q not found", clipSafe(args.Name, projectNameMaxRunes))), nil // [F1124-12]
 	}
 	if err != nil {
 		return storeErrorResult("loading project", err), nil

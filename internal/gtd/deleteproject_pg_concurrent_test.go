@@ -3,6 +3,7 @@ package gtd_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -779,5 +780,176 @@ func TestDeleteTaskVsDeleteProject_PGProjectFirstRepeatableRead(t *testing.T) {
 	}
 	if dRes.err != nil || dRes.n != 1 {
 		t.Errorf("delete_project = (%d, %v), want (1, nil)", dRes.n, dRes.err)
+	}
+}
+
+// waitForLockWaiter polls pg_stat_activity until another backend is waiting
+// on a row lock in a FOR UPDATE query, so a probe can tell "B is blocked
+// behind A" from "B has not started yet" without a fixed sleep. It reports
+// whether such a backend was seen within 5 s (10 ms step); false covers both
+// "never blocked" and "pg_stat_activity unreadable". [F1124-05]
+func waitForLockWaiter(ctx context.Context, pool *pgxpool.Pool) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity
+			  WHERE datname = current_database()
+			    AND pid <> pg_backend_pid()
+			    AND wait_event_type = 'Lock'
+			    AND query ILIKE '%for update%'`).Scan(&n)
+		if err != nil {
+			return false
+		}
+		if n > 0 {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// [F1124-05] A second confirmed delete of the same project, started while the
+// first holds every task-row lock, queues behind it. When the first commits
+// the task rows are gone, so the second's locking SELECT returns nothing and
+// its preview digest no longer matches: ErrProjectTasksChanged, and nothing
+// from the second is persisted.
+func TestDeleteProjectOrchestration_PGSecondDeleterRefused(t *testing.T) {
+	pool := openTestPgPool(t)
+	ws := uuid.New()
+	store := newPgGTDStore(pool, &ws)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	target := mustProjectID(t, store, "f1124-05-second-deleter")
+	mustTaskID(t, store, target, "t1")
+	mustTaskID(t, store, target, "t2")
+	preview := previewDigest(t, store, target)
+
+	type deleteResult struct {
+		n   int
+		err error
+	}
+	bResult := make(chan deleteResult, 1)
+	var (
+		bStarted  bool
+		bWaiting  bool
+		bEarly    bool
+		bEarlyRes deleteResult
+	)
+	w := &wrapDeleteAdapter{
+		DeleteProjectAdapter: gtd.NewPGDeleteProjectAdapterForTest(store, target),
+		beforeSnapshot: func() {
+			// A now holds the lock on every task row. Start B on its own
+			// pooled connection and wait until it is blocked behind A.
+			bStarted = true
+			go func() {
+				n, err := store.DeleteProjectExpecting(ctx, target, testerActor, preview)
+				bResult <- deleteResult{n, err}
+			}()
+			bWaiting = waitForLockWaiter(ctx, pool)
+			select {
+			case r := <-bResult:
+				bEarly, bEarlyRes = true, r
+			default:
+			}
+		},
+	}
+	aN, aErr := gtd.DeleteProjectOrchestration(ctx, target, testerActor, time.Now().UTC(), preview, w)
+	if !bStarted {
+		t.Fatal("probe broken: the second deleter never started")
+	}
+	if !bWaiting {
+		t.Fatal("probe broken: the second deleter was never observed waiting on a row lock in pg_stat_activity")
+	}
+	if bEarly {
+		t.Fatalf("second deleter returned (n=%d, err=%v) while the first still held the locks", bEarlyRes.n, bEarlyRes.err)
+	}
+	if aErr != nil || aN != 2 {
+		t.Fatalf("first deleter = (%d, %v), want (2, nil)", aN, aErr)
+	}
+
+	var b deleteResult
+	select {
+	case b = <-bResult:
+	case <-time.After(10 * time.Second):
+		t.Fatal("second deleter still blocked 10 s after the first committed")
+	}
+	if !errors.Is(b.err, gtd.ErrProjectTasksChanged) {
+		t.Fatalf("second deleter = (%d, %v), want ErrProjectTasksChanged", b.n, b.err)
+	}
+
+	assertOnlyFirstDeleteRecorded(ctx, t, pool, store, target)
+}
+
+// assertOnlyFirstDeleteRecorded checks that only the first deleter's group
+// exists (2 task tombstones in one deletion group), the project is gone, and
+// the first delete's snapshot restores both tasks. [F1124-05]
+func assertOnlyFirstDeleteRecorded(ctx context.Context, t *testing.T, pool *pgxpool.Pool, store *gtd.Store, target uuid.UUID) {
+	t.Helper()
+	var taskRows, groups int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE entity_kind = 'task'), count(DISTINCT deletion_id)
+		   FROM deletion_tombstones WHERE project_id = $1`, target).Scan(&taskRows, &groups); err != nil {
+		t.Fatalf("count tombstones: %v", err)
+	}
+	if taskRows != 2 || groups != 1 {
+		t.Errorf("tombstones for the project = %d task rows in %d groups, want 2 in 1 (nothing written by the second deleter)", taskRows, groups)
+	}
+	if _, err := store.GetProjectByID(ctx, target); err == nil {
+		t.Error("project still present after the first delete committed")
+	}
+	if _, restored, err := store.RestoreProject(ctx, target, testerActor); err != nil || restored != 2 {
+		t.Errorf("RestoreProject = (%d tasks, %v), want 2 tasks (the first delete's snapshot is intact)", restored, err)
+	}
+}
+
+// [F1124-05] A Store built with WithTx holds a pgx.Tx, which cannot begin the
+// READ COMMITTED transaction delete_project needs, so DeleteProject refuses
+// and writes nothing.
+func TestDeleteProject_PGWithTxStoreRefused(t *testing.T) {
+	pool := openTestPgPool(t)
+	ws := uuid.New()
+	store := newPgGTDStore(pool, &ws)
+	ctx := context.Background()
+
+	target := mustProjectID(t, store, "f1124-05-withtx-target")
+	taskID := mustTaskID(t, store, target, "kept")
+	control := mustProjectID(t, store, "f1124-05-withtx-control")
+	mustTaskID(t, store, control, "control-task")
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	_, delErr := store.WithTx(tx).DeleteProject(ctx, target, testerActor)
+	if rbErr := tx.Rollback(ctx); rbErr != nil {
+		t.Fatalf("Rollback: %v", rbErr)
+	}
+	if delErr == nil {
+		t.Fatal("DeleteProject on a WithTx store succeeded, want an error")
+	}
+	if !strings.Contains(delErr.Error(), "cannot begin a READ COMMITTED transaction") {
+		t.Errorf("err = %v, want it to contain %q", delErr, "cannot begin a READ COMMITTED transaction")
+	}
+
+	if _, err := store.GetProjectByID(ctx, target); err != nil {
+		t.Errorf("project gone after a refused delete: %v", err)
+	}
+	if _, err := store.GetTaskByID(ctx, taskID); err != nil {
+		t.Errorf("task gone after a refused delete: %v", err)
+	}
+	var tombstones int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM deletion_tombstones WHERE project_id = $1`, target).Scan(&tombstones); err != nil {
+		t.Fatalf("count tombstones: %v", err)
+	}
+	if tombstones != 0 {
+		t.Errorf("%d tombstone rows written by a refused delete, want 0", tombstones)
+	}
+
+	// Positive control: the non-tx store deletes another project, so the
+	// refusal above is not just "DeleteProject never works here".
+	if n, err := store.DeleteProject(ctx, control, testerActor); err != nil || n != 1 {
+		t.Errorf("control DeleteProject on the plain store = (%d, %v), want (1, nil)", n, err)
 	}
 }

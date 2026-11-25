@@ -18,7 +18,7 @@ import (
 // recent entries — see skillOutcomeIDMaxRunes' own comment in
 // tools_skill.go) — grepping
 // SEC171-01 returned two green tests for a finding this commit does not
-// close. grep '[SEC171-08]' tools_skill.go for the matching anchors this
+// close. grep -nF '[SEC171-08]' internal/mcp/tools_skill.go (run at repo root) for the matching anchors this [F1124-16]
 // test's assertions are pinning (line numbers rot; the tag doesn't).
 //
 // extract_skill takes five comma-separated arguments and ran

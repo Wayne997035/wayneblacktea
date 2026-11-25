@@ -53,6 +53,24 @@ class Evidence:
     verify_commands: list = field(default_factory=list)
 
 
+_TITLE_TAG_RE = re.compile(r'^\s*\[([^\]\n]*)\]')
+
+
+def ticket_repo_tag(title: str) -> str | None:
+    """[F1124-95] The first bracketed tag at the very start of a ticket
+    title, lowercased and stripped — `[HiTRUST] x` -> "hitrust",
+    `[wbt][PR#1] x` -> "wbt" (first group only), no leading tag -> None.
+    The DB has no repo/project column (every sampled project_id is None), so
+    the title tag is the only repo signal there is. Pure; no I/O."""
+    if not isinstance(title, str):
+        return None
+    m = _TITLE_TAG_RE.match(title)
+    if not m:
+        return None
+    tag = m.group(1).strip().lower()
+    return tag or None
+
+
 def _parse_ts(s: str):
     if not s:
         return None

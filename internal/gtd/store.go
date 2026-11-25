@@ -86,10 +86,12 @@ func (s *Store) ActiveProjectsPage(ctx context.Context, limit, offset int32) ([]
 
 // ProjectsFiltered returns projects matching status, scoped to the
 // configured workspace. Status "" or "active" → active only, ordered
-// identically to ListActiveProjects (priority ASC, updated_at DESC) so the
-// default (unset status) query is byte-identical to the pre-existing
-// GET /api/projects contract; "all" → every status; any other value → exact
-// match. Callers (the HTTP handler) validate status against an allowlist
+// identically to ListActiveProjects so the default (unset status) query is
+// byte-identical to the pre-existing GET /api/projects contract; "all" →
+// every status; any other value → exact match. All three branches share one
+// total order, priority ASC, updated_at DESC, id ASC, so equal-priority rows
+// with the same updated_at never come back in an unstable order
+// (TestPGStore_ProjectsFiltered_TieBreaksByID) [F1124-04]. Callers (the HTTP handler) validate status against an allowlist
 // before calling — this method does not itself reject unrecognised values,
 // mirroring TasksFiltered's contract.
 //
@@ -118,14 +120,14 @@ func (s *Store) ProjectsFiltered(ctx context.Context, status string) ([]db.Proje
 		q := `SELECT ` + selectCols + `
 			FROM projects
 			WHERE ($1::uuid IS NULL OR workspace_id = $1)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.dbtx.Query(ctx, q, s.workspaceID)
 	default:
 		q := `SELECT ` + selectCols + `
 			FROM projects
 			WHERE status = $1
 			  AND ($2::uuid IS NULL OR workspace_id = $2)
-			ORDER BY priority ASC, updated_at DESC`
+			ORDER BY priority ASC, updated_at DESC, id ASC`
 		rows, err = s.dbtx.Query(ctx, q, status, s.workspaceID)
 	}
 	if err != nil {
@@ -1268,6 +1270,14 @@ func (s *Store) getTaskByID(ctx context.Context, id uuid.UUID) (*db.Task, error)
 // digits and dashes) — neither character is a LIKE wildcard, so no
 // LIKE-escaping is needed here (unlike Q above, which can contain a
 // caller-supplied % or _).
+//
+// Known and accepted (b046a047 item 3) [F1124-06]: id::text LIKE does not use
+// the PK index, so this is a sequential scan of the workspace's tasks;
+// accepted at single-tenant personal scale. Revisit if task count grows
+// enough to show in resolve latency; a fix would be a new migration (not
+// editing existing ones), for example an index on (id::text text_pattern_ops),
+// which is unverified. Prefixes longer than 8 characters are covered by
+// TestResolveTaskIDPrefix_PG (prefixCasePGLongPrefix).
 func (s *Store) FindTaskIDsByPrefix(ctx context.Context, prefix string, limit int) ([]TaskIDTitle, error) {
 	const q = `SELECT id, title FROM tasks
 		WHERE id::text LIKE $1 || '%' AND ($2::uuid IS NULL OR workspace_id = $2)
@@ -1769,8 +1779,9 @@ type PGDeleteLockTable struct {
 
 // PGDeleteLockTables lists every such table in the order both deletes lock them; the order is the lock
 // order, so a table added or moved here changes it for both. Within a table the rows are locked in id
-// order (ORDER BY is applied before the locking clause, and no statement updates an id), so two deletes
-// that need the same rows of one table take them in the same order too. Both adapters build their SQL
+// order (ORDER BY id before the locking clause; no statement updates an id, though no test proves the
+// resulting lock order, see LockTaskRows), so two deletes that need the same rows of one table are
+// meant to take them in the same order too. Both adapters build their SQL
 // from this list, and it is exported so the schema-derived guard
 // (TestPGDeleteLocks_PrelockCoversEveryProjectAndTaskRefTable, [F1013-24]) can fail when a table with
 // both a project_id and a task column is missing from it. SQLite has no counterpart: its single
@@ -1861,13 +1872,23 @@ func (a *pgDeleteProjectAdapter) WorkspacePrecheck(ctx context.Context) (bool, e
 	return exists, nil
 }
 
-// LockTaskRows locks the project's task rows in id order and remembers their
-// ids for the snapshot and the cleanups. delete_task also takes its task row
-// before it touches any reference row (pgDeleteTaskAdapter.WorkspacePrecheck),
-// so a delete_project and a delete_task on the same task both go task row
-// first and queue behind one another instead of waiting in a cycle. While the
-// lock is held an update_task that moves one of them out waits until this
-// delete ends.
+// LockTaskRows locks the project's task rows (ORDER BY id before FOR UPDATE)
+// and remembers their ids for the snapshot and the cleanups. delete_task also
+// takes its task row before it touches any reference row
+// (pgDeleteTaskAdapter.WorkspacePrecheck), so a delete_project and a
+// delete_task on the same task both start from the task row. While the lock
+// is held an update_task that moves one of them out waits until this delete
+// ends, and a second delete_project of the same project queues behind it
+// (TestDeleteProjectOrchestration_PGSecondDeleterRefused).
+//
+// What is NOT proven [F1124-05]: lock order and deadlock freedom. PostgreSQL
+// documents, at https://www.postgresql.org/docs/current/sql-select.html (The
+// Locking Clause, Caution): "It is possible for a SELECT command running at
+// the READ COMMITTED transaction isolation level and using ORDER BY and a
+// locking clause to return rows out of order." That caveat is about ordering
+// columns changed by a concurrent update (tasks.id is never updated), but no
+// test makes dropping ORDER BY fail, so this comment asserts no deadlock
+// freedom; a residual 40P01 is retried by the MCP delete tools (F203-01).
 //
 // Once the task rows are locked it also locks, table by table (prelockRefRows), the reference rows that match when it runs; a row
 // committed later is taken by the cleanups in their own order, and the MCP delete tools retry that 40P01 (F203-01). [F1013-23] [F203-02]

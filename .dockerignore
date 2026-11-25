@@ -1,7 +1,7 @@
-.env*
-local.yaml
+**/.env*
+**/local.yaml
 configs/*.local.*
-*.local
+**/*.local
 bin/
 .claude/
 docs/
@@ -9,3 +9,22 @@ web/node_modules/
 *.md
 .git/
 .gitignore
+# [F1124-43] Credential-shaped files must never reach the builder stage via
+# `COPY . .`. A pattern without the **/ prefix only matches the context root,
+# so nested files (e.g. web/certs/server.key) would still be copied.
+**/*.pem
+**/*.key
+**/*.p12
+**/credentials*
+**/application-local.y*ml
+**/*.crt
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/.mcp.json
+**/.wayneblacktea/
+**/secrets/
+.github/
+.reviews/
+.worktrees/
+.implement/

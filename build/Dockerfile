@@ -33,11 +33,16 @@ FROM golang:1.26.11-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aae
 # identical, obviously-unreleased binary — verified: an unmodified `docker
 # build` here embeds "dev"/"none"/"unknown", never a value that could pass
 # for a real version. The deploying pipeline (Railway or any CI) overrides
-# these via `docker build --build-arg VERSION=... --build-arg COMMIT=...
-# --build-arg BUILD_DATE=...`.
-ARG VERSION=dev
-ARG COMMIT=none
-ARG BUILD_DATE=unknown
+# these via `docker build --build-arg WBT_VERSION=... --build-arg WBT_COMMIT=...
+# --build-arg WBT_BUILD_DATE=...`.
+# [F1124-41] The WBT_ prefix is deliberate: Railway injects a user-defined
+# service variable into any same-named ARG, so an unprefixed generic-named
+# service variable would silently switch off the RAILWAY_GIT_COMMIT_SHA path
+# or forge the embedded version. The old unprefixed names are no longer read
+# at all.
+ARG WBT_VERSION=dev
+ARG WBT_COMMIT=none
+ARG WBT_BUILD_DATE=unknown
 
 # Railway wiring. Railway injects its own variables into the build ONLY for
 # names the Dockerfile declares with ARG, in the stage that needs them
@@ -58,7 +63,7 @@ COPY . .
 # Copy the built frontend into the path expected by //go:embed in cmd/server/main.go
 COPY --from=frontend /web/dist ./cmd/server/web/dist
 # Precedence: an explicit --build-arg always wins; Railway's injected SHA is
-# only consulted when COMMIT was left at its sentinel. Date is derived in the
+# only consulted when WBT_COMMIT was left at its sentinel. Date is derived in the
 # same branch, so it moves together with Commit and never claims a build time
 # for a build whose commit is unknown. Version is deliberately NOT derived —
 # only a goreleaser tagged release sets a real version, a commit SHA must not
@@ -75,18 +80,20 @@ COPY --from=frontend /web/dist ./cmd/server/web/dist
 # execute here (ARGs reach RUN as env vars and "${VAR}" expansion does not
 # re-parse them) and the payload can never become a separate `go build`
 # argument, so -toolexec is unreachable — the only real primitive is the extra
-# -X. This guard closes that primitive for RAILWAY_GIT_COMMIT_SHA only. VERSION,
-# COMMIT and BUILD_DATE reach the same -ldflags string unvalidated and each
-# still delivers it; that gap predates this file's Railway wiring and is tracked
-# separately, so do not read the guard below as covering them.
+# -X. The guards below close that primitive for every value that reaches the
+# -ldflags string: RAILWAY_GIT_COMMIT_SHA, WBT_COMMIT (hex only or the sentinel
+# "none"), WBT_VERSION (a conservative version charset, never empty) and
+# WBT_BUILD_DATE (a timestamp charset or the sentinel "unknown"). Empty values
+# are rejected, not treated as unset.
 #
 # Fails the build closed on purpose: a blocked deploy is loud, a forged build
 # identity is silent, and the running service is unaffected either way —
 # Railway removes the previous deployment only once a new one reaches Active,
 # so a failed build leaves the current version serving.
 RUN set -eu; \
-    COMMIT_VAL="${COMMIT}"; \
-    DATE_VAL="${BUILD_DATE}"; \
+    VERSION_VAL="${WBT_VERSION}"; \
+    COMMIT_VAL="${WBT_COMMIT}"; \
+    DATE_VAL="${WBT_BUILD_DATE}"; \
     if [ "${COMMIT_VAL}" = "none" ] && [ -n "${RAILWAY_GIT_COMMIT_SHA}" ]; then \
         case "${RAILWAY_GIT_COMMIT_SHA}" in \
             *[!0-9a-fA-F]*) echo "refusing: RAILWAY_GIT_COMMIT_SHA is not a hex sha" >&2; exit 1 ;; \
@@ -96,8 +103,24 @@ RUN set -eu; \
             DATE_VAL="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
         fi; \
     fi; \
-    echo "build identity: version=${VERSION} commit=${COMMIT_VAL} date=${DATE_VAL}"; \
-    CGO_ENABLED=0 go build -ldflags "-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version=${VERSION} \
+    if [ -z "${VERSION_VAL}" ]; then echo "refusing: WBT_VERSION is empty" >&2; exit 1; fi; \
+    case "${VERSION_VAL}" in \
+        *[!A-Za-z0-9._+-]*) echo "refusing: WBT_VERSION has characters outside [A-Za-z0-9._+-]" >&2; exit 1 ;; \
+    esac; \
+    if [ -z "${COMMIT_VAL}" ]; then echo "refusing: WBT_COMMIT is empty" >&2; exit 1; fi; \
+    if [ "${COMMIT_VAL}" != "none" ]; then \
+        case "${COMMIT_VAL}" in \
+            *[!0-9a-fA-F]*) echo "refusing: WBT_COMMIT is neither none nor a hex sha" >&2; exit 1 ;; \
+        esac; \
+    fi; \
+    if [ -z "${DATE_VAL}" ]; then echo "refusing: WBT_BUILD_DATE is empty" >&2; exit 1; fi; \
+    if [ "${DATE_VAL}" != "unknown" ]; then \
+        case "${DATE_VAL}" in \
+            *[!0-9TZ:.-]*) echo "refusing: WBT_BUILD_DATE is neither unknown nor a timestamp" >&2; exit 1 ;; \
+        esac; \
+    fi; \
+    echo "build identity: version=${VERSION_VAL} commit=${COMMIT_VAL} date=${DATE_VAL}"; \
+    CGO_ENABLED=0 go build -ldflags "-X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Version=${VERSION_VAL} \
     -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Commit=${COMMIT_VAL} \
     -X github.com/Wayne997035/wayneblacktea/internal/buildinfo.Date=${DATE_VAL}" \
     -o /app/server ./cmd/server/

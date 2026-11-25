@@ -2,7 +2,10 @@ package gtd_test
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/google/uuid"
@@ -250,5 +253,74 @@ func TestPGStore_ProjectsFiltered_EmptyDB_NoError(t *testing.T) {
 	}
 	if len(projects) != 0 {
 		t.Errorf("empty workspace should return 0 projects, got %d", len(projects))
+	}
+}
+
+// TestPGStore_ProjectsFiltered_TieBreaksByID [F1124-04] is the Postgres twin
+// of TestSQLiteStore_ProjectsFiltered_TieBreaksByID: six projects with equal
+// priority and an identical updated_at must come back sorted by id ASC on
+// the "all" and exact-status branches, and DISTINCT updated_at must still
+// win over the id tiebreaker.
+func TestPGStore_ProjectsFiltered_TieBreaksByID(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+
+	for _, status := range []string{"all", "completed"} {
+		t.Run("status="+status, func(t *testing.T) {
+			wsID := uuid.New() // fresh workspace per subtest: no rows from other tests
+			store := newPgGTDStore(pool, &wsID)
+
+			ids := make([]string, 0, 6)
+			for range 6 {
+				ids = append(ids, seedPGProject(t, store, "completed").String())
+			}
+			// Negative-for-the-filter: an active project must not appear for "completed".
+			activeID := seedPGProject(t, store, "active")
+			tied := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+			if _, err := pool.Exec(ctx, `UPDATE projects SET updated_at = $1 WHERE workspace_id = $2`, tied, wsID); err != nil {
+				t.Fatalf("tie updated_at: %v", err)
+			}
+
+			got, err := store.ProjectsFiltered(ctx, status)
+			if err != nil {
+				t.Fatalf("ProjectsFiltered(%q): %v", status, err)
+			}
+			want := append([]string(nil), ids...)
+			if status == "all" {
+				want = append(want, activeID.String())
+			}
+			sort.Strings(want)
+			gotIDs := make([]string, 0, len(got))
+			for _, p := range got {
+				gotIDs = append(gotIDs, p.ID.String())
+			}
+			if !slices.Equal(gotIDs, want) {
+				t.Errorf("ProjectsFiltered(%q) tie order = %v, want id ASC %v", status, gotIDs, want)
+			}
+
+			// Distinct updated_at: the id-largest project is newest, so DESC
+			// order is the reverse of the id order.
+			sortedIDs := append([]string(nil), ids...)
+			sort.Strings(sortedIDs)
+			for i, id := range sortedIDs {
+				ts := tied.Add(time.Duration(i+1) * time.Hour)
+				if _, err := pool.Exec(ctx, `UPDATE projects SET updated_at = $1 WHERE id = $2`, ts, uuid.MustParse(id)); err != nil {
+					t.Fatalf("distinct updated_at: %v", err)
+				}
+			}
+			got, err = store.ProjectsFiltered(ctx, "completed")
+			if err != nil {
+				t.Fatalf("ProjectsFiltered(completed): %v", err)
+			}
+			if len(got) != len(sortedIDs) {
+				t.Fatalf("completed returned %d rows, want %d", len(got), len(sortedIDs))
+			}
+			for i, p := range got {
+				if p.ID.String() != sortedIDs[len(sortedIDs)-1-i] {
+					t.Fatalf("distinct updated_at: position %d = %s, want %s (updated_at DESC must beat id ASC)",
+						i, p.ID, sortedIDs[len(sortedIDs)-1-i])
+				}
+			}
+		})
 	}
 }

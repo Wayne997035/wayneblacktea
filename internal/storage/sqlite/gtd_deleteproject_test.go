@@ -592,3 +592,184 @@ func TestDeleteProject_ClearsEveryProjectIDTableFromMigratedSchema(t *testing.T)
 		}
 	})
 }
+
+// taskIDCheckQueries [F1124-03] is the registry of "count rows still pointing
+// at the deleted task" checks, one per column whose name ends in task_id.
+// Written out literally per column (unqueryvet, same reason as
+// projectRefQueries). The uniform "count(*) WHERE col = task" form is 0
+// whether the cleanup deletes the row (work_session_tasks,
+// completion_candidates) or NULLs it (the other four).
+var taskIDCheckQueries = map[string]string{
+	"completion_candidates.task_id": `SELECT count(*) FROM completion_candidates WHERE task_id = ?1`,
+	"decisions.task_id":             `SELECT count(*) FROM decisions WHERE task_id = ?1`,
+	"knowledge_items.task_id":       `SELECT count(*) FROM knowledge_items WHERE task_id = ?1`,
+	"vision_items.promoted_task_id": `SELECT count(*) FROM vision_items WHERE promoted_task_id = ?1`,
+	"work_session_tasks.task_id":    `SELECT count(*) FROM work_session_tasks WHERE task_id = ?1`,
+	"work_sessions.current_task_id": `SELECT count(*) FROM work_sessions WHERE current_task_id = ?1`,
+}
+
+// taskIDSeedStatements [F1124-03] inserts one row referencing a task. Shared
+// argument shape: ?1 = row id (session id for work_session_tasks), ?2 =
+// workspace id, ?3 = task id, ?4 = timestamp; every placeholder is used in
+// every statement.
+var taskIDSeedStatements = map[string]string{
+	"completion_candidates.task_id": `INSERT INTO completion_candidates (id, workspace_id, task_id, reason, confidence, detected_at)
+		VALUES (?1,?2,?3,'r-'||?1,'high',?4)`,
+	"decisions.task_id": `INSERT INTO decisions (id, workspace_id, title, context, decision, rationale, task_id, created_at)
+		VALUES (?1,?2,'d','ctx','chose X','because',?3,?4)`,
+	"knowledge_items.task_id": `INSERT INTO knowledge_items (id, workspace_id, type, title, content, task_id, created_at, updated_at)
+		VALUES (?1,?2,'til','k','body',?3,?4,?4)`,
+	"vision_items.promoted_task_id": `INSERT INTO vision_items (id, workspace_id, title, why_blocked, status, promoted_task_id, created_at)
+		VALUES (?1,?2,'v','blocked','promoted',?3,?4)`,
+	"work_session_tasks.task_id": `INSERT INTO work_session_tasks (session_id, task_id, role, created_at)
+		SELECT ?1, ?3, 'primary', ?4 WHERE ?2 IS NOT NULL`,
+	"work_sessions.current_task_id": `INSERT INTO work_sessions
+		(id, workspace_id, repo_name, title, goal, status, source, current_task_id, started_at, created_at, updated_at)
+		VALUES (?1,?2,'demo-repo','s','g','in_progress','manual',?3,?4,?4,?4)`,
+}
+
+// deriveTaskIDColumns [F1124-03] walks the migrated schema (sqlite_master +
+// pragma_table_info(?1), a bound parameter, no string concatenation) and
+// returns every "table.column" whose column name ends in task_id, minus
+// gtd.TaskIDCleanupExemptions, sorted. It also returns the raw (pre-
+// exemption) set so the caller can reject a stale exemption.
+func deriveTaskIDColumns(t *testing.T, d *sqlite.DB) (derived, raw []string) {
+	t.Helper()
+	ctx := context.Background()
+	conn := d.SqlConn()
+
+	rows, err := conn.QueryContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'`)
+	if err != nil {
+		t.Fatalf("list tables from sqlite_master: %v", err)
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate sqlite_master rows: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close sqlite_master rows: %v", err)
+	}
+
+	for _, tbl := range tables {
+		cols, err := conn.QueryContext(ctx,
+			`SELECT name FROM pragma_table_info(?1) WHERE name LIKE '%task\_id' ESCAPE '\'`, tbl)
+		if err != nil {
+			t.Fatalf("pragma_table_info(%s): %v", tbl, err)
+		}
+		for cols.Next() {
+			var col string
+			if err := cols.Scan(&col); err != nil {
+				t.Fatalf("scan column of %s: %v", tbl, err)
+			}
+			key := tbl + "." + col
+			raw = append(raw, key)
+			if !gtd.TaskIDCleanupExemptions[key] {
+				derived = append(derived, key)
+			}
+		}
+		if err := cols.Err(); err != nil {
+			t.Fatalf("iterate columns of %s: %v", tbl, err)
+		}
+		if err := cols.Close(); err != nil {
+			t.Fatalf("close columns of %s: %v", tbl, err)
+		}
+	}
+	sort.Strings(derived)
+	sort.Strings(raw)
+	return derived, raw
+}
+
+// requireTaskIDRegistriesInSync [F1124-03] fails when an exemption names a
+// column that no longer exists, or when the check/seed registries differ
+// from the schema-derived column list.
+func requireTaskIDRegistriesInSync(t *testing.T, derived, raw []string) {
+	t.Helper()
+	rawSet := make(map[string]bool, len(raw))
+	for _, k := range raw {
+		rawSet[k] = true
+	}
+	for k := range gtd.TaskIDCleanupExemptions {
+		if !rawSet[k] {
+			t.Errorf("stale exemption %q: no such column in the migrated schema", k)
+		}
+	}
+	if diff := tableListDiff(derived, sortedKeys(taskIDCheckQueries)); diff != "" {
+		t.Fatalf("taskIDCheckQueries is out of sync with the migrated schema "+
+			"(derived, minus gtd.TaskIDCleanupExemptions): %s — register a check+seed pair and make "+
+			"delete_task clean it, or add an exemption with a reason", diff)
+	}
+	if diff := tableListDiff(derived, sortedKeys(taskIDSeedStatements)); diff != "" {
+		t.Fatalf("taskIDSeedStatements is out of sync with the migrated schema: %s", diff)
+	}
+}
+
+// TestDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema [F1124-03] is the
+// SQLite half of the schema-derived delete_task guard (same pattern as
+// F191-02 for project_id). The column list comes from the migrated schema,
+// so a future *task_id column that delete_task does not clean fails here
+// until a check+seed pair is registered and the cleanup exists.
+func TestDeleteTask_ClearsEveryTaskIDColumnFromMigratedSchema(t *testing.T) {
+	t.Parallel()
+	d, err := sqlite.OpenTemplated(t, context.Background(), ":memory:", "")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	store := sqlite.NewGTDStore(d)
+	ctx := context.Background()
+
+	derived, raw := deriveTaskIDColumns(t, d)
+	t.Logf("derived task_id columns (%d): %v", len(derived), derived)
+	requireTaskIDRegistriesInSync(t, derived, raw)
+
+	doomed, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f1124-03-doomed"})
+	if err != nil {
+		t.Fatalf("CreateTask doomed: %v", err)
+	}
+	bystander, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f1124-03-bystander"})
+	if err != nil {
+		t.Fatalf("CreateTask bystander: %v", err)
+	}
+	for _, key := range derived {
+		for _, task := range []uuid.UUID{doomed.ID, bystander.ID} {
+			mustExec(t, d, key, taskIDSeedStatements[key],
+				uuid.New().String(), uuid.New().String(), task.String(), dpTS)
+		}
+		if n := countRows(t, d, taskIDCheckQueries[key], doomed.ID.String()); n != 1 {
+			t.Fatalf("%s: seeding produced %d rows for the doomed task, want 1", key, n)
+		}
+	}
+
+	if err := store.DeleteTask(ctx, doomed.ID, "tester"); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	for _, key := range derived {
+		if n := countRows(t, d, taskIDCheckQueries[key], doomed.ID.String()); n != 0 {
+			t.Errorf("%s: %d dangling reference(s) to the deleted task", key, n)
+		}
+		// A different task's row must survive: guards "cleanup deleted everything".
+		if n := countRows(t, d, taskIDCheckQueries[key], bystander.ID.String()); n != 1 {
+			t.Errorf("%s: %d rows left for the bystander task, want 1", key, n)
+		}
+	}
+
+	t.Run("reverse_control_skipped_column_turns_red", func(t *testing.T) {
+		if len(derived) == 0 {
+			t.Fatal("derived list is empty — nothing to drop, probe is meaningless")
+		}
+		short := append([]string(nil), derived[1:]...)
+		if diff := tableListDiff(derived, short); diff == "" {
+			t.Fatal("dropping a column from the registered list produced no diff — " +
+				"the completeness check cannot catch a column a real implementation forgot to register")
+		}
+	})
+}

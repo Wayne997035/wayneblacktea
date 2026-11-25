@@ -74,8 +74,9 @@ func wrapUntrustedVisionItem(v *vision.VisionItem) *vision.VisionItem {
 	out.ParentInitiative = clipSafe(v.ParentInitiative, visionParentInitiativeMaxRunes)
 	out.ContextMD = clipSafe(v.ContextMD, visionContextMDMaxRunes)
 	out.RepoName = clipSafe(v.RepoName, visionParentInitiativeMaxRunes)
-	// len()>0 guard preserves nil so `"depends_on":null` does not silently
-	// become `[]` — clipSafeSlice allocates unconditionally. Same note as
+	// [F1124-11] clipSafeSlice (tools_atom.go) already returns nil for nil
+	// input, so this len()>0 guard is belt-and-braces (defensive, not
+	// load-bearing): `"depends_on":null` stays null either way. Same note as
 	// wrapUntrustedAtom (tools_atom.go) and wrapUntrustedConcept.
 	if len(v.DependsOn) > 0 {
 		out.DependsOn = clipSafeSlice(v.DependsOn, visionDependsOnMaxRunes)
@@ -221,10 +222,30 @@ func (s *Server) handleAddVisionItem(ctx context.Context, req mcp.CallToolReques
 		return storeErrorResult("adding vision item", err), nil
 	}
 	safeItem := wrapUntrustedVisionItem(item)
+	// [F1124-14] One response shape for both branches: {"item":…,"warnings":[…]}.
+	// warnings is `[]`, never null, when there is nothing to report.
+	// [F1124-13] The value still goes through warningsForWire.
+	// Two call sites are kept on purpose: the stored-data reader inventory
+	// (u13_stored_data_inventory_test.go) counts jsonText call sites per file.
 	if len(allWarnings) > 0 {
-		return jsonText(map[string]any{"item": safeItem, "warnings": allWarnings})
+		return jsonText(visionAddBody(safeItem, allWarnings))
 	}
-	return jsonText(safeItem)
+	return jsonText(visionAddBody(safeItem, nil))
+}
+
+// visionAddBody builds the single add_vision_item response shape. [F1124-14]
+// warnings marshals as `[]` (never null) when empty; [F1124-13] the only
+// warnings exit in this file, always through warningsForWire.
+func visionAddBody(item *vision.VisionItem, warnings []string) map[string]any {
+	return map[string]any{"item": item, "warnings": nonNilStrings(warningsForWire(warnings))}
+}
+
+// nonNilStrings turns a nil slice into an empty one so it marshals as `[]`.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func (s *Server) handleListVisionItems(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -61,6 +61,10 @@ const (
 	maxBatchConfirmIDs = 100
 	minBatchConfirmIDs = 1
 
+	// proposalIDEchoMaxRunes bounds the caller-supplied id echoed in the
+	// "not a valid UUID" error. [F1124-12] A UUID is 36 runes.
+	proposalIDEchoMaxRunes = 64
+
 	actionAccept = "accept"
 	actionReject = "reject"
 )
@@ -532,7 +536,9 @@ func (s *Server) handleConfirmProposals(ctx context.Context, req mcp.CallToolReq
 		}
 		id, err := uuid.Parse(rawStr)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("ids[%d] %q is not a valid UUID", i, rawStr)), nil
+			// [F1124-12] caller text: clipped before it is echoed back.
+			safeID := clipSafe(rawStr, proposalIDEchoMaxRunes)
+			return mcp.NewToolResultError(fmt.Sprintf("ids[%d] %q is not a valid UUID", i, safeID)), nil
 		}
 		ids = append(ids, id)
 	}

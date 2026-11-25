@@ -8,7 +8,7 @@ Get wayneblacktea running locally in under 10 minutes.
 
 ## Prerequisites
 
-- Go 1.26.4+ (tracks the `go` directive in [`../go.mod`](../go.mod) — check that file if this number looks stale; `go version`)
+- Go 1.26.11+ (tracks the `go` directive in [`../go.mod`](../go.mod) — check that file if this number looks stale; `go version`)
 - Node.js 22+ (for the web UI build step — matches the `node:22-alpine` Docker build stage)
 - A running PostgreSQL instance **or** set `STORAGE_BACKEND=sqlite` to skip Postgres entirely
 

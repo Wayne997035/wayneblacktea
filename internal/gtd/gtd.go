@@ -93,7 +93,8 @@ var (
 	// other backend.
 	ErrNotImplemented = errors.New("gtd: not yet implemented")
 	// ErrReservedAction is returned by LogActivity (both backends) when
-	// action names one of reservedAuditActions (SEC-PR191-02). Fixed
+	// action names one of reservedAuditActions (SEC-PR191-02), or contains a
+	// Unicode bidi control character that could disguise one [F1124-01]. Fixed
 	// string, never echoes the caller's own action value — safe to surface
 	// verbatim to an MCP or HTTP caller (internal/mcp/tool_errors.go's
 	// callerFacingSentinels, internal/handler/autolog_handler.go's 400
@@ -162,12 +163,29 @@ func canonicalAuditAction(action string) string {
 	return strings.ToLower(b.String())
 }
 
+// foldASCIIConfusable maps the common ASCII look-alikes onto the letter
+// they imitate [F1124-02]: 'i', '1', '|' -> 'l' (canon is already lowercased,
+// so capital I and capital L arrive as 'i' and 'l'), '0' -> 'o'. Any other
+// rune is returned unchanged. Only the reserved-name comparison uses this;
+// the stored action is never rewritten.
+func foldASCIIConfusable(r rune) rune {
+	switch r {
+	case 'i', '1', '|':
+		return 'l'
+	case '0':
+		return 'o'
+	}
+	return r
+}
+
 // isHomoglyphOf reports whether canon (already canonicalised) is a
 // same-length visual homoglyph of name (an ASCII reservedAuditActions key):
 // every rune must either equal name's rune at that position, or be a
 // non-ASCII rune belonging to Latin, Cyrillic, Greek, or Common (which
 // covers most digit/symbol/emoji code points too) — scripts outside that
-// set, e.g. CJK, are never treated as a wildcard match.
+// set, e.g. CJK, are never treated as a wildcard match. ASCII mismatches pass
+// only when both runes fold to the same letter under foldASCIIConfusable
+// (i/1/| -> l, 0 -> o).
 func isHomoglyphOf(canon, name []rune) bool {
 	if len(canon) != len(name) {
 		return false
@@ -177,6 +195,10 @@ func isHomoglyphOf(canon, name []rune) bool {
 			continue
 		}
 		if r < 0x80 {
+			// [F1124-02] ASCII look-alikes: compare after folding both sides.
+			if foldASCIIConfusable(r) == foldASCIIConfusable(name[i]) {
+				continue
+			}
 			return false
 		}
 		if !unicode.Is(unicode.Latin, r) && !unicode.Is(unicode.Cyrillic, r) && !unicode.Is(unicode.Greek, r) && !unicode.Is(unicode.Common, r) {
@@ -186,6 +208,23 @@ func isHomoglyphOf(canon, name []rune) bool {
 	return true
 }
 
+// containsBidiControl reports whether s contains any of the 12 Unicode bidi
+// control code points: U+200E, U+200F, U+202A-U+202E, U+2066-U+2069, U+061C
+// [F1124-01].
+func containsBidiControl(s string) bool {
+	for _, r := range s {
+		switch {
+		case r == 0x200E, r == 0x200F, r == 0x061C:
+			return true
+		case r >= 0x202A && r <= 0x202E:
+			return true
+		case r >= 0x2066 && r <= 0x2069:
+			return true
+		}
+	}
+	return false
+}
+
 // IsReservedAuditAction reports whether action, after canonicalisation
 // (canonicalAuditAction), names one of reservedAuditActions exactly or is a
 // same-length visual homoglyph of one (isHomoglyphOf) — so "Project_Deleted"
@@ -193,6 +232,19 @@ func isHomoglyphOf(canon, name []rune) bool {
 // same-length string built out of Cyrillic/Greek/fullwidth lookalikes for
 // one of the three names (F191-14, P3's "variant bypass" note). Both
 // backends' LogActivity call this before writing any row.
+//
+// An action containing any of the 12 Unicode bidi control code points
+// (U+200E/200F, U+202A-202E, U+2066-2069, U+061C) is also reported as
+// reserved: those characters are dropped for the comparison but stored, so
+// they could make an unreserved string render as a reserved name
+// [F1124-01]. Plain RTL text without those code points is unaffected.
+//
+// ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
+// for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Residual gaps:
+// multi-character look-alikes ("rn" for m, "vv" for w) are not folded
+// (the reserved names contain no m or w), and other scripts' look-alikes of
+// these ASCII letters beyond the Latin/Cyrillic/Greek/Common wildcard are not
+// covered; the full Unicode confusables table is deliberately not used.
 //
 // Known residual gaps, accepted per SEC-PR191-R2-01's P3: homoglyphs outside
 // the four scripts above (e.g. some Armenian letters) are not caught, and
@@ -205,6 +257,12 @@ func isHomoglyphOf(canon, name []rune) bool {
 // the plain name exactly. This is treated as an acceptable false-positive
 // rejection for a snake_case identifier action name, not a bypass to fix.
 func IsReservedAuditAction(action string) bool {
+	// [F1124-01] A bidi control character is dropped (category Cf) for the
+	// comparison below but kept in the stored value, so U+202E + a reversed
+	// spelling would render as a reserved name. Reject the whole action.
+	if containsBidiControl(action) {
+		return true
+	}
 	canon := canonicalAuditAction(action)
 	if reservedAuditActions[canon] {
 		return true
@@ -236,6 +294,22 @@ var ProjectIDCleanupExemptions = map[string]bool{
 	// needs (design 4) — the opposite of what this table exists to do.
 	"deletion_tombstones": true,
 }
+
+// TaskIDCleanupExemptions is the sole, machine-checked exception list to
+// "every column whose name ends in task_id must be cleaned by delete_task"
+// [F1124-03], keyed "table.column". A column belongs here only when it
+// records the deletion mechanism's OWN history ("which task got deleted")
+// rather than "which task this row belongs to". Everything else is a real
+// reference and delete_task MUST clean it.
+//
+// To add an entry: put "table.column": true here with a comment saying why
+// clearing it would erase the history the column exists to keep. Both
+// backends' derived-schema tests read this map, and fail on an entry that
+// no longer exists in the schema ("stale exemption"). Today it is empty:
+// deletion_tombstones has entity_id/project_id but no *task_id column
+// (migrations/000080_deletion_tombstones.up.sql), so an empty map is the
+// correct value.
+var TaskIDCleanupExemptions = map[string]bool{}
 
 // CreateProjectParams holds parameters for creating a new project.
 type CreateProjectParams struct {

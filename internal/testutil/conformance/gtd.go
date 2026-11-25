@@ -23,11 +23,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// RunGTDSmoke runs the 13 shared GTD behaviours (project create/conflict,
+// RunGTDSmoke runs the 14 shared GTD behaviours (project create/conflict,
 // task Area COALESCE, delete-project cascade, cross-workspace delete no-op,
 // the UpdateTask project_id contract: attach, omit-preserved, clear, unknown
-// project, cross-workspace project, unknown task, and DeleteProjectExpecting's
-// task-set check) against store, as t.Run
+// project, cross-workspace project, unknown task, DeleteProjectExpecting's
+// task-set check, and a foreign workspace's task carrying this project's id
+// being ignored by the delete) against store, as t.Run
 // subtests named backend+"/"+<op>. secondWorkspaceStore MUST be built from the
 // same underlying DB as store (same pgxpool / same sqlite file) but a different
 // workspace ID, so row 6's cross-workspace DeleteProject no-op and row 11's
@@ -75,6 +76,45 @@ func RunGTDSmoke(t *testing.T, store, secondWorkspaceStore gtd.StoreIface, backe
 	// Row 13 [PR #200 SE-01]: delete_project's confirm deletes exactly the
 	// task set its preview digested, or nothing.
 	t.Run(backend+"/DeleteProject_TaskSetChanged", func(t *testing.T) { gtdSmokeDeleteProjectTaskSetChanged(t, ctx, store) })
+
+	// Row 14 [F1124-45]: another workspace's task that carries this project's
+	// id is neither previewed, counted nor deleted by this workspace's delete.
+	t.Run(backend+"/DeleteProject_CrossWorkspaceTaskIgnored", func(t *testing.T) {
+		gtdSmokeDeleteProjectCrossWorkspaceTaskIgnored(t, ctx, store, secondWorkspaceStore)
+	})
+}
+
+// gtdSmokeDeleteProjectCrossWorkspaceTaskIgnored [F1124-45]: CreateTask checks
+// neither backend's project ownership (no FK by repo rule), so workspace B can
+// plant a task whose project_id is workspace A's project. A's delete preview
+// (TaskIDsByProjectAllStatuses) must list only A's own task, DeleteProjectExpecting
+// must count 1, and B's task must still be readable afterwards.
+func gtdSmokeDeleteProjectCrossWorkspaceTaskIgnored(t *testing.T, ctx context.Context, store, secondWorkspaceStore gtd.StoreIface) {
+	proj := gtdSmokeProject(t, ctx, store, "smoke-xws-taskset-proj")
+	own := gtdSmokeTask(t, ctx, store, "smoke-xws-taskset-own", &proj)
+	foreign := gtdSmokeTask(t, ctx, secondWorkspaceStore, "smoke-xws-taskset-foreign", &proj)
+
+	ids, err := store.TaskIDsByProjectAllStatuses(ctx, proj)
+	if err != nil {
+		t.Fatalf("TaskIDsByProjectAllStatuses: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != own {
+		t.Fatalf("preview ids = %v, want exactly [%s] (the other workspace's task %s must not be listed)", ids, own, foreign)
+	}
+
+	n, err := store.DeleteProjectExpecting(ctx, proj, "smoke-test", gtd.TaskSetDigest(ids))
+	if err != nil {
+		t.Fatalf("DeleteProjectExpecting: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("DeleteProjectExpecting deleted %d tasks, want 1 (only the own-workspace task)", n)
+	}
+	if _, err := store.GetProjectByID(ctx, proj); !errors.Is(err, gtd.ErrNotFound) {
+		t.Errorf("GetProjectByID after delete: err = %v, want errors.Is(err, gtd.ErrNotFound)", err)
+	}
+	if _, err := secondWorkspaceStore.GetTaskByID(ctx, foreign); err != nil {
+		t.Errorf("other workspace's task %s after delete: %v, want it to survive", foreign, err)
+	}
 }
 
 // gtdSmokeDeleteProjectTaskSetChanged: DeleteProjectExpecting refuses with

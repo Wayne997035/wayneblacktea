@@ -11,10 +11,15 @@ import (
 // here so MCP / HTTP handlers don't duplicate the string literal (goconst).
 const KindGeneral = "general"
 
+// KindFixPR is the task kind for bug-fix PR tasks. [F1124-11] Single source
+// for the literal: reconcile (internal/gtd) excludes this kind from pr_url_exact
+// matching and CheckKindFields requires a file:line reference for it.
+const KindFixPR = "fix-pr"
+
 // ValidTaskKinds is the allowlist of accepted task kind values. The CHECK
 // constraint in the DB migration (000044) is a secondary defence; this
 // allowlist is the primary client-side gate.
-var ValidTaskKinds = []string{KindGeneral, "fix-pr", "feature", "refactor", "research", "chore"}
+var ValidTaskKinds = []string{KindGeneral, KindFixPR, "feature", "refactor", "research", "chore"}
 
 // IsValidKind reports whether kind is a known task kind.
 func IsValidKind(kind string) bool {
@@ -104,7 +109,7 @@ func kindForWarning(kind string) string {
 // which is what made [GTD 7fc84288] a seven-place fix instead of a one-place
 // one.
 var kindRequiredSections = map[string][]string{
-	"fix-pr":   {"branch", "acceptance"},
+	KindFixPR:  {"branch", "acceptance"},
 	"feature":  {"acceptance", "risk"},
 	"refactor": {"scope", "non-goals"},
 	"research": {"question", "success-criteria"},
@@ -124,7 +129,7 @@ func CheckKindFields(kind, description string) []string {
 				kind, label+":", "## "+label))
 		}
 	}
-	if kind == "fix-pr" && !hasFileLineRef(description) {
+	if kind == KindFixPR && !hasFileLineRef(description) {
 		w = append(w, "fix-pr task: description should contain at least one file:line reference")
 	}
 	return w

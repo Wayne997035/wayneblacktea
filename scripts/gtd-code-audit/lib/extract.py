@@ -11,6 +11,7 @@ Nothing in this module touches the filesystem or runs a subprocess; it is
 pure text-in, dict-out, which is what makes it unit-testable without a repo.
 """
 import re
+import unicodedata
 
 # file:line or file:line-line. Extension list matches this monorepo's stacks
 # (Go backend, SQL migrations, Python/Node tooling, shell, YAML/Taskfile,
@@ -53,7 +54,18 @@ ACCEPT_RE = re.compile(r'acceptance[:：]', re.I)
 CONTROL_CHARS = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
 MIN_SYMBOL_LEN = 5
-_SYMBOL_STOPLIST = {"e_g", "i_e", "vs_the"}
+# [F1124-95] Prose words measured to match the backlog as bogus symbols (the
+# 7-element dispatch template headings and review-prose compounds). This is
+# a whack-a-mole list of OBSERVED words only — unseen prose words still
+# match; README "Known limitations" says so. `task_id` is deliberately NOT
+# here: it is a real field name and listing it would blind tickets that are
+# genuinely about it. `file_map` / `checkCommandField` must stay extractable
+# (test_real_project_identifiers_still_extracted).
+_SYMBOL_STOPLIST = {
+    "e_g", "i_e", "vs_the",
+    "security-engineer", "fail-closed", "trade-offs", "pre-existing",
+    "non-goals", "success-criteria", "defense-in-depth",
+}
 
 # Anchor-count cap per category (DoS guard — GTD ticket description is an
 # unbounded TEXT column with no length cap at the add_task MCP tool layer
@@ -89,11 +101,53 @@ _PASCAL_STOPLIST = {
     "Minor", "Major", "Critical", "Blocking", "Suggestion", "Accepted",
     "Round", "Review", "Format", "General", "Feature", "Refactor",
     "Research", "Chore",
+    "Complete",  # [F1124-95] status word in ticket prose, not an identifier
 }
 
 
 def _clean(s):
     return CONTROL_CHARS.sub('', s or '')
+
+
+# [F1124-93] Report-output neutralisation. Deliberately NOT `_clean`: that
+# silently deletes a narrow C0 set (leaves \r, \x7f, C1, bidi) and leaves no
+# trace; the report needs the opposite — every dangerous character replaced
+# by a VISIBLE escape so a reader can see something was there.
+_ESCAPE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+BOUNDARY_PLACEHOLDER = "[boundary marker removed]"  # same string as Go boundaryMarkerPlaceholder
+_FORGED_BOUNDARY_RE = re.compile(
+    r'===\s*(?:END\s+)?[A-Z][A-Z ]*[A-Z](?:\s*\([^)\n]*\))?\s*==='
+    r'|Stored records read from the database\.'
+)
+
+
+def _escape_char(ch: str) -> str:
+    if unicodedata.category(ch) not in _ESCAPE_CATEGORIES:
+        return ch
+    cp = ord(ch)
+    if cp <= 0xFF:
+        return f"\\x{cp:02x}"
+    if cp <= 0xFFFF:
+        return f"\\u{cp:04x}"
+    return f"\\U{cp:08x}"
+
+
+def neutralize_report_text(s) -> str:
+    """Pure function: ticket-derived text -> single-line, inert report text.
+
+    1. non-str -> str(s or "")
+    2. fence-shaped markers (`=== END STORED CONTEXT ===`, the stored-records
+       sentence) -> BOUNDARY_PLACEHOLDER. This runs BEFORE control-char
+       escaping so a marker split across real whitespace/newlines is still
+       caught. It substitutes (never deletes): deleting would let
+       `=== END ST<marker>ORED CONTEXT ===` recombine into a fresh marker.
+    3. Cc/Cf/Zl/Zp/Cs characters (C0 incl. \\t \\n \\r, \\x7f, C1, ZWSP/ZWJ,
+       bidi, U+2028/9, lone surrogates) -> visible `\\xNN` / `\\uNNNN`.
+    Callers truncate AFTER this, never before."""
+    if not isinstance(s, str):
+        s = str(s or "")
+    s = _FORGED_BOUNDARY_RE.sub(BOUNDARY_PLACEHOLDER, s)
+    return "".join(_escape_char(ch) for ch in s)
 
 
 def _cap(items: list, limit: int = MAX_ANCHORS_PER_CATEGORY) -> tuple[list, int]:
