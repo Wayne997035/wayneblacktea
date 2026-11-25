@@ -180,8 +180,9 @@ func droppedByCanon(r rune) bool {
 
 // spacingCompatToPlaceholder returns action after NFKD with every rune that
 // canonicalAuditAction would drop, is not itself a combining mark (Mn/Me),
-// and is directly followed by a visible combining mark replaced by U+FFFD
-// [F1125-01]. Compatibility characters such as U+2017 decompose to a space
+// and is directly followed by a run of combining marks with at least one
+// visible mark in it (visibleMarkFollows) replaced by U+FFFD [F1125-01].
+// Compatibility characters such as U+2017 decompose to a space
 // plus a visible mark and render as ONE glyph, but canonicalAuditAction
 // drops both halves and the canon ends up one rune short; sending a dropped
 // character plus a visible mark directly does the same. The placeholder
@@ -300,10 +301,10 @@ func containsBidiControl(s string) bool {
 // ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
 // for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Two further
 // comparison forms [F1125-01] [F1125-04]: a character the canon drops followed
-// by a visible combining mark (a space in the U+2017 / U+0385 cases, sent
-// directly or produced by NFKD) is compared as one placeholder character
-// (spacingCompatToPlaceholder), and a reserved name's "d" also matches a
-// "c" + "l" pair of look-alikes ("task_cleleted", Cyrillic spellings too).
+// by combining marks of which at least one is visible (a space in the U+2017
+// / U+0385 cases, sent directly or produced by NFKD) is compared as one
+// placeholder character (spacingCompatToPlaceholder), and a reserved name's
+// "d" also matches a "c" + "l" pair of look-alikes ("task_cleleted", Cyrillic spellings too).
 //
 // Residual gaps, accepted: a character that NFKD turns into one bare space
 // with no combining mark after it (U+00A0 etc., which render blank) is still
@@ -328,8 +329,9 @@ func IsReservedAuditAction(action string) bool {
 		return true
 	}
 	// [F1125-01] two candidate canons: the plain one, and one where each
-	// dropped character + visible combining mark run was first collapsed to a
-	// placeholder. [F1125-06] the second skips another sanitize.Notes pass.
+	// dropped character + combining-mark run holding a visible mark was first
+	// collapsed to a placeholder. [F1125-06] the second skips another
+	// sanitize.Notes pass.
 	plain := canonicalAuditAction(action)
 	spacing := canonFromDecomposed(spacingCompatToPlaceholder(action))
 	for _, canon := range []string{plain, spacing} {
