@@ -280,3 +280,168 @@ func TestIsReservedAuditAction_NoFalsePositives(t *testing.T) {
 		}
 	}
 }
+
+// zeroWidthBases enumerates the base-character set B for [F1125-07]: every
+// Zs / Cf / Other_Default_Ignorable_Code_Point code point that is not a
+// Mn/Me mark (surrogates skipped).
+func zeroWidthBases() []rune {
+	var bs []rune
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if unicode.In(r, unicode.Mn, unicode.Me) {
+			continue
+		}
+		if unicode.In(r, unicode.Zs, unicode.Cf, unicode.Other_Default_Ignorable_Code_Point) {
+			bs = append(bs, r)
+		}
+	}
+	return bs
+}
+
+// visibleMarks enumerates V for [F1125-07]: every Mn/Me mark that renders.
+func visibleMarks() []rune {
+	var vs []rune
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if unicode.In(r, unicode.Mn, unicode.Me) && !invisibleMark(r) {
+			vs = append(vs, r)
+		}
+	}
+	return vs
+}
+
+// bidiControls are the 12 code points IsReservedAuditAction rejects outright.
+var bidiControls = []rune{0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069}
+
+func isBidiControlRune(r rune) bool {
+	for _, b := range bidiControls {
+		if r == b {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutBidi returns rs minus the 12 bidi control code points.
+func withoutBidi(rs []rune) []rune {
+	var out []rune
+	for _, r := range rs {
+		if !isBidiControlRune(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func containsRune(rs []rune, want rune) bool {
+	for _, r := range rs {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+// pinEnumerations fails the test when B or V is not the set the
+// [F1125-07] groups assume, so a mis-written predicate cannot run empty.
+func pinEnumerations(t *testing.T, bs, vs []rune) {
+	t.Helper()
+	if len(bs) == 0 || len(vs) == 0 {
+		t.Fatalf("empty enumeration: len(B)=%d len(V)=%d", len(bs), len(vs))
+	}
+	wantB := append([]rune{0x200B, 0x2060, 0xFEFF, 0x00AD, 0x200A, 0x3000}, bidiControls...)
+	for _, r := range wantB {
+		if !containsRune(bs, r) {
+			t.Fatalf("B is missing U+%04X", r)
+		}
+	}
+	for _, r := range []rune{0x0301, 0x0332, 0x0333} {
+		if !containsRune(vs, r) {
+			t.Fatalf("V is missing U+%04X", r)
+		}
+	}
+	for _, r := range []rune{0xFE0F, 0x034F} {
+		if containsRune(vs, r) {
+			t.Fatalf("V must not contain U+%04X", r)
+		}
+	}
+}
+
+// expandRunes builds one input per rune by handing it to build.
+func expandRunes(rs []rune, build func(r rune) string) []string {
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, build(r))
+	}
+	return out
+}
+
+// checkReservedVerdict asserts IsReservedAuditAction(input) == want for every
+// input; a group reports once with the miss count and the first 10 inputs.
+func checkReservedVerdict(t *testing.T, label string, want bool, inputs []string) {
+	t.Helper()
+	var wrong []string
+	for _, in := range inputs {
+		if gtd.IsReservedAuditAction(in) != want {
+			wrong = append(wrong, fmt.Sprintf("%+q", in))
+		}
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%s: %d of %d inputs have verdict != %v; first: %s",
+			label, len(wrong), len(inputs), want, strings.Join(wrong[:min(len(wrong), 10)], "; "))
+	}
+}
+
+// sandwich builds pre + r + post for every rune in rs.
+func sandwich(rs []rune, pre, post string) []string {
+	return expandRunes(rs, func(r rune) string { return pre + string(r) + post })
+}
+
+// zeroWidthBaseGroups returns the labelled "want true" input groups (a)-(d),
+// (g) and (h) of TestIsReservedAuditAction_ZeroWidthBaseRuns.
+func zeroWidthBaseGroups(bs, plainBs, vs []rune) map[string][]string {
+	return map[string][]string{
+		"(a) task+U+2017+b+U+0333+deleted":       sandwich(bs, "task\u2017", "\u0333deleted"),
+		"(b) task+space+U+0332+b+U+0332+deleted": sandwich(bs, "task \u0332", "\u0332deleted"),
+		"(c) task+U+2017+U+200B+v+deleted":       sandwich(vs, "task\u2017\u200b", "deleted"),
+		"(d) task+U+2017+de+b+U+0301+leted":      sandwich(bs, "task\u2017de", "\u0301leted"),
+		"(g1) three placeholders":                sandwich(plainBs, "task \u0332", "\u0332\u200b\u0332deleted"),
+		"(g2) two places":                        sandwich(plainBs, "task\u2017", "\u0333de\u200b\u0301leted"),
+		"(g3) placeholder at head":               sandwich(plainBs, "\u200b\u0332task\u2017", "\u0333deleted"),
+		"(g4) placeholder at tail":               sandwich(plainBs, "task\u2017", "\u0333deleted\u200b\u0332"),
+		"(g5) project_restored":                  sandwich(plainBs, "project\u2017", "\u0333restored"),
+		"(g6) project_deleted":                   sandwich(plainBs, "project\u2017", "\u0333deleted"),
+		"(h) placeholder as c in cl":             {"task_\u200b\u0332leleted", "project_\u200b\u0332leleted"},
+	}
+}
+
+// TestIsReservedAuditAction_ZeroWidthBaseRuns guards [F1125-07]: a
+// placeholder (U+FFFD from spacingCompatToPlaceholder) may match one name
+// character or none, in any number and at any position, so a zero-width or
+// near-zero-width base + visible mark cannot hide a reserved name. The
+// reverse direction (no combining mark, or one slot holding two marks) must
+// stay allowed.
+func TestIsReservedAuditAction_ZeroWidthBaseRuns(t *testing.T) {
+	bs, vs := zeroWidthBases(), visibleMarks()
+	pinEnumerations(t, bs, vs)
+	plainBs := withoutBidi(bs)
+
+	for label, inputs := range zeroWidthBaseGroups(bs, plainBs, vs) {
+		checkReservedVerdict(t, label, true, inputs)
+	}
+
+	// (e) no combining mark: nothing draws an underscore, so not reserved;
+	// the 12 bidi controls are rejected by the bidi rule instead.
+	checkReservedVerdict(t, "(e) task+b+deleted, no mark", false,
+		sandwich(plainBs, "task", "deleted"))
+	checkReservedVerdict(t, "(e) bidi controls stay reserved", true,
+		sandwich(bidiControls, "task", "deleted"))
+
+	// (i) one slot with two marks must not become two placeholders.
+	checkReservedVerdict(t, "(i) two marks, one slot", false,
+		[]string{"task\u0385eleted", "task \u0332\u0333eleted"})
+}

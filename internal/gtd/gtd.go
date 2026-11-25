@@ -186,7 +186,8 @@ func droppedByCanon(r rune) bool {
 // plus a visible mark and render as ONE glyph, but canonicalAuditAction
 // drops both halves and the canon ends up one rune short; sending a dropped
 // character plus a visible mark directly does the same. The placeholder
-// keeps the position so isHomoglyphOf's Common wildcard matches it. The
+// stands for the base character's cell: isHomoglyphOf lets it match one name
+// character or none (a zero-width base occupies no cell). The
 // not-Mn/Me condition [F1125-02] stops U+0385 (space + two marks) from
 // getting a second placeholder for its first mark. A run whose marks are all
 // invisible renders nothing, so it gets no placeholder either [F1125-05];
@@ -248,23 +249,45 @@ func runeLooksLike(r, want rune) bool {
 }
 
 // isHomoglyphOf reports whether canon (already canonicalised) reads as name
-// (an ASCII reservedAuditActions key): each name rune is matched by one canon
+// (an ASCII reservedAuditActions key). Each name rune is matched by one canon
 // rune via runeLooksLike, except that a name "d" may also be matched by two
-// canon runes that look like "c" then "l" [F1125-04]. Each reserved name has
-// at most two "d", so the recursion stays shallow.
+// canon runes that look like "c" then "l" [F1125-04]. A U+FFFD in canon (the
+// placeholder from spacingCompatToPlaceholder) may match one name rune or
+// none [F1125-07]: a zero-width base character plus a visible mark draws no
+// extra cell, a wide one draws one, and only this layer knows which, so the
+// number and position of skipped placeholders is unlimited. The match is a
+// dynamic programme, ok[i][j] = canon[i:] reads as name[j:], costing
+// O(len(canon) * len(name)).
 func isHomoglyphOf(canon, name []rune) bool {
-	if len(name) == 0 {
-		return len(canon) == 0
+	n, m := len(canon), len(name)
+	ok := make([][]bool, n+2) // two spare rows: the "cl" step reads ok[i+2]
+	for i := range ok {
+		ok[i] = make([]bool, m+1)
 	}
-	if len(canon) == 0 {
-		return false
+	ok[n][m] = true
+	for i := n - 1; i >= 0; i-- {
+		for j := m; j >= 0; j-- {
+			ok[i][j] = readsFrom(canon, name, ok, i, j)
+		}
 	}
-	if name[0] == 'd' && len(canon) >= 2 &&
-		runeLooksLike(canon[0], 'c') && runeLooksLike(canon[1], 'l') &&
-		isHomoglyphOf(canon[2:], name[1:]) {
+	return ok[0][0]
+}
+
+// readsFrom computes one isHomoglyphOf cell: whether canon[i:] reads as
+// name[j:] given the already-computed later cells in ok.
+func readsFrom(canon, name []rune, ok [][]bool, i, j int) bool {
+	if canon[i] == '\uFFFD' && ok[i+1][j] { // [F1125-07] placeholder matches nothing
 		return true
 	}
-	return runeLooksLike(canon[0], name[0]) && isHomoglyphOf(canon[1:], name[1:])
+	if j == len(name) {
+		return false
+	}
+	if runeLooksLike(canon[i], name[j]) && ok[i+1][j+1] {
+		return true
+	}
+	// [F1125-04] a name "d" drawn as "c" + "l"; U+FFFD may stand for either.
+	return name[j] == 'd' && i+1 < len(canon) &&
+		runeLooksLike(canon[i], 'c') && runeLooksLike(canon[i+1], 'l') && ok[i+2][j+1]
 }
 
 // containsBidiControl reports whether s contains any of the 12 Unicode bidi
@@ -300,11 +323,15 @@ func containsBidiControl(s string) bool {
 //
 // ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
 // for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Two further
-// comparison forms [F1125-01] [F1125-04]: a character the canon drops followed
-// by combining marks of which at least one is visible (a space in the U+2017
-// / U+0385 cases, sent directly or produced by NFKD) is compared as one
-// placeholder character (spacingCompatToPlaceholder), and a reserved name's
-// "d" also matches a "c" + "l" pair of look-alikes ("task_cleleted", Cyrillic spellings too).
+// comparison forms [F1125-01] [F1125-04] [F1125-07]: a character the canon
+// drops followed by combining marks of which at least one is visible (a space
+// in the U+2017 / U+0385 cases, sent directly or produced by NFKD) is compared
+// as a placeholder (spacingCompatToPlaceholder) that matches one name
+// character or none, in any number and at any position (isHomoglyphOf), so a
+// zero-width or near-zero-width base plus a visible mark cannot hide a
+// reserved name; a literal U+FFFD typed by the caller is skippable the same
+// way. A reserved name's "d" also matches a "c" + "l" pair of look-alikes
+// ("task_cleleted", Cyrillic spellings too).
 //
 // Residual gaps, accepted: a character that NFKD turns into one bare space
 // with no combining mark after it (U+00A0 etc., which render blank) is still
