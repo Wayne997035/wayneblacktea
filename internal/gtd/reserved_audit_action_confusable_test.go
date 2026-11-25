@@ -168,7 +168,6 @@ func TestIsReservedAuditAction_InvisibleRuns(t *testing.T) {
 			t.Errorf("IsReservedAuditAction(%+q) = true, want false (renders as a plain space)", a)
 		}
 	}
-
 }
 
 // TestIsReservedAuditAction_VisibleMarkInInvisibleRun guards [F1125-05]: a
