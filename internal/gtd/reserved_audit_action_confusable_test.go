@@ -132,12 +132,12 @@ func invisibleRuns() (runs []string, marks []rune) {
 		case r >= 0xD800 && r <= 0xDFFF:
 		case invisibleMark(r):
 			marks = append(marks, r)
-			for _, base := range []string{"​", " ", " "} {
+			for _, base := range []string{"\u200b", "\u00a0", " "} {
 				runs = append(runs, base+string(r))
 			}
 		case unicode.In(r, unicode.Mn, unicode.Me):
 		case unicode.In(r, unicode.Zs, unicode.Cf, unicode.Other_Default_Ignorable_Code_Point):
-			runs = append(runs, string(r)+"️")
+			runs = append(runs, string(r)+"\ufe0f")
 		}
 	}
 	return runs, marks
@@ -150,7 +150,7 @@ func invisibleRuns() (runs []string, marks []rune) {
 func TestIsReservedAuditAction_InvisibleRuns(t *testing.T) {
 	runs, marks := invisibleRuns()
 	var missed []string
-	for _, p := range []string{"task‗deleted", "task ̳deleted"} {
+	for _, p := range []string{"task\u2017deleted", "task \u0333deleted"} {
 		for _, run := range runs {
 			for _, a := range []string{run + p, strings.Replace(p, "deleted", run+"deleted", 1), p + run} {
 				if !gtd.IsReservedAuditAction(a) {
@@ -169,28 +169,36 @@ func TestIsReservedAuditAction_InvisibleRuns(t *testing.T) {
 		}
 	}
 
+}
+
+// TestIsReservedAuditAction_VisibleMarkInInvisibleRun guards [F1125-05]: a
+// visible mark anywhere in a string of invisible marks after a dropped base
+// (first, last, between, or in the full-length string) still yields one
+// placeholder.
+func TestIsReservedAuditAction_VisibleMarkInInvisibleRun(t *testing.T) {
+	_, marks := invisibleRuns()
 	// [F1125-05] a visible mark anywhere in the invisible-mark string turns the
 	// dropped base + marks into one visible glyph (underlined blank), so it
 	// must read as one placeholder wherever the visible mark sits.
-	const visible = "̲"
+	const visible = "\u0332"
 	all := string(marks)
 	var chain []string
-	for _, base := range []string{" ", "​"} {
+	for _, base := range []string{" ", "\u200b"} {
 		add := func(mid string) { chain = append(chain, "task"+base+mid+"deleted") }
 		// (c) invisible first, visible last
-		add("️" + visible)
+		add("\ufe0f" + visible)
 		for _, m := range marks {
 			add(string(m) + visible)
 		}
 		// (d) visible first, invisible last
-		add(visible + "️")
+		add(visible + "\ufe0f")
 		for _, m := range marks {
 			add(visible + string(m))
 		}
 		// (e) visible at any position among repeated invisible marks
 		for k := 0; k <= 4; k++ {
 			for j := 0; j <= 4; j++ {
-				add(strings.Repeat("️", k) + visible + strings.Repeat("️", j))
+				add(strings.Repeat("\ufe0f", k) + visible + strings.Repeat("\ufe0f", j))
 			}
 		}
 		// (e) long strings of every invisible mark, visible at either end
