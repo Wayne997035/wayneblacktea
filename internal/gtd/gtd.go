@@ -254,13 +254,14 @@ func runeLooksLike(r, want rune) bool {
 // canon runes that look like "c" then "l" [F1125-04]. A U+FFFD in canon (the
 // placeholder from spacingCompatToPlaceholder) may match one name rune or
 // none [F1125-07]: a zero-width base character plus a visible mark draws no
-// extra cell, a wide one draws one, and only this layer knows which, so the
-// number and position of skipped placeholders is unlimited. The match is a
+// extra cell, a wide one draws one, and the placeholder does not record
+// which, so both readings are accepted and the number and position of
+// skipped placeholders is unlimited. The match is a
 // dynamic programme, ok[i][j] = canon[i:] reads as name[j:], costing
 // O(len(canon) * len(name)).
 func isHomoglyphOf(canon, name []rune) bool {
 	n, m := len(canon), len(name)
-	ok := make([][]bool, n+2) // two spare rows: the "cl" step reads ok[i+2]
+	ok := make([][]bool, n+1) // row n: canon used up; "cl" reads ok[i+2] only when i+2 <= n
 	for i := range ok {
 		ok[i] = make([]bool, m+1)
 	}
