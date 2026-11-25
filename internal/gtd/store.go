@@ -1,10 +1,12 @@
 package gtd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -793,7 +795,15 @@ func (s *Store) BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match
 
 	qtx := s.q.WithTx(tx)
 	applied := make(map[uuid.UUID]bool, len(matches))
-	for _, m := range matches {
+	// [F1124-83] Each task row stays locked until this batch commits, so two
+	// concurrent batches that touch the same tasks in opposite order would
+	// deadlock (40P01). Taking the locks in TaskID order makes every batch lock
+	// in the same direction (as delete_project's ORDER BY id does). The sort is
+	// stable, so repeated matches for one task keep their order and the first
+	// still decides pr_url.
+	ordered := slices.Clone(matches)
+	slices.SortStableFunc(ordered, func(a, b Match) int { return bytes.Compare(a.TaskID[:], b.TaskID[:]) })
+	for _, m := range ordered {
 		ok, perr := s.applyOnePRMatch(ctx, tx, qtx, m)
 		if perr != nil {
 			return nil, fmt.Errorf("BatchCompleteTasksByPRMatch task %s: %w", m.TaskID, perr)
