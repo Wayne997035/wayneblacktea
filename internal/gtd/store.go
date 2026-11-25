@@ -1,10 +1,12 @@
 package gtd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -793,8 +795,16 @@ func (s *Store) BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match
 
 	qtx := s.q.WithTx(tx)
 	applied := make(map[uuid.UUID]bool, len(matches))
-	for _, m := range matches {
-		ok, perr := s.applyOnePRMatch(ctx, qtx, m)
+	// [F1124-83] Each task row stays locked until this batch commits, so two
+	// concurrent batches that touch the same tasks in opposite order would
+	// deadlock (40P01). Taking the locks in TaskID order makes every batch lock
+	// in the same direction (as delete_project's ORDER BY id does). The sort is
+	// stable, so repeated matches for one task keep their order and the first
+	// still decides pr_url.
+	ordered := slices.Clone(matches)
+	slices.SortStableFunc(ordered, func(a, b Match) int { return bytes.Compare(a.TaskID[:], b.TaskID[:]) })
+	for _, m := range ordered {
+		ok, perr := s.applyOnePRMatch(ctx, tx, qtx, m)
 		if perr != nil {
 			return nil, fmt.Errorf("BatchCompleteTasksByPRMatch task %s: %w", m.TaskID, perr)
 		}
@@ -812,7 +822,7 @@ func (s *Store) BatchCompleteTasksByPRMatch(ctx context.Context, matches []Match
 // applyOnePRMatch performs the per-task work for BatchCompleteTasksByPRMatch:
 // guarded UPDATE (skip if already completed) + activity_log INSERT. Returns
 // true when the row actually transitioned, false when it was already done.
-func (s *Store) applyOnePRMatch(ctx context.Context, qtx *db.Queries, m Match) (bool, error) {
+func (s *Store) applyOnePRMatch(ctx context.Context, tx pgx.Tx, qtx *db.Queries, m Match) (bool, error) {
 	// Guarded UPDATE: only flip tasks that are STILL pending/in_progress at
 	// apply time. Setting status, artifact, and pr_url in one statement keeps
 	// the row consistent. status IN ('pending','in_progress') mirrors the
@@ -835,7 +845,10 @@ func (s *Store) applyOnePRMatch(ctx context.Context, qtx *db.Queries, m Match) (
 		WHERE id = $2
 		  AND ($3::uuid IS NULL OR workspace_id = $3)
 		  AND status IN ('pending', 'in_progress')`
-	res, err := s.dbtx.Exec(ctx, upd, m.PRUrl, m.TaskID, s.workspaceID)
+	// [F1124-80] Run the UPDATE on the batch's own tx, not s.dbtx (which would
+	// commit it on a separate connection), so "mark completed" and the
+	// pr_auto_close audit row below commit or roll back together.
+	res, err := tx.Exec(ctx, upd, m.PRUrl, m.TaskID, s.workspaceID)
 	if err != nil {
 		return false, fmt.Errorf("update task: %w", err)
 	}

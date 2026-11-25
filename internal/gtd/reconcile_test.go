@@ -2,10 +2,17 @@ package gtd_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -432,5 +439,208 @@ func TestMatchMergedPRs_SharedPRURL_NonFixPRStillMatches(t *testing.T) {
 	}
 	if result.Matches[0].Reason != gtd.MatchReasonPRURLExact {
 		t.Errorf("reason = %q, want pr_url_exact", result.Matches[0].Reason)
+	}
+}
+
+const (
+	// f203FailMarker is the activity_log notes fragment that arms the failure
+	// trigger installed by installActivityLogFailureTrigger. Only the match
+	// whose PRHeadRef carries it makes the activity_log INSERT fail.
+	f203FailMarker = "F203FAILMARKER"
+	// f203InjectedMsg is the message the trigger raises; assertion [F1124-81/1]
+	// looks for it to prove the failure came from the injected trigger.
+	f203InjectedMsg = "f203 injected activity_log failure"
+)
+
+// installActivityLogFailureTrigger installs a BEFORE INSERT trigger on
+// activity_log that raises f203InjectedMsg for any row whose notes contain
+// f203FailMarker, and drops it again on cleanup. The function/trigger names
+// carry a random suffix because the pool (and database) is shared by the whole
+// package. [F1124-81]
+func installActivityLogFailureTrigger(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
+	fn := "f203_fail_fn_" + suffix
+	trg := "f203_fail_trg_" + suffix
+
+	createFn := fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF NEW.notes LIKE '%%%s%%' THEN
+		RAISE EXCEPTION '%s';
+	END IF;
+	RETURN NEW;
+END;
+$$`, fn, f203FailMarker, f203InjectedMsg)
+	if _, err := pool.Exec(ctx, createFn); err != nil {
+		t.Fatalf("create trigger function %s: %v", fn, err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON activity_log`, trg)); err != nil {
+			t.Errorf("drop trigger %s: %v", trg, err)
+		}
+		if _, err := pool.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn)); err != nil {
+			t.Errorf("drop function %s: %v", fn, err)
+		}
+	})
+
+	createTrg := fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION %s()`, trg, fn)
+	if _, err := pool.Exec(ctx, createTrg); err != nil {
+		t.Fatalf("create trigger %s: %v", trg, err)
+	}
+}
+
+// TestBatchCompleteTasksByPRMatch_PG_ActivityLogFailureRollsBackTaskUpdate pins
+// [F1124-80]: marking a task completed and writing its pr_auto_close audit row
+// are one unit. A batch of two matches where the second match's activity_log
+// INSERT fails (injected by trigger) MUST roll the first match's "mark
+// completed" back too, instead of leaving task A completed with no audit row.
+// [F1124-81]
+func TestBatchCompleteTasksByPRMatch_PG_ActivityLogFailureRollsBackTaskUpdate(t *testing.T) {
+	pool := openTestPgPool(t)
+	store := newPgGTDStore(pool, nil)
+	ctx := context.Background()
+
+	installActivityLogFailureTrigger(t, pool)
+
+	taskA, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f203 task A", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask A: %v", err)
+	}
+	taskB, err := store.CreateTask(ctx, gtd.CreateTaskParams{Title: "f203 task B", Priority: 3})
+	if err != nil {
+		t.Fatalf("CreateTask B: %v", err)
+	}
+
+	// PR numbers are random so the activity_log count below cannot be polluted
+	// by rows an earlier run left behind in the shared database.
+	prURLA := fmt.Sprintf("https://github.com/o/r/pull/%d", uuid.New().ID())
+	prURLB := fmt.Sprintf("https://github.com/o/r/pull/%d", uuid.New().ID())
+	mergedAt := time.Now().UTC()
+	matches := []gtd.Match{
+		{TaskID: taskA.ID, Reason: gtd.MatchReasonBranchNameExact, PRUrl: prURLA, PRHeadRef: "feature/f203-a", MergedAt: mergedAt},
+		{TaskID: taskB.ID, Reason: gtd.MatchReasonBranchNameExact, PRUrl: prURLB, PRHeadRef: "feature/" + f203FailMarker, MergedAt: mergedAt},
+	}
+
+	_, batchErr := store.BatchCompleteTasksByPRMatch(ctx, matches)
+
+	// [F1124-81/1] the batch fails, and it fails because of the injected trigger.
+	if batchErr == nil {
+		t.Errorf("[F1124-81/1] BatchCompleteTasksByPRMatch error = nil, want the injected failure %q", f203InjectedMsg)
+	} else if !strings.Contains(batchErr.Error(), f203InjectedMsg) {
+		t.Errorf("[F1124-81/1] BatchCompleteTasksByPRMatch error = %v, want it to contain %q", batchErr, f203InjectedMsg)
+	}
+
+	// [F1124-81/2] task A (whose own audit row was fine) is not left completed.
+	gotA, err := store.GetTaskByID(ctx, taskA.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID A: %v", err)
+	}
+	if gotA.Status != statusPending {
+		t.Errorf("[F1124-81/2] task A status = %q, want %q (its completion must roll back with the failed batch)", gotA.Status, statusPending)
+	}
+	if gotA.PRUrl.Valid {
+		t.Errorf("[F1124-81/2] task A pr_url = %q, want unset after rollback", gotA.PRUrl.String)
+	}
+
+	// [F1124-81/3] task B (whose audit row failed) is not left completed either.
+	gotB, err := store.GetTaskByID(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("GetTaskByID B: %v", err)
+	}
+	if gotB.Status != statusPending {
+		t.Errorf("[F1124-81/3] task B status = %q, want %q (its completion must roll back with the failed batch)", gotB.Status, statusPending)
+	}
+
+	// [F1124-81/4] no pr_auto_close audit row for A survived. A Scan error is
+	// fatal: swallowing it into a zero count would make this check vacuously green.
+	var auditRows int64
+	if err := pool.QueryRow(
+		ctx,
+		`SELECT count(*) FROM activity_log WHERE action = 'pr_auto_close' AND strpos(notes, $1) > 0`,
+		prURLA,
+	).Scan(&auditRows); err != nil {
+		t.Fatalf("[F1124-81/4] count activity_log rows for task A: %v", err)
+	}
+	if auditRows != 0 {
+		t.Errorf("[F1124-81/4] activity_log pr_auto_close rows for task A = %d, want 0 (audit row must roll back with the batch)", auditRows)
+	}
+}
+
+// TestBatchCompleteTasksByPRMatch_PG_OppositeOrderBatchesDoNotDeadlock is the
+// [F1124-83] guard: two reconcile batches that touch the same two tasks in
+// opposite order run concurrently, and neither may fail. A trigger keeps each
+// batch's first UPDATE in flight for 500ms so both take their first row lock
+// before either reaches its second; without TaskID ordering PostgreSQL aborts
+// one batch with a deadlock (40P01).
+func TestBatchCompleteTasksByPRMatch_PG_OppositeOrderBatchesDoNotDeadlock(t *testing.T) {
+	pool := openTestPgPool(t)
+	ctx := context.Background()
+	ws := uuid.New()
+	s := newPgGTDStore(pool, &ws)
+
+	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
+	fn, trg, marker := "f112483_sleep_fn_"+suffix, "f112483_sleep_trg_"+suffix, "f112483"+suffix[:10]
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF NEW.pr_url LIKE '%%%s%%' THEN
+		PERFORM pg_sleep(0.5);
+	END IF;
+	RETURN NULL;
+END;
+$$`, fn, marker)); err != nil {
+		t.Fatalf("create sleep function: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON tasks`, trg))
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fn))
+	})
+	createTrigger := fmt.Sprintf(`CREATE TRIGGER %s AFTER UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION %s()`, trg, fn)
+	if _, err := pool.Exec(ctx, createTrigger); err != nil {
+		t.Fatalf("create sleep trigger: %v", err)
+	}
+
+	a, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "f1124-83 A", Priority: 3})
+	if err != nil {
+		t.Fatalf("create task A: %v", err)
+	}
+	b, err := s.CreateTask(ctx, gtd.CreateTaskParams{Title: "f1124-83 B", Priority: 3})
+	if err != nil {
+		t.Fatalf("create task B: %v", err)
+	}
+	match := func(id uuid.UUID, tag string) gtd.Match {
+		return gtd.Match{
+			TaskID: id, Reason: gtd.MatchReasonBranchNameExact,
+			PRUrl: fmt.Sprintf("https://github.com/o/%s/pull/%d-%s", marker, uuid.New().ID(), tag), PRHeadRef: "feature/f1124-83-" + tag,
+		}
+	}
+	batches := [2][]gtd.Match{
+		{match(a.ID, "1a"), match(b.ID, "1b")},
+		{match(b.ID, "2b"), match(a.ID, "2a")},
+	}
+	var wg sync.WaitGroup
+	var errs [2]error
+	start := make(chan struct{})
+	for i := range batches {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = s.BatchCompleteTasksByPRMatch(ctx, batches[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, e := range errs {
+		if e == nil {
+			continue
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(e, &pgErr) && pgErr.Code == "40P01" {
+			t.Errorf("[F1124-83/1] batch %d deadlocked: %v", i+1, e)
+		} else {
+			t.Errorf("[F1124-83/2] batch %d failed: %v", i+1, e)
+		}
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/worksession"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
@@ -1524,5 +1526,211 @@ func TestPgStore_GetEvidence_WorkspaceIsolation(t *testing.T) {
 	}
 	if len(gotA) != 1 {
 		t.Errorf("workspace A should see its own evidence, got %d rows", len(gotA))
+	}
+}
+
+// newSeqScanPgPool opens a test-only pool whose sessions cannot use index or
+// bitmap scans, so a multi-row UPDATE ... WHERE id IN (...) walks the heap in
+// physical order (Seq Scan).
+func newSeqScanPgPool(t *testing.T, base *pgxpool.Pool) *pgxpool.Pool {
+	t.Helper()
+	cfg := base.Config()
+	cfg.ConnConfig.RuntimeParams = map[string]string{
+		"enable_indexscan":  "off",
+		"enable_bitmapscan": "off",
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// insertHiThenLoPgTasks inserts two pending tasks with one statement, the
+// larger id first, and returns (lo, hi). It Fatalfs unless hi's heap position
+// (ctid) is before lo's: otherwise a Seq Scan would not visit hi first and the
+// caller's lock-order test would prove nothing.
+func insertHiThenLoPgTasks(t *testing.T, base *pgxpool.Pool, wsID uuid.UUID) (lo, hi uuid.UUID) {
+	t.Helper()
+	// uuid string order matches PostgreSQL uuid comparison order.
+	lo, hi = uuid.New(), uuid.New()
+	if lo.String() > hi.String() {
+		lo, hi = hi, lo
+	}
+	rows, err := base.Query(context.Background(),
+		`INSERT INTO tasks (id, workspace_id, title) VALUES ($1,$2,'hi'),($3,$2,'lo') RETURNING id, ctid`,
+		hi, wsID, lo)
+	if err != nil {
+		t.Fatalf("insert tasks: %v", err)
+	}
+	defer rows.Close()
+	tids := map[uuid.UUID]pgtype.TID{}
+	for rows.Next() {
+		var id uuid.UUID
+		var tid pgtype.TID
+		if err := rows.Scan(&id, &tid); err != nil {
+			t.Fatalf("scan ctid: %v", err)
+		}
+		tids[id] = tid
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("insert rows: %v", err)
+	}
+	hiT, loT := tids[hi], tids[lo]
+	hiFirst := hiT.BlockNumber < loT.BlockNumber ||
+		(hiT.BlockNumber == loT.BlockNumber && hiT.OffsetNumber < loT.OffsetNumber)
+	if !hiFirst {
+		t.Fatalf("precondition failed: ctid(hi)=%+v is not before ctid(lo)=%+v; test cannot prove lock order", hiT, loT)
+	}
+	return lo, hi
+}
+
+// waitForTaskUpdateLockWait polls pg_stat_activity (10ms, at most 500 tries)
+// until another backend running an "UPDATE tasks" statement waits on a lock.
+func waitForTaskUpdateLockWait(t *testing.T, base *pgxpool.Pool) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		var blocked bool
+		err := base.QueryRow(context.Background(), `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE pid <> pg_backend_pid()
+			  AND datname = current_database()
+			  AND wait_event_type = 'Lock'
+			  AND query LIKE '%UPDATE tasks%')`).Scan(&blocked)
+		if err != nil {
+			t.Fatalf("poll pg_stat_activity: %v", err)
+		}
+		if blocked {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("store UPDATE never reached a lock wait")
+}
+
+// lockLoThenRequestHi is the competing transaction: it locks lo, waits until
+// the code under test blocks, then requests hi. A 40P01 reported to this side
+// is a [<ticket>/1] failure; the transaction is always rolled back so a tx
+// aborted by deadlock detection cannot keep the goroutine waiting forever.
+func lockLoThenRequestHi(t *testing.T, base *pgxpool.Pool, ticket string, lo, hi uuid.UUID, startCodeUnderTest func()) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := base.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	committed := false
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !committed {
+			t.Logf("rollback: %v", rbErr)
+		}
+	}()
+	if _, err := tx.Exec(ctx, `UPDATE tasks SET title = title || '+' WHERE id = $1`, lo); err != nil {
+		t.Fatalf("tx lock lo: %v", err)
+	}
+
+	startCodeUnderTest()
+	waitForTaskUpdateLockWait(t, base)
+
+	_, txErr := tx.Exec(ctx, `UPDATE tasks SET title = title || '+' WHERE id = $1`, hi)
+	if txErr == nil {
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		committed = true
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(txErr, &pgErr) && pgErr.Code == "40P01" {
+		t.Errorf("[%s/1] deadlock: %v", ticket, txErr)
+		return
+	}
+	t.Fatalf("tx lock hi: %v", txErr)
+}
+
+// TestPgStore_BatchTaskWritesLockInIDOrder guards that the multi-row task
+// UPDATEs in batchMarkTasksInProgress ([F1124-85]) and batchMarkTasksCompleted
+// ([F1124-84]) take row locks in ascending id order, matching the reconcile
+// batch and delete_project. The test forces a Seq Scan so the pre-fix
+// statement visits the physically-first (larger-id) row first, then has a
+// competing transaction lock the smaller id and request the larger one: with
+// plan-order locking that is a lock cycle (40P01); with ORDER BY id it is not.
+func TestPgStore_BatchTaskWritesLockInIDOrder(t *testing.T) {
+	base := openTestPgPool(t)
+
+	cases := []struct {
+		name       string
+		wantStatus string
+		// prepare returns the code path under test for ids = {hi, lo}.
+		prepare func(t *testing.T, store *worksession.Store, wsID uuid.UUID, ids []uuid.UUID) func() error
+	}{
+		{
+			name:       "F1124-85",
+			wantStatus: statusInProgress,
+			prepare: func(_ *testing.T, store *worksession.Store, wsID uuid.UUID, ids []uuid.UUID) func() error {
+				return func() error {
+					_, err := store.Create(context.Background(), worksession.CreateParams{
+						WorkspaceID: wsID,
+						RepoName:    "lock-order-" + uuid.NewString(),
+						Title:       "lock order create",
+						Goal:        "F1124-85",
+						Source:      "test",
+						TaskIDs:     ids,
+						Assignee:    assigneeClaude,
+					})
+					return err
+				}
+			},
+		},
+		{
+			name:       "F1124-84",
+			wantStatus: statusCompleted,
+			prepare: func(t *testing.T, store *worksession.Store, wsID uuid.UUID, ids []uuid.UUID) func() error {
+				sess, err := store.Create(context.Background(), worksession.CreateParams{
+					WorkspaceID: wsID,
+					RepoName:    "lock-order-" + uuid.NewString(),
+					Title:       "lock order finish",
+					Goal:        "F1124-84",
+					Source:      "test",
+				})
+				if err != nil {
+					t.Fatalf("Create session: %v", err)
+				}
+				return func() error {
+					_, _, err := store.Finish(context.Background(), worksession.FinishParams{
+						SessionID:        sess.ID,
+						Summary:          "lock order finish",
+						CompletedTaskIDs: ids,
+					})
+					return err
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newSeqScanPgPool(t, base)
+			wsID := uuid.New()
+			lo, hi := insertHiThenLoPgTasks(t, base, wsID)
+			ids := []uuid.UUID{hi, lo}
+			run := tc.prepare(t, newPgStore(pool, &wsID), wsID, ids)
+
+			done := make(chan error, 1)
+			lockLoThenRequestHi(t, base, tc.name, lo, hi, func() {
+				go func() { done <- run() }()
+			})
+
+			if err := <-done; err != nil {
+				t.Fatalf("code under test: %v", err)
+			}
+			for _, id := range ids {
+				if got := queryPgTaskStatus(t, base, id); got != tc.wantStatus {
+					t.Errorf("[%s/1] task %s status = %q, want %q (store UPDATE aborted by a deadlock)",
+						tc.name, id, got, tc.wantStatus)
+				}
+			}
+		})
 	}
 }
