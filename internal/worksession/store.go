@@ -290,14 +290,26 @@ func (s *Store) batchMarkTasksInProgress(ctx context.Context, wsID uuid.UUID, ta
 		idArgs = append(idArgs, id)
 		placeholders[i] = fmt.Sprintf("$%d", i+3)
 	}
-	q := fmt.Sprintf(`UPDATE tasks
+	// [F1124-85] Lock the target rows in ascending id order before updating.
+	// A bare multi-row UPDATE locks rows in plan-visit order, which can be
+	// descending id; a concurrent reconcile batch (internal/gtd/store.go) and
+	// delete_project lock in ascending id order, so opposite orders form a
+	// lock cycle (40P01). ORDER BY id FOR UPDATE inside a MATERIALIZED CTE
+	// locks in sorted output order; the status/assignee predicates live in the
+	// CTE so READ COMMITTED re-checks them against the latest row version.
+	q := fmt.Sprintf(`WITH locked AS MATERIALIZED (
+			SELECT id FROM tasks
+			WHERE id IN (%s)
+			  AND ($1::uuid IS NULL OR workspace_id = $1)
+			  AND status = 'pending'
+			  AND (NULLIF(TRIM(assignee), '') IS NOT NULL OR NULLIF($2, '') IS NOT NULL)
+			ORDER BY id FOR UPDATE)
+		UPDATE tasks t
 		SET status = 'in_progress',
-		    assignee = COALESCE(NULLIF(TRIM(assignee), ''), NULLIF($2, '')),
+		    assignee = COALESCE(NULLIF(TRIM(t.assignee), ''), NULLIF($2, '')),
 		    updated_at = NOW()
-		WHERE id IN (%s)
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		  AND status = 'pending'
-		  AND (NULLIF(TRIM(assignee), '') IS NOT NULL OR NULLIF($2, '') IS NOT NULL)`,
+		FROM locked
+		WHERE t.id = locked.id`,
 		strings.Join(placeholders, ","))
 	_, err := s.pool.Exec(ctx, q, idArgs...)
 	if err != nil {
@@ -496,11 +508,18 @@ func (s *Store) batchMarkTasksCompleted(ctx context.Context, wsID uuid.UUID, tas
 		idArgs = append(idArgs, id)
 		placeholders[i] = fmt.Sprintf("$%d", i+3)
 	}
-	q := fmt.Sprintf(`UPDATE tasks
-		SET status = 'completed', artifact = COALESCE($2, artifact), updated_at = NOW()
-		WHERE id IN (%s)
-		  AND ($1::uuid IS NULL OR workspace_id = $1)
-		  AND status NOT IN ('completed','cancelled')`,
+	// [F1124-84] Same lock-order fix as batchMarkTasksInProgress: lock rows in
+	// ascending id order via a MATERIALIZED CTE, then update exactly those rows.
+	q := fmt.Sprintf(`WITH locked AS MATERIALIZED (
+			SELECT id FROM tasks
+			WHERE id IN (%s)
+			  AND ($1::uuid IS NULL OR workspace_id = $1)
+			  AND status NOT IN ('completed','cancelled')
+			ORDER BY id FOR UPDATE)
+		UPDATE tasks t
+		SET status = 'completed', artifact = COALESCE($2, t.artifact), updated_at = NOW()
+		FROM locked
+		WHERE t.id = locked.id`,
 		strings.Join(placeholders, ","))
 	_, err := s.pool.Exec(ctx, q, idArgs...)
 	if err != nil {
