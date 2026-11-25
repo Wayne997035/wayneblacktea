@@ -64,6 +64,9 @@ func TestIsReservedAuditAction_SpacingCompat(t *testing.T) {
 		{"project_space_u0305", "project \u0305deleted", true},
 		{"project_space_u0332_restored", "project \u0332restored", true},
 		{"u0385_space_two_marks", "task\u0385deleted", true},
+		// [F1125-06] NFKD of 240 x U+0344 plus inserted U+034F pushes the
+		// placeholder canon past sanitize.Notes' 500-rune cap.
+		{"u0344_prefix_past_cap", strings.Repeat("\u0344", 240) + "task\u2017deleted", true},
 		{"plain_space_negative", "task deleted", false},
 		{"nbsp_negative", "task\u00a0deleted", false},
 		{"u2017_updated_negative", "task\u2017updated", false},
@@ -78,9 +81,10 @@ func TestIsReservedAuditAction_SpacingCompat(t *testing.T) {
 }
 
 // TestIsReservedAuditAction_CombiningMarkEnumeration guards [F1125-01]
-// exhaustively: every Mn/Me code point after a space, and every code point
-// whose NFKD starts with U+0020 and is longer than one rune, must read as a
-// single placeholder inside each reserved name.
+// exhaustively: every visible Mn/Me code point after a space, and every code
+// point whose NFKD starts with U+0020 and is longer than one rune, must read
+// as a single placeholder inside each reserved name. Invisible marks are
+// covered by TestIsReservedAuditAction_InvisibleRuns.
 func TestIsReservedAuditAction_CombiningMarkEnumeration(t *testing.T) {
 	var missed []string
 	templates := []string{"task%cdeleted", "project%cdeleted", "project%crestored"}
@@ -88,7 +92,7 @@ func TestIsReservedAuditAction_CombiningMarkEnumeration(t *testing.T) {
 		if r >= 0xD800 && r <= 0xDFFF {
 			continue
 		}
-		if unicode.In(r, unicode.Mn, unicode.Me) && !gtd.IsReservedAuditAction("task "+string(r)+"deleted") {
+		if unicode.In(r, unicode.Mn, unicode.Me) && !invisibleMark(r) && !gtd.IsReservedAuditAction("task "+string(r)+"deleted") {
 			missed = append(missed, fmt.Sprintf("mark U+%04X", r))
 		}
 		if !spacingLedNFKD(r) {
@@ -110,6 +114,99 @@ func TestIsReservedAuditAction_CombiningMarkEnumeration(t *testing.T) {
 func spacingLedNFKD(r rune) bool {
 	d := norm.NFKD.String(string(r))
 	return strings.HasPrefix(d, " ") && len([]rune(d)) > 1
+}
+
+// invisibleMark reports whether r is a combining mark that renders nothing:
+// a Variation_Selector or Other_Default_Ignorable_Code_Point Mn/Me.
+func invisibleMark(r rune) bool {
+	return unicode.In(r, unicode.Mn, unicode.Me) &&
+		unicode.In(r, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
+}
+
+// invisibleRuns lists "dropped character + only invisible marks" runs: every
+// Zs / Cf / Other_Default_Ignorable non-mark followed by U+FE0F, and U+200B /
+// U+00A0 / U+0020 followed by each invisible mark (also returned).
+func invisibleRuns() (runs []string, marks []rune) {
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		switch {
+		case r >= 0xD800 && r <= 0xDFFF:
+		case invisibleMark(r):
+			marks = append(marks, r)
+			for _, base := range []string{"​", " ", " "} {
+				runs = append(runs, base+string(r))
+			}
+		case unicode.In(r, unicode.Mn, unicode.Me):
+		case unicode.In(r, unicode.Zs, unicode.Cf, unicode.Other_Default_Ignorable_Code_Point):
+			runs = append(runs, string(r)+"️")
+		}
+	}
+	return runs, marks
+}
+
+// TestIsReservedAuditAction_InvisibleRuns guards [F1125-05]: a run that
+// renders nothing must not change the verdict wherever it is inserted into
+// the SE-03 / SE-07 payloads (start, before "deleted", end), and a space
+// followed only by invisible marks still reads as a plain space.
+func TestIsReservedAuditAction_InvisibleRuns(t *testing.T) {
+	runs, marks := invisibleRuns()
+	var missed []string
+	for _, p := range []string{"task‗deleted", "task ̳deleted"} {
+		for _, run := range runs {
+			for _, a := range []string{run + p, strings.Replace(p, "deleted", run+"deleted", 1), p + run} {
+				if !gtd.IsReservedAuditAction(a) {
+					missed = append(missed, fmt.Sprintf("%+q", a))
+				}
+			}
+		}
+	}
+	if len(missed) > 0 {
+		t.Errorf("%d invisible-run insertions not recognised as reserved, first: %s",
+			len(missed), strings.Join(missed[:min(len(missed), 10)], "; "))
+	}
+	for _, m := range marks {
+		if a := "task " + string(m) + "deleted"; gtd.IsReservedAuditAction(a) {
+			t.Errorf("IsReservedAuditAction(%+q) = true, want false (renders as a plain space)", a)
+		}
+	}
+
+	// [F1125-05] a visible mark anywhere in the invisible-mark string turns the
+	// dropped base + marks into one visible glyph (underlined blank), so it
+	// must read as one placeholder wherever the visible mark sits.
+	const visible = "̲"
+	all := string(marks)
+	var chain []string
+	for _, base := range []string{" ", "​"} {
+		add := func(mid string) { chain = append(chain, "task"+base+mid+"deleted") }
+		// (c) invisible first, visible last
+		add("️" + visible)
+		for _, m := range marks {
+			add(string(m) + visible)
+		}
+		// (d) visible first, invisible last
+		add(visible + "️")
+		for _, m := range marks {
+			add(visible + string(m))
+		}
+		// (e) visible at any position among repeated invisible marks
+		for k := 0; k <= 4; k++ {
+			for j := 0; j <= 4; j++ {
+				add(strings.Repeat("️", k) + visible + strings.Repeat("️", j))
+			}
+		}
+		// (e) long strings of every invisible mark, visible at either end
+		add(all + visible)
+		add(visible + all)
+	}
+	var chainMissed []string
+	for _, a := range chain {
+		if !gtd.IsReservedAuditAction(a) {
+			chainMissed = append(chainMissed, fmt.Sprintf("%+q", a))
+		}
+	}
+	if len(chainMissed) > 0 {
+		t.Errorf("%d base + invisible/visible mark strings not recognised as reserved, first: %s",
+			len(chainMissed), strings.Join(chainMissed[:min(len(chainMissed), 10)], "; "))
+	}
 }
 
 // TestIsReservedAuditAction_MultiRuneD guards [F1125-04]: a "d" may be drawn

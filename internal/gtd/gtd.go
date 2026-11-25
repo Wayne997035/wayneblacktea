@@ -148,7 +148,13 @@ var reservedAuditActions = map[string]bool{
 //     was bypassed by a category the denylist hadn't enumerated yet.
 //  4. The result is folded to lowercase.
 func canonicalAuditAction(action string) string {
-	s := norm.NFKD.String(sanitize.Notes(action))
+	return canonFromDecomposed(norm.NFKD.String(sanitize.Notes(action)))
+}
+
+// canonFromDecomposed runs steps 3-4 on an already sanitised, NFKD string,
+// so the placeholder canon is not truncated a second time by sanitize.Notes
+// after NFKD has expanded it [F1125-06].
+func canonFromDecomposed(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -174,23 +180,40 @@ func droppedByCanon(r rune) bool {
 
 // spacingCompatToPlaceholder returns action after NFKD with every rune that
 // canonicalAuditAction would drop, is not itself a combining mark (Mn/Me),
-// and is directly followed by a combining mark replaced by U+FFFD
-// [F1125-01]. Compatibility characters such as U+2017 decompose to
-// "space + combining mark" and render as ONE glyph, but canonicalAuditAction
-// drops both halves and the canon ends up one rune short; the directly-sent
-// expanded form "space + mark" does the same. The placeholder keeps the
-// position so isHomoglyphOf's Common wildcard matches it. The
+// and is directly followed by a visible combining mark replaced by U+FFFD
+// [F1125-01]. Compatibility characters such as U+2017 decompose to a space
+// plus a visible mark and render as ONE glyph, but canonicalAuditAction
+// drops both halves and the canon ends up one rune short; sending a dropped
+// character plus a visible mark directly does the same. The placeholder
+// keeps the position so isHomoglyphOf's Common wildcard matches it. The
 // not-Mn/Me condition [F1125-02] stops U+0385 (space + two marks) from
-// getting a second placeholder for its first mark, which would make canon
-// one rune too long. The stored action is never rewritten.
+// getting a second placeholder for its first mark. A run whose marks are all
+// invisible renders nothing, so it gets no placeholder either [F1125-05];
+// otherwise it would make this canon one rune too long. The stored action is
+// never rewritten.
 func spacingCompatToPlaceholder(action string) string {
 	rs := []rune(norm.NFKD.String(sanitize.Notes(action)))
 	for i := 0; i+1 < len(rs); i++ {
-		if droppedByCanon(rs[i]) && !unicode.In(rs[i], unicode.Mn, unicode.Me) && unicode.In(rs[i+1], unicode.Mn, unicode.Me) { // [F1125-02]
+		if droppedByCanon(rs[i]) && !unicode.In(rs[i], unicode.Mn, unicode.Me) && visibleMarkFollows(rs[i+1:]) { // [F1125-02]
 			rs[i] = '\uFFFD'
 		}
 	}
 	return string(rs)
+}
+
+// visibleMarkFollows reports whether the combining-mark run at the start of
+// rs contains a mark that renders: one that is neither a Variation_Selector
+// nor Other_Default_Ignorable_Code_Point (U+FE0F, U+034F, ...) [F1125-05].
+func visibleMarkFollows(rs []rune) bool {
+	for _, r := range rs {
+		if !unicode.In(r, unicode.Mn, unicode.Me) {
+			return false
+		}
+		if !unicode.Is(unicode.Variation_Selector, r) && !unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // foldASCIIConfusable maps the common ASCII look-alikes onto the letter
@@ -276,9 +299,9 @@ func containsBidiControl(s string) bool {
 //
 // ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
 // for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Two further
-// comparison forms [F1125-01] [F1125-04]: a "space + combining mark" run
-// (sent directly, or produced by NFKD of a compatibility character such as
-// U+2017) is compared as one placeholder character
+// comparison forms [F1125-01] [F1125-04]: a character the canon drops followed
+// by a visible combining mark (a space in the U+2017 / U+0385 cases, sent
+// directly or produced by NFKD) is compared as one placeholder character
 // (spacingCompatToPlaceholder), and a reserved name's "d" also matches a
 // "c" + "l" pair of look-alikes ("task_cleleted", Cyrillic spellings too).
 //
@@ -304,10 +327,11 @@ func IsReservedAuditAction(action string) bool {
 	if containsBidiControl(action) {
 		return true
 	}
-	// [F1125-01] two candidate canons: the plain one, and one where
-	// "space + combining mark" runs were first collapsed to a placeholder.
+	// [F1125-01] two candidate canons: the plain one, and one where each
+	// dropped character + visible combining mark run was first collapsed to a
+	// placeholder. [F1125-06] the second skips another sanitize.Notes pass.
 	plain := canonicalAuditAction(action)
-	spacing := canonicalAuditAction(spacingCompatToPlaceholder(action))
+	spacing := canonFromDecomposed(spacingCompatToPlaceholder(action))
 	for _, canon := range []string{plain, spacing} {
 		if reservedAuditActions[canon] {
 			return true
