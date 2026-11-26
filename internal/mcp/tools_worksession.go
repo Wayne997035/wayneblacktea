@@ -112,7 +112,7 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 				"Use when taking a break or switching context temporarily.",
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
-		mcp.WithString("summary", mcp.Description("What was accomplished since last checkpoint (required)"), mcp.Required(), mcp.MaxLength(5000)),
+		mcp.WithString("summary", mcp.Description("What was accomplished since last checkpoint (required)"), mcp.Required()),
 	), s.handleCheckpointWork)
 
 	ms.AddTool(mcp.NewTool(
@@ -126,7 +126,7 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 				"reads these rows back to reconstruct what was actually verified.",
 		),
 		mcp.WithString("session_id", mcp.Description("Work session UUID (required)"), mcp.Required()),
-		mcp.WithString("summary", mcp.Description("Final summary of what was accomplished (required)"), mcp.Required(), mcp.MaxLength(5000)),
+		mcp.WithString("summary", mcp.Description("Final summary of what was accomplished (required)"), mcp.Required()),
 		mcp.WithString("completed_task_ids", mcp.Description(
 			"JSON array of task UUIDs completed. Omitting this (or sending []) completes NONE of the "+
 				"tasks linked to this session by default — set complete_all_linked_tasks=true to mark every "+
@@ -457,7 +457,8 @@ func (s *Server) handleCheckpointWork(ctx context.Context, req mcp.CallToolReque
 
 	// Server-side length guard: mcp.MaxLength() is client-side advisory only.
 	if len(summary) > 5000 {
-		return mcp.NewToolResultError("summary exceeds 5000 character limit"), nil
+		// [F1126-06] bytes, not characters; same wording as validator.CheckField.
+		return mcp.NewToolResultError(validator.ByteLimitMessage("summary", len(summary))), nil
 	}
 
 	sessID, err := uuid.Parse(rawSessID)
@@ -853,7 +854,8 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 
 	// Server-side length guard: mcp.MaxLength() is client-side advisory only.
 	if len(summary) > 5000 {
-		return mcp.NewToolResultError("summary exceeds 5000 character limit"), nil
+		// [F1126-06] bytes, not characters; same wording as validator.CheckField.
+		return mcp.NewToolResultError(validator.ByteLimitMessage("summary", len(summary))), nil
 	}
 
 	sessID, err := uuid.Parse(rawSessID)

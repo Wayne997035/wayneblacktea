@@ -161,9 +161,10 @@ expand_tools — tools/list advertises the core set only, to keep the connect-ti
 context cost low. Call expand_tools with no argument for the group catalogue,
 then group="<name>" to reveal one group (the response carries the full JSON
 schema of every newly revealed tool), group="all" for everything, or
-group="reset" to go back to the core set. Hiding is a catalogue-level
-concern only: every tool on this server is callable by name at any time,
-whether or not it currently appears in tools/list.`
+group="reset" to go back to the core set. The server itself accepts any tool
+by name, but a Claude Code client may not see a freshly revealed tool until it
+loads that tool's schema (ToolSearch); if a call fails right after expanding,
+retry next turn.`
 
 func (s *Server) registerOnboardingTools(ms *server.MCPServer) {
 	ms.AddTool(mcp.NewTool(

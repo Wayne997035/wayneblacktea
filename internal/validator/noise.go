@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -21,6 +22,15 @@ var tagAllowedRe = regexp.MustCompile(`[^\w\-_./ ]`)
 // scriptTagRe detects a <script …> or </script> string (case-insensitive) in a field value.
 var scriptTagRe = regexp.MustCompile(`(?i)<\s*/?script[\s>]`)
 
+// ByteLimitMessage is the caller-facing text for a field over MaxFieldLen.
+// [F1126-06] The limit counts BYTES (len), not characters: 5000 bytes is about
+// 1,600 CJK characters, so the message names the unit and the actual size.
+// Only the field name and a number are interpolated, never the value.
+func ByteLimitMessage(name string, gotBytes int) string {
+	return fmt.Sprintf("%s exceeds %d-byte limit (got %d bytes; about 1,600 CJK chars max)",
+		name, MaxFieldLen, gotBytes)
+}
+
 // CheckField returns a non-empty reason when value violates noise heuristics
 // for a named text field (byte-length cap, <script> tag, markdown fence).
 // An empty return means the value is acceptable. Shared by both the MCP and
@@ -29,7 +39,7 @@ var scriptTagRe = regexp.MustCompile(`(?i)<\s*/?script[\s>]`)
 // duplicate the <script> / fence detection logic.
 func CheckField(name, value string) string {
 	if len(value) > MaxFieldLen {
-		return name + " exceeds 5000-character limit"
+		return ByteLimitMessage(name, len(value))
 	}
 	if scriptTagRe.MatchString(value) {
 		return name + " contains suspicious injection pattern (<script>)"

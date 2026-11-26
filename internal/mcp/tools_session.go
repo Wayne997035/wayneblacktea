@@ -46,8 +46,9 @@ func (s *Server) registerSessionTools(ms *server.MCPServer) {
 func (s *Server) handleSetSessionHandoff(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	intent := stringArg(args, "intent")
-	if intent == "" {
-		return mcp.NewToolResultError("intent is required"), nil
+	// [F1126-04] three-way report; "intent is required" stays the prefix.
+	if errResult := requireArgs(args, "intent is required", "intent"); errResult != nil {
+		return errResult, nil
 	}
 
 	contextSummary := stringArg(args, "context_summary")

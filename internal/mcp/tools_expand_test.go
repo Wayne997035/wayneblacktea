@@ -589,3 +589,67 @@ func TestExpansionStore_ConcurrentAccessIsSafe(t *testing.T) {
 		t.Errorf("all sessions reset but %d entries remain", st.size())
 	}
 }
+
+// [F1126-08] TestHiddenToolWording_MatchesClaudeCodeFlow: the four places that
+// explain hidden tools must describe the real Claude Code flow (expand, load
+// the schema with ToolSearch, retry next turn) and must not promise that a
+// hidden tool is simply callable at any time.
+func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	tool := s.MCPServer().GetTool(expandToolsName)
+	if tool == nil {
+		t.Fatal("expand_tools not registered")
+	}
+	places := map[string]string{
+		"mcpInstructions":          mcpInstructions,
+		"expandToolsNote":          expandToolsNote,
+		"expand_tools description": tool.Tool.Description,
+		"onboarding appendix":      mcpProtocolAppendix,
+	}
+	banned := []string{
+		"ALWAYS callable",
+		"callable by name at any time",
+		"stay callable by name",
+		"remain fully callable by name",
+	}
+	for name, text := range places {
+		if !strings.Contains(text, "ToolSearch") {
+			t.Errorf("%s does not mention ToolSearch", name)
+		}
+		for _, b := range banned {
+			if strings.Contains(text, b) {
+				t.Errorf("%s still contains %q", name, b)
+			}
+		}
+	}
+	for _, name := range []string{"mcpInstructions", "expandToolsNote", "onboarding appendix"} {
+		if !strings.Contains(places[name], "retry next turn") {
+			t.Errorf("%s does not say to retry next turn", name)
+		}
+	}
+	// [SEC211-01] The always-on protocol may only ask for a retry when the
+	// tool was not found (freshly expanded, schema not loaded yet), never for
+	// any failure: a blanket retry re-sends a failed non-idempotent write.
+	// [SEC211-02] Pin the whole clause up to its full stop, so a suffix such
+	// as "or fails" breaks it, and allow one retry instruction in total, so a
+	// separate sentence cannot add a broader one.
+	if !strings.Contains(mcpInstructions, "retry next turn if the tool is not found. ") {
+		t.Error("mcpInstructions does not scope its retry to a tool that is not found")
+	}
+	if n := strings.Count(strings.ToLower(mcpInstructions), "retry"); n != 1 {
+		t.Errorf("mcpInstructions mentions retry %d times, want exactly 1", n)
+	}
+	// [R1-S2] Only Claude Code needs expand_tools and ToolSearch before a
+	// hidden tool; the server itself accepts hidden tools by name, so the
+	// protocol must not state the step as a requirement for every client.
+	if strings.Contains(mcpInstructions, "hidden tools need expand_tools") {
+		t.Error("mcpInstructions states expand_tools as a requirement for every client")
+	}
+	if !strings.Contains(mcpInstructions, "in Claude Code, a hidden tool needs expand_tools") {
+		t.Error("mcpInstructions does not scope the expand_tools step to Claude Code")
+	}
+	if !strings.HasPrefix(mcpProtocolFull, mcpInstructions) {
+		t.Error("mcpProtocolFull must start with mcpInstructions")
+	}
+}

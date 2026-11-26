@@ -251,7 +251,12 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			// tools_worksession.go's established pattern) still fails closed.
 			// noMaxLength("assignee") below keeps the seam from enforcing this
 			// hint server-side, preserving that established pattern.
-			mcp.WithString("assignee", mcp.Description("Owner: claude | codex | human"), mcp.MaxLength(100)),
+			// [F1126-05] The schema advertises the canonical actors as an enum
+			// (single source of truth: gtd.CanonicalActors); noEnum("assignee")
+			// below keeps the seam from rejecting the aliases NormalizeActor
+			// still accepts. The description is just "Owner" because the enum
+			// now carries the values (core schema byte budget).
+			mcp.WithString("assignee", mcp.Description("Owner"), mcp.Enum(gtd.CanonicalActors...), mcp.MaxLength(100)),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower runs first")),
 			mcp.WithNumber("importance", mcp.Description("Importance 1-3, 1=high")),
 			mcp.WithString("context", mcp.Description("Why this task came up")),
@@ -270,6 +275,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		), seam(s, "add_task", s.handleAddTask),
 		uuidArgs("project_id"),
 		noMaxLength("assignee"),
+		noEnum("assignee"),
 	)
 
 	s.addTool(
@@ -339,7 +345,8 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 			), mcp.MaxLength(10000)),
 			mcp.WithNumber("priority", mcp.Description("Priority 1-5, lower runs first")),
 			mcp.WithNumber("importance", mcp.Description("Importance 1-3, 1=high")),
-			mcp.WithString("assignee", mcp.Description("Owner: claude | codex | human"), mcp.MaxLength(200)),
+			// [F1126-05] enum + short description, same reasoning as add_task.
+			mcp.WithString("assignee", mcp.Description("Owner"), mcp.Enum(gtd.CanonicalActors...), mcp.MaxLength(200)),
 			mcp.WithString("due_date", mcp.Description("RFC3339, e.g. 2026-12-31T00:00:00Z")),
 			mcp.WithString("context", mcp.Description("Discussion background"), mcp.MaxLength(10000)),
 			mcp.WithString("kind",
@@ -360,6 +367,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 		// identical rationale above) — gtd.NormalizeActor's allowlist is the
 		// real authority regardless of length.
 		noMaxLength("assignee"),
+		noEnum("assignee"),
 	)
 
 	s.addTool(
@@ -560,7 +568,10 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 				"Pass this once the PR is open so reconcile_merged_prs can match on merge.")),
 		mcp.WithString("assignee",
 			mcp.Description("Who is starting this task. Required unless the task already has an assignee — "+
-				"a task cannot enter in_progress without a known owner (p6-7).")),
+				"a task cannot enter in_progress without a known owner (p6-7)."),
+			// [F1126-05] enum from gtd.CanonicalActors; noEnum on the seam call
+			// below keeps alias/case-insensitive input accepted.
+			mcp.Enum(gtd.CanonicalActors...)),
 	// begin_task's task_id is intentionally NOT uuidArgs-marked: handleBeginTask
 	// keeps its own inline uuid.Parse so it can embed the parse error verbatim
 	// ("invalid task_id: <err>") — the documented exception on requireUUIDArg's
@@ -569,7 +580,7 @@ func (s *Server) registerGTDTools(ms *server.MCPServer) {
 	// reject a wholly-missing/empty task_id with "task_id is required" before
 	// the handler runs; only a malformed-but-non-empty task_id now reaches the
 	// hand-written uuid.Parse and its dynamic message.
-	), seam(s, "begin_task", s.handleBeginTask))
+	), seam(s, "begin_task", s.handleBeginTask), noEnum("assignee"))
 }
 
 // Read-time bounds for db.Task/db.Project's free-text fields, applied by

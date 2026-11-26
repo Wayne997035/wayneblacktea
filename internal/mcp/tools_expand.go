@@ -272,8 +272,12 @@ type expandResultResponse struct {
 	Note           string     `json:"note"`
 }
 
-const expandToolsNote = "Tools hidden from tools/list remain fully callable by name at any time; " +
-	"expansion only changes what the catalogue advertises."
+// [F1126-08] The server routes hidden tools by name, but a Claude Code client
+// may not see a freshly revealed tool until it loads the schema, so the note
+// says what to do rather than promising the tool is callable.
+const expandToolsNote = "Catalogue refresh after expanding is best-effort. Claude Code: load a revealed tool's " +
+	"schema (ToolSearch) before calling it; if a call fails right after expanding, retry next turn. " +
+	"The server itself accepts hidden tools by name."
 
 // registerExpandTools registers the expand_tools tool. ms is captured by the
 // handler closure so the handler can (a) read the live tool registry to emit
@@ -285,8 +289,8 @@ func (s *Server) registerExpandTools(ms *server.MCPServer) {
 			"Reveals more of this server's tools in tools/list. No argument returns the group "+
 				"catalogue and changes nothing. group=\"<name>\" reveals that group for THIS session "+
 				"and returns the full JSON schema of every newly revealed tool. group=\"all\" reveals "+
-				"everything; group=\"reset\" returns to the core set. Hidden tools are ALWAYS callable "+
-				"by name — this only changes what the catalogue advertises.",
+				"everything; group=\"reset\" returns to the core set. Then load the revealed tool's "+
+				"schema (Claude Code: ToolSearch) before calling it.",
 		),
 		mcp.WithString("group",
 			mcp.Description("Group to reveal, or \"all\" / \"reset\". Omit to list the catalogue."),

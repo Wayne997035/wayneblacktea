@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -190,6 +191,14 @@ func TestSEC_F170_07_StoreErrorTextAndResultAgree(t *testing.T) {
 
 	text := storeErrorText("creating goal", err)
 	viaResult := resultText(storeErrorResult("creating goal", err))
+	// [F1126-07] Each call draws its own random ref; normalise it before the
+	// full-text comparison, and require that both really carried one.
+	refRe := regexp.MustCompile(`\(ref [0-9a-f]{8}\)`)
+	if !refRe.MatchString(text) || !refRe.MatchString(viaResult) {
+		t.Errorf("generic failure lacks a ref: text=%q viaResult=%q", text, viaResult)
+	}
+	text = refRe.ReplaceAllString(text, "(ref X)")
+	viaResult = refRe.ReplaceAllString(viaResult, "(ref X)")
 	if text != viaResult {
 		t.Errorf("storeErrorText = %q but storeErrorResult produced %q — the two policies have "+
 			"drifted, so which one a call site uses now changes what the client sees", text, viaResult)

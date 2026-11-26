@@ -26,7 +26,7 @@ func TestCheckField(t *testing.T) {
 			fieldName:  "rationale",
 			value:      strings.Repeat("a", MaxFieldLen+1),
 			wantNoisy:  true,
-			wantSubstr: "5000-character",
+			wantSubstr: "5000-byte",
 		},
 		{
 			name:      "exact 5000 chars is accepted",
@@ -124,7 +124,7 @@ func TestCheckDecisionNoise(t *testing.T) {
 			decision:  "ok",
 			rationale: "different ok",
 			wantNoisy: true,
-			wantMsg:   "5000-character",
+			wantMsg:   "5000-byte",
 		},
 		{
 			name:      "context with script tag rejected",
@@ -184,7 +184,7 @@ func TestCheckHandoffNoise(t *testing.T) {
 			name:      "intent over 5000 chars rejected",
 			intent:    strings.Repeat("z", MaxFieldLen+1),
 			wantNoisy: true,
-			wantMsg:   "5000-character",
+			wantMsg:   "5000-byte",
 		},
 		{
 			name:       "context_summary with script tag rejected",
@@ -401,4 +401,40 @@ func makeNTags(n int) []string {
 		out[i] = strings.Repeat("a", i+1) // "a", "aa", "aaa", ...
 	}
 	return out
+}
+
+// [F1126-06] TestCheckField_ByteLimitMessage: the over-limit message names the
+// unit (bytes), the limit, the actual size and the CJK equivalent, never the
+// old "5000-character" wording, and never the value itself.
+func TestCheckField_ByteLimitMessage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		value     string
+		wantBytes string
+	}{
+		{"ascii just over", strings.Repeat("a", MaxFieldLen+1), "got 5001 bytes"},
+		{"cjk 1700 chars is 5100 bytes", strings.Repeat("中", 1700), "got 5100 bytes"},
+		{"far over", strings.Repeat("b", 12000), "got 12000 bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := CheckField("context", tt.value)
+			for _, want := range []string{"context exceeds 5000-byte limit", tt.wantBytes, "1,600"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("message %q does not contain %q", got, want)
+				}
+			}
+			if strings.Contains(got, "5000-character") || strings.Contains(got, "5000 character") {
+				t.Errorf("message %q still uses the character wording", got)
+			}
+			if strings.Contains(got, tt.value[:20]) {
+				t.Errorf("message echoes the value: %q", got)
+			}
+		})
+	}
+	if got := CheckField("context", strings.Repeat("b", MaxFieldLen)); got != "" {
+		t.Errorf("exactly %d bytes must pass, got %q", MaxFieldLen, got)
+	}
 }

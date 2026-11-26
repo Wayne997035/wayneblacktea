@@ -173,6 +173,22 @@ func noMaxLength(names ...string) specOption {
 	}
 }
 
+// noEnum suppresses automatic enum enforcement for an argument whose schema
+// advertises mcp.Enum() only as a client-side hint. [F1126-05] assignee
+// advertises gtd.CanonicalActors, but the seam's enum check is case-sensitive
+// and alias-blind while gtd.NormalizeActor (the real authority) also accepts
+// "Claude", " codex " and aliases such as "claude-code"; without noEnum the
+// seam would start rejecting values the handler accepts today.
+func noEnum(names ...string) specOption {
+	return func(ts *toolSpec) {
+		for _, n := range names {
+			if a, ok := ts.args[n]; ok {
+				a.enum = nil
+			}
+		}
+	}
+}
+
 // addTool derives+caches tool's toolSpec (applying opts), then registers it
 // on ms exactly as ms.AddTool would. The mcp.NewTool() call itself (tool) is
 // never altered by this wrapper — only the internal validation cache and the
@@ -285,6 +301,12 @@ func (ts *toolSpec) validateRequired(args map[string]any) *mcp.CallToolResult {
 	for _, name := range ts.requiredOrder {
 		a := ts.args[name]
 		if a.isUUID {
+			// [F1126-03] A blank UUID argument gets the three-way report
+			// before requireUUIDArg runs; a non-blank malformed value still
+			// takes requireUUIDArg's invalid-UUID message unchanged.
+			if stringArg(args, name) == "" {
+				return requiredArgsErrorWith(name+" is required", args, ts.requiredOrder, ts.blankFor)
+			}
 			invalidMsg := a.uuidMsg
 			if invalidMsg == "" {
 				invalidMsg = "invalid " + name + " UUID"
@@ -294,11 +316,33 @@ func (ts *toolSpec) validateRequired(args map[string]any) *mcp.CallToolResult {
 			}
 			continue
 		}
-		if errResult := checkRequiredPresent(args, a); errResult != nil {
+		if errResult := checkRequiredPresent(args, a, ts.requiredOrder, ts.blankFor); errResult != nil {
 			return errResult
 		}
 	}
 	return nil
+}
+
+// argTypeString is the schema "type" value of a string argument.
+const argTypeString = "string"
+
+// blankFor is the seam's blank test for the three-way required report
+// [F1126-03]: UUID arguments follow requireUUIDArg (empty string or non-string
+// = blank), other string arguments follow checkRequiredPresent (TrimSpace),
+// and number / boolean / structured arguments are blank only when null.
+func (ts *toolSpec) blankFor(key string, v any) bool {
+	a, ok := ts.args[key]
+	if !ok {
+		return isBlankStringValue(key, v)
+	}
+	if a.isUUID {
+		s, isStr := v.(string)
+		return !isStr || s == ""
+	}
+	if a.typ == argTypeString {
+		return isBlankStringValue(key, v)
+	}
+	return v == nil
 }
 
 // validateConstraints is validate()'s pass B: enum/maxLength/UUID-format
@@ -362,7 +406,11 @@ func checkArgConstraints(name, sv string, a *argSpec) *mcp.CallToolResult {
 // UpdateProject, …) already trimmed first — sprint 8-7 gap F. The stored
 // value itself is untouched (decodeToolArgs still decodes the raw string);
 // only the required/empty decision uses the trimmed form.
-func checkRequiredPresent(args map[string]any, a *argSpec) *mcp.CallToolResult {
+//
+// [F1126-03] When the argument is absent or blank the error is the three-way
+// report over ALL of required (see required_args.go), with the legacy message
+// as its prefix. Type-mismatch errors above still win.
+func checkRequiredPresent(args map[string]any, a *argSpec, required []string, blank blankFn) *mcp.CallToolResult {
 	raw, present := args[a.name]
 	empty := !present
 	if present {
@@ -388,7 +436,7 @@ func checkRequiredPresent(args map[string]any, a *argSpec) *mcp.CallToolResult {
 		if msg == "" {
 			msg = a.name + " is required"
 		}
-		return mcp.NewToolResultError(msg)
+		return requiredArgsErrorWith(msg, args, required, blank)
 	}
 	return nil
 }

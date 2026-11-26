@@ -252,3 +252,72 @@ func TestUpdateTask_PendingStatusDoesNotRequireAssignee(t *testing.T) {
 		t.Fatalf("update_task to pending (not in_progress) must not require an assignee, got: %s", resultText(r))
 	}
 }
+
+// [F1126-05] TestAssigneeSchema_EnumOnThreeTools: add_task, update_task and
+// begin_task advertise gtd.CanonicalActors as the assignee enum, and the two
+// core tools keep the short "Owner" description that pays for it.
+func TestAssigneeSchema_EnumOnThreeTools(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+
+	for _, name := range []string{"add_task", "update_task", "begin_task"} {
+		tool := s.MCPServer().GetTool(name)
+		if tool == nil {
+			t.Fatalf("%s not registered on MCPServer()", name)
+		}
+		prop, ok := tool.Tool.InputSchema.Properties["assignee"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s assignee schema = %#v, want map", name, tool.Tool.InputSchema.Properties["assignee"])
+		}
+		got, ok := prop["enum"].([]string)
+		if !ok {
+			t.Fatalf("%s assignee has no []string enum: %#v", name, prop["enum"])
+		}
+		if strings.Join(got, ",") != strings.Join(gtd.CanonicalActors, ",") {
+			t.Errorf("%s assignee enum = %v, want %v", name, got, gtd.CanonicalActors)
+		}
+	}
+	for _, name := range []string{"add_task", "update_task"} {
+		prop := s.MCPServer().GetTool(name).Tool.InputSchema.Properties["assignee"].(map[string]any)
+		if prop["description"] != "Owner" {
+			t.Errorf("%s assignee description = %v, want %q", name, prop["description"], "Owner")
+		}
+	}
+}
+
+// [F1126-05] TestAssignee_EnumDoesNotRejectAliasesAtSeam: the advertised enum
+// must not make the seam reject what NormalizeActor accepts (case, whitespace,
+// aliases). Guards the noEnum("assignee") option on update_task and begin_task
+// (add_task is guarded by TestAddTask_ValidAssigneeAliasNormalized).
+func TestAssignee_EnumDoesNotRejectAliasesAtSeam(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	const seamEnumMsg = "assignee must be one of"
+
+	for _, alias := range []string{"claude-code", "Claude", " codex "} {
+		upd := callUpdateTask(t, s, map[string]any{
+			"task_id":  seedTask(t, s).String(),
+			"assignee": alias,
+		})
+		if strings.Contains(resultText(upd), seamEnumMsg) {
+			t.Errorf("update_task rejected alias %q at the seam: %s", alias, resultText(upd))
+		}
+		if upd.IsError {
+			t.Errorf("update_task with alias %q errored: %s", alias, resultText(upd))
+		}
+
+		beg := callTool(t, s, "begin_task", map[string]any{
+			"task_id":  seedTask(t, s).String(),
+			"assignee": alias,
+		}, s.handleBeginTask)
+		if strings.Contains(resultText(beg), seamEnumMsg) {
+			t.Errorf("begin_task rejected alias %q at the seam: %s", alias, resultText(beg))
+		}
+	}
+
+	// A genuinely unknown value is still rejected (by NormalizeActor).
+	bad := callUpdateTask(t, s, map[string]any{"task_id": seedTask(t, s).String(), "assignee": "gemini"})
+	if !bad.IsError {
+		t.Errorf("update_task with assignee gemini must still error, got %s", resultText(bad))
+	}
+}

@@ -202,7 +202,7 @@ func TestHandleCheckpointWork_RejectsOversizedSummary(t *testing.T) {
 	if !r.IsError {
 		t.Fatal("expected error for oversized summary")
 	}
-	if !strings.Contains(resultText(r), "exceeds 5000 character limit") {
+	if !strings.Contains(resultText(r), "exceeds 5000-byte limit") {
 		t.Errorf("error message should mention limit, got: %s", resultText(r))
 	}
 }
@@ -232,7 +232,7 @@ func TestHandleFinishWork_RejectsOversizedSummary(t *testing.T) {
 	if !r.IsError {
 		t.Fatal("expected error for oversized summary")
 	}
-	if !strings.Contains(resultText(r), "exceeds 5000 character limit") {
+	if !strings.Contains(resultText(r), "exceeds 5000-byte limit") {
 		t.Errorf("error message should mention limit, got: %s", resultText(r))
 	}
 }
@@ -2635,5 +2635,65 @@ func TestHandleStartWork_NoAssigneeAnywhere_TaskStaysPending(t *testing.T) {
 
 	if got := queryMCPTaskStatus(t, db, taskID); got != "pending" {
 		t.Errorf("task status: got %q, want pending (must NOT flip with no assignee anywhere)", got)
+	}
+}
+
+// [F1126-06] TestWorksessionSummary_ByteLimitMessage: checkpoint_work and
+// finish_work state the summary limit in bytes with the actual size, never as
+// "5000 character".
+func TestWorksessionSummary_ByteLimitMessage(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	cases := []struct {
+		name      string
+		summary   string
+		wantBytes string
+	}{
+		{"ascii 5001", strings.Repeat("z", 5001), "got 5001 bytes"},
+		{"cjk 1700 chars", strings.Repeat("中", 1700), "got 5100 bytes"},
+	}
+	calls := map[string]func(*testing.T, *Server, map[string]any) *mcpmsg.CallToolResult{
+		"checkpoint_work": callCheckpointWork,
+		"finish_work":     callFinishWork,
+	}
+	for tool, call := range calls {
+		for _, c := range cases {
+			r := call(t, s, map[string]any{"session_id": uuid.NewString(), "summary": c.summary})
+			text := resultText(r)
+			if !r.IsError {
+				t.Fatalf("%s/%s: expected an error", tool, c.name)
+			}
+			for _, want := range []string{"5000-byte", c.wantBytes} {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s/%s: %q does not contain %q", tool, c.name, text, want)
+				}
+			}
+			if strings.Contains(text, "5000 character") || strings.Contains(text, "5000-character") {
+				t.Errorf("%s/%s: still the character wording: %q", tool, c.name, text)
+			}
+		}
+	}
+}
+
+// TestWorksessionSummarySchema_NoCharMaxLength: the server caps summary at
+// 5000 bytes, while JSON Schema maxLength counts characters, so a declared
+// maxLength of 5000 would promise CJK text the server rejects past about
+// 1,666 characters. The schema must not declare one (decision 518ef214).
+func TestWorksessionSummarySchema_NoCharMaxLength(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	for _, name := range []string{"checkpoint_work", "finish_work"} {
+		tool := s.MCPServer().GetTool(name)
+		if tool == nil {
+			t.Fatalf("%s not registered on MCPServer()", name)
+		}
+		summary, ok := tool.Tool.InputSchema.Properties["summary"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s InputSchema.Properties[%q] = %#v, want map[string]any",
+				name, "summary", tool.Tool.InputSchema.Properties["summary"])
+		}
+		if v, has := summary["maxLength"]; has {
+			t.Errorf("%s summary schema declares maxLength %v; the server limit is in bytes", name, v)
+		}
 	}
 }
