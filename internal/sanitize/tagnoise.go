@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 )
 
 // ErrTagNoise is returned when a string contains tool-call serialization
@@ -59,18 +61,30 @@ func findFragmentMatch(s string) (start, end int, ok bool) {
 // [start,end) — see excerptWindowRunes for why the window is capped instead
 // of returning the whole string.
 func excerptAround(s string, start, end int) string {
+	return excerptAroundWindow(s, start, end, excerptWindowRunes)
+}
+
+// excerptAroundWindow cuts a rune window of `window` runes on each side of the
+// byte range [start,end) and neutralizes boundary markers in the result.
+// [F1126-09] The excerpt is content written by a user (or by an earlier actor,
+// when a stored payload is re-validated) and goes back to the caller, so it
+// gets the same boundary-marker neutralization as other free-text fields. The
+// neutralization runs on the cut excerpt: cutting only removes text, so it
+// cannot assemble a marker that was not already in the input. This holds when
+// the window grows or shorter markers are registered.
+func excerptAroundWindow(s string, start, end, window int) string {
 	runes := []rune(s)
 	startRune := len([]rune(s[:start]))
 	endRune := startRune + len([]rune(s[start:end]))
-	from := startRune - excerptWindowRunes
+	from := startRune - window
 	if from < 0 {
 		from = 0
 	}
-	to := endRune + excerptWindowRunes
+	to := endRune + window
 	if to > len(runes) {
 		to = len(runes)
 	}
-	return string(runes[from:to])
+	return safetext.NeutralizeBoundaryMarkers(string(runes[from:to]))
 }
 
 // ValidateNoTagNoise returns an error wrapping ErrTagNoise (errors.Is-

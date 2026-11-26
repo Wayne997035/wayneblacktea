@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 )
 
@@ -133,5 +134,48 @@ func TestValidateNoTagNoise_ExcerptIsBounded(t *testing.T) {
 	}
 	if strings.Contains(msg, strings.Repeat("x", 100)) || strings.Contains(msg, strings.Repeat("y", 100)) {
 		t.Errorf("error message leaked far more of the payload than the excerpt window should allow: %q", msg)
+	}
+}
+
+// TestValidateNoTagNoise_ExcerptStaysReadable is the reverse case for
+// [F1126-09]: ordinary input must come back readable, not replaced by the
+// boundary-marker placeholder.
+func TestValidateNoTagNoise_ExcerptStaysReadable(t *testing.T) {
+	err := sanitize.ValidateNoTagNoise("please see </rationale> for detail")
+	if err == nil {
+		t.Fatal("expected ErrTagNoise, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "see </rationale> for") {
+		t.Errorf("excerpt not readable: %q", msg)
+	}
+	if strings.Contains(msg, safetext.BoundaryMarkerPlaceholder) {
+		t.Errorf("excerpt wrongly carries placeholder: %q", msg)
+	}
+}
+
+// TestValidateNoTagNoise_ExcerptNeverCarriesMarker is a tripwire for the
+// public path [SE212-01]: today's excerpt window cannot hold a whole boundary
+// marker, so this passes trivially. It fails only if the window grows enough
+// to hold one AND the public excerpt stops going through the neutralizing
+// excerptAroundWindow — the regression the white-box test cannot see.
+// [SE212-02] A marker that starts with '=' can share that rune with the end of
+// a "<parameter name=" match, so the window holds it with one rune less; the
+// second input shape covers that case.
+func TestValidateNoTagNoise_ExcerptNeverCarriesMarker(t *testing.T) {
+	for _, m := range safetext.BoundaryMarkers() {
+		inputs := []string{m + "</rationale>" + m}
+		if strings.HasPrefix(m, "=") {
+			inputs = append(inputs, "<parameter name"+m)
+		}
+		for _, in := range inputs {
+			err := sanitize.ValidateNoTagNoise(in)
+			if err == nil {
+				t.Fatalf("expected ErrTagNoise for input %q", in)
+			}
+			if strings.Contains(err.Error(), m) {
+				t.Errorf("public excerpt carries boundary marker %q: %q", m, err.Error())
+			}
+		}
 	}
 }
