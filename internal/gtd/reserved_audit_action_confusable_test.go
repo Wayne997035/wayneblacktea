@@ -2,6 +2,7 @@ package gtd_test
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode"
@@ -444,4 +445,106 @@ func TestIsReservedAuditAction_ZeroWidthBaseRuns(t *testing.T) {
 	// (i) one slot with two marks must not become two placeholders.
 	checkReservedVerdict(t, "(i) two marks, one slot", false,
 		[]string{"task\u0385eleted", "task \u0332\u0333eleted"})
+}
+
+// clGapGroupA builds the (a) inputs: c + b + U+0333 + l at the five d
+// positions, b over every base. U+2017 is deliberate: the plain canon drops it
+// whole, so only the spacing canon can match; a plain "_" would let the plain
+// canon answer true and hide the gap.
+func clGapGroupA(bs []rune) map[string][]string {
+	return map[string][]string{
+		"(a1) task_cleleted":     sandwich(bs, "task\u2017c", "\u0333leleted"),
+		"(a2) task_deletecl":     sandwich(bs, "task\u2017deletec", "\u0333l"),
+		"(a3) project_cleleted":  sandwich(bs, "project\u2017c", "\u0333leleted"),
+		"(a4) project_deletecl":  sandwich(bs, "project\u2017deletec", "\u0333l"),
+		"(a5) project_restorecl": sandwich(bs, "project\u2017restorec", "\u0333l"),
+	}
+}
+
+// TestIsReservedAuditAction_ClPlaceholderGap guards [F1126-01]: a placeholder
+// may sit between the "c" and the "l" of a "cl" d, any number of them, but a
+// solid rune may not.
+func TestIsReservedAuditAction_ClPlaceholderGap(t *testing.T) {
+	bs := withoutBidi(zeroWidthBases())
+	if len(bs) == 0 {
+		t.Fatal("empty base enumeration")
+	}
+	for label, inputs := range clGapGroupA(bs) {
+		checkReservedVerdict(t, label, true, inputs)
+	}
+
+	// (b) three placeholders between c and l.
+	checkReservedVerdict(t, "(b) three placeholders between c and l", true, []string{
+		"task\u2017c\u200b\u0333\u00a0\u0301\u2060\u0332leleted",
+	})
+
+	// (c) a placeholder as the l of cl (R3-S1): narrowing the l side must fail.
+	checkReservedVerdict(t, "(c) placeholder as l of cl", true, []string{
+		"task_c\u200b\u0332eleted",
+		"project_c\u200b\u0332eleted",
+		"project_restorec\u200b\u0332",
+	})
+
+	// (d) a solid rune between c and l must not be skipped.
+	var solid []string
+	for _, x := range []string{"e", "x", "z", "o"} {
+		solid = append(solid, "task\u2017c"+x+"leleted")
+	}
+	checkReservedVerdict(t, "(d) solid rune between c and l", false, solid)
+}
+
+// allocBytesPerRun returns the mean TotalAlloc bytes of one call to f.
+func allocBytesPerRun(runs uint64, f func()) uint64 {
+	f()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range runs {
+		f()
+	}
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) / runs
+}
+
+// TestIsReservedAuditAction_WorstCaseCost guards [F1126-02]: the matcher's
+// allocation count and bytes stay small for the worst inputs sanitize.Notes
+// lets through (500 runes that NFKD expands). It does not call t.Parallel so
+// no other test measures MemStats at the same time.
+func TestIsReservedAuditAction_WorstCaseCost(t *testing.T) {
+	const maxAllocs = 200
+	const maxBytes = 1 << 20
+
+	// Input one: 500 x U+FDFA (7500-rune canon) must be cut by the pre-filter.
+	one := strings.Repeat("\ufdfa", 500)
+	if gtd.IsReservedAuditAction(one) {
+		t.Errorf("input one: want false, got true")
+	}
+	if got := testing.AllocsPerRun(5, func() { gtd.IsReservedAuditAction(one) }); got > maxAllocs {
+		t.Errorf("input one: %v allocs per call, want <= %d", got, maxAllocs)
+	} else {
+		t.Logf("input one: %v allocs per call", got)
+	}
+	got := allocBytesPerRun(5, func() { gtd.IsReservedAuditAction(one) })
+	if got > maxBytes {
+		t.Errorf("input one: %d bytes per call, want <= %d", got, maxBytes)
+	}
+	t.Logf("input one: %d bytes per call", got)
+
+	// Input two: the pre-filter lets it through; tables must be contiguous.
+	two := strings.Repeat("\u00a8", 499) + "x"
+	if gtd.IsReservedAuditAction(two) {
+		t.Errorf("input two: want false, got true")
+	}
+	if got := testing.AllocsPerRun(5, func() { gtd.IsReservedAuditAction(two) }); got > maxAllocs {
+		t.Errorf("input two: %v allocs per call, want <= %d", got, maxAllocs)
+	} else {
+		t.Logf("input two: %v allocs per call", got)
+	}
+
+	// Input three: many placeholders must not make the pre-filter drop a
+	// reserved name; only non-placeholder runes count.
+	three := "task\u2017" + strings.Repeat("\u200b\u0333", 30) + "deleted"
+	if !gtd.IsReservedAuditAction(three) {
+		t.Errorf("input three: want true (reserved), got false")
+	}
 }

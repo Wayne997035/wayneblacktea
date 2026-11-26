@@ -251,32 +251,55 @@ func runeLooksLike(r, want rune) bool {
 // isHomoglyphOf reports whether canon (already canonicalised) reads as name
 // (an ASCII reservedAuditActions key). Each name rune is matched by one canon
 // rune via runeLooksLike, except that a name "d" may also be matched by two
-// canon runes that look like "c" then "l" [F1125-04]. A U+FFFD in canon (the
-// placeholder from spacingCompatToPlaceholder) may match one name rune or
-// none [F1125-07]: a zero-width base character plus a visible mark draws no
-// extra cell, a wide one draws one, and the placeholder does not record
-// which, so both readings are accepted and the number and position of
-// skipped placeholders is unlimited. The match is a
-// dynamic programme, ok[i][j] = canon[i:] reads as name[j:], costing
-// O(len(canon) * len(name)).
+// canon runes that look like "c" then "l" [F1125-04], with any number of
+// placeholders allowed between the "c" and the "l" [F1126-01]. A U+FFFD in
+// canon (the placeholder from spacingCompatToPlaceholder) may match one name
+// rune or none [F1125-07]: a zero-width base character plus a visible mark
+// draws no extra cell, a wide one draws one, and the placeholder does not
+// record which, so both readings are accepted and the number and position of
+// skipped placeholders is unlimited. The match is a dynamic programme over two
+// tables: ok[i][j] = canon[i:] reads as name[j:]; half[i][j] (only for j where
+// name[j] is "d") = the "c" of that "d" has been read, and canon[i:] reads as
+// the skippable placeholders, then "l", then name[j+1:]. It costs
+// O(len(canon) * len(name)). A canon holding more than 2 * len(name)
+// non-placeholder runes cannot match (a name rune consumes at most two of
+// them, the "cl" case), so it is rejected before any table is allocated, and
+// both tables are cut from one allocation [F1126-02].
 func isHomoglyphOf(canon, name []rune) bool {
 	n, m := len(canon), len(name)
-	ok := make([][]bool, n+1) // row n: canon used up; "cl" reads ok[i+2] only when i+2 <= n
+	solid := 0
+	for _, r := range canon {
+		if r != '\uFFFD' {
+			solid++
+		}
+	}
+	if solid > 2*m { // [F1126-02] each name rune consumes at most two non-placeholder canon runes ("cl")
+		return false
+	}
+	w := m + 1
+	flat := make([]bool, 2*(n+1)*w) // [F1126-02] both tables in one allocation
+	ok := make([][]bool, n+1)
+	half := make([][]bool, n+1)
 	for i := range ok {
-		ok[i] = make([]bool, m+1)
+		ok[i] = flat[2*i*w : (2*i+1)*w]
+		half[i] = flat[(2*i+1)*w : (2*i+2)*w]
 	}
 	ok[n][m] = true
 	for i := n - 1; i >= 0; i-- {
 		for j := m; j >= 0; j-- {
-			ok[i][j] = readsFrom(canon, name, ok, i, j)
+			if j < m && name[j] == 'd' {
+				// [F1126-01] the "c" of a "cl" d has been read: skip placeholders, then read the "l"
+				half[i][j] = (canon[i] == '\uFFFD' && half[i+1][j]) || (runeLooksLike(canon[i], 'l') && ok[i+1][j+1])
+			}
+			ok[i][j] = readsFrom(canon, name, ok, half, i, j)
 		}
 	}
 	return ok[0][0]
 }
 
 // readsFrom computes one isHomoglyphOf cell: whether canon[i:] reads as
-// name[j:] given the already-computed later cells in ok.
-func readsFrom(canon, name []rune, ok [][]bool, i, j int) bool {
+// name[j:] given the already-computed later cells in ok and half.
+func readsFrom(canon, name []rune, ok, half [][]bool, i, j int) bool {
 	if canon[i] == '\uFFFD' && ok[i+1][j] { // [F1125-07] placeholder matches nothing
 		return true
 	}
@@ -286,9 +309,8 @@ func readsFrom(canon, name []rune, ok [][]bool, i, j int) bool {
 	if runeLooksLike(canon[i], name[j]) && ok[i+1][j+1] {
 		return true
 	}
-	// [F1125-04] a name "d" drawn as "c" + "l"; U+FFFD may stand for either.
-	return name[j] == 'd' && i+1 < len(canon) &&
-		runeLooksLike(canon[i], 'c') && runeLooksLike(canon[i+1], 'l') && ok[i+2][j+1]
+	// [F1125-04] a name "d" drawn as "c" + "l"; U+FFFD may stand for either or sit between them.
+	return name[j] == 'd' && runeLooksLike(canon[i], 'c') && half[i+1][j]
 }
 
 // containsBidiControl reports whether s contains any of the 12 Unicode bidi
@@ -332,7 +354,8 @@ func containsBidiControl(s string) bool {
 // zero-width or near-zero-width base plus a visible mark cannot hide a
 // reserved name; a literal U+FFFD typed by the caller is skippable the same
 // way. A reserved name's "d" also matches a "c" + "l" pair of look-alikes
-// ("task_cleleted", Cyrillic spellings too).
+// with any number of placeholders between them ("task_cleleted", Cyrillic
+// spellings too).
 //
 // Residual gaps, accepted: a character that NFKD turns into one bare space
 // with no combining mark after it (U+00A0 etc., which render blank) is still
@@ -340,8 +363,16 @@ func containsBidiControl(s string) bool {
 // for m) are not folded; homoglyphs outside Latin/Cyrillic/Greek/Common (e.g.
 // some Armenian letters) are not caught; and glyphs that render blank
 // without carrying Other_Default_Ignorable_Code_Point are not caught beyond
-// the U+2800 exclusion in droppedByCanon. The full Unicode confusables table
-// is deliberately not used.
+// the U+2800 exclusion in droppedByCanon; spacing combining marks (Mc) are
+// dropped like other marks, so one that draws a visible glyph on its own is
+// not caught unless a visible Mn/Me directly follows it after NFKD (canonical
+// reordering moves a following mark of lower nonzero combining class in
+// front of any Mc whose own class is nonzero, such as U+1D165-U+1D166,
+// U+1D16D-U+1D172, U+302E and U+302F, so typing such a mark after one of
+// them does not help), including the ten
+// Common-script ones (U+1CE1, U+1CF7, U+1D165-U+1D166, U+1D16D-U+1D172;
+// U+1D165 draws a vertical stem that reads as l). The full Unicode
+// confusables table is deliberately not used.
 //
 // An accented spelling of a reserved name (e.g. "prôject_dèleted") is also
 // rejected, even though the accent is visually distinguishable and not a
