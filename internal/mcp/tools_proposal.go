@@ -692,11 +692,11 @@ func (s *Server) acceptProposalPg(ctx context.Context, id uuid.UUID) (*mcp.CallT
 	// [F170-07] errMsg is redaction-safe by construction now: every producer
 	// inside materializeFromPayload{Pg,Iface,SQLiteTx} routes its store error
 	// through storeErrorText, so what lands here is "<op> failed (ref <8 hex>)"
-	// — the ref is random, so never compare it for equality — (or a
-	// reviewed caller-facing sentinel) while the pgx text — host, port,
+	// (or a reviewed caller-facing sentinel) while the pgx text — host, port,
 	// database name, the violated constraint's name — goes to the server log
-	// only. Before that this line handed the driver's message straight to an
-	// LLM's context (CWE-209).
+	// only. The ref is random, so never compare it for equality. Before that
+	// this line handed the driver's message straight to an LLM's context
+	// (CWE-209).
 	created, errMsg := s.materializeFromPayloadPg(ctx, tx, prop)
 	if errMsg != "" {
 		_ = tx.Rollback(ctx)

@@ -2674,3 +2674,26 @@ func TestWorksessionSummary_ByteLimitMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestWorksessionSummarySchema_NoCharMaxLength: the server caps summary at
+// 5000 bytes, while JSON Schema maxLength counts characters, so a declared
+// maxLength of 5000 would promise CJK text the server rejects past about
+// 1,666 characters. The schema must not declare one (decision 518ef214).
+func TestWorksessionSummarySchema_NoCharMaxLength(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	for _, name := range []string{"checkpoint_work", "finish_work"} {
+		tool := s.MCPServer().GetTool(name)
+		if tool == nil {
+			t.Fatalf("%s not registered on MCPServer()", name)
+		}
+		summary, ok := tool.Tool.InputSchema.Properties["summary"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s InputSchema.Properties[%q] = %#v, want map[string]any",
+				name, "summary", tool.Tool.InputSchema.Properties["summary"])
+		}
+		if v, has := summary["maxLength"]; has {
+			t.Errorf("%s summary schema declares maxLength %v; the server limit is in bytes", name, v)
+		}
+	}
+}
