@@ -159,14 +159,23 @@ func TestValidateNoTagNoise_ExcerptStaysReadable(t *testing.T) {
 // marker, so this passes trivially. It fails only if the window grows enough
 // to hold one AND the public excerpt stops going through the neutralizing
 // excerptAroundWindow — the regression the white-box test cannot see.
+// [SE212-02] A marker that starts with '=' can share that rune with the end of
+// a "<parameter name=" match, so the window holds it with one rune less; the
+// second input shape covers that case.
 func TestValidateNoTagNoise_ExcerptNeverCarriesMarker(t *testing.T) {
 	for _, m := range safetext.BoundaryMarkers() {
-		err := sanitize.ValidateNoTagNoise(m + "</rationale>" + m)
-		if err == nil {
-			t.Fatalf("expected ErrTagNoise for input around marker %q", m)
+		inputs := []string{m + "</rationale>" + m}
+		if strings.HasPrefix(m, "=") {
+			inputs = append(inputs, "<parameter name"+m)
 		}
-		if strings.Contains(err.Error(), m) {
-			t.Errorf("public excerpt carries boundary marker %q: %q", m, err.Error())
+		for _, in := range inputs {
+			err := sanitize.ValidateNoTagNoise(in)
+			if err == nil {
+				t.Fatalf("expected ErrTagNoise for input %q", in)
+			}
+			if strings.Contains(err.Error(), m) {
+				t.Errorf("public excerpt carries boundary marker %q: %q", m, err.Error())
+			}
 		}
 	}
 }
