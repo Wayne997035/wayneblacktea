@@ -634,14 +634,14 @@ func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
 	// any failure: a blanket retry re-sends a failed non-idempotent write.
 	// [SEC211-02] Pin the whole clause up to its full stop, so a suffix such
 	// as "or fails" breaks it, and allow one "retry" in total.
-	// [SEC211-03] Also reject words starting with "fail" or "error" and the
-	// word "again", so a separate sentence such as "If any call fails, try
-	// again" turns this red.
-	// [SEC214-01] Match on word boundaries: a leading boundary keeps words
-	// such as "terror" out, and "again" also needs a trailing one so
-	// "against" does not trip it. "fail" and "error" stay prefix matches on
-	// purpose (fails, failure, errors): talk of failures is where a wider
-	// retry would hide.
+	// [SEC211-03] Also reject "fail", "error" and "again", so a separate
+	// sentence such as "If any call fails, try again" turns this red.
+	// [SEC214-01] "again" is allowed only when an "s" follows, so
+	// "against" does not trip it.
+	// [SEC214-03] There is no leading boundary on purpose:
+	// identifiers such as isError, is_error, tryAgain and tryAgainLater must
+	// trip it too, and the cost is that words such as "terror" trip it as well.
+	// An identifier such as tryAgainStop is a known gap.
 	// [SEC214-02] These checks catch those shapes only. A rewording that
 	// avoids all of them can still slip through, and it can sit
 	// anywhere in mcpInstructions, not just in the retry sentence,
@@ -653,7 +653,7 @@ func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
 	if n := strings.Count(lower, "retry"); n != 1 {
 		t.Errorf("mcpInstructions mentions retry %d times, want exactly 1", n)
 	}
-	retryWords := regexp.MustCompile(`\b(fail|error|again\b)`)
+	retryWords := regexp.MustCompile(`fail|error|again([^s]|$)`)
 	for _, m := range retryWords.FindAllString(lower, -1) {
 		t.Errorf("mcpInstructions contains %q, which can widen the retry instruction", m)
 	}
