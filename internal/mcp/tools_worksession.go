@@ -426,7 +426,7 @@ func (s *Server) handleGetActiveWork(ctx context.Context, req mcp.CallToolReques
 	// ever echoes what THIS call just wrote), so it needs the same
 	// treatment get_work_session_trace already applies to the same
 	// *worksession.Session type. LastCheckpoint is the free-text summary
-	// argument checkpoint_work persists (5000 chars, no boundary-marker
+	// argument checkpoint_work persists (5000 bytes, no boundary-marker
 	// screening at write time) — neutralizePtr (boundary_markers.go) is the
 	// shared helper for exactly this "optional *string, nil-safe" shape.
 	if result != nil {
@@ -1094,7 +1094,7 @@ const (
 
 // sessionSummaryMarkerStart / sessionSummaryMarkerEnd are the bare boundary
 // marker strings for session.final_summary — the finish_work `summary`
-// argument (LLM-controlled free text, up to 5000 chars, no CheckControlChars
+// argument (LLM-controlled free text, up to 5000 bytes, no CheckControlChars
 // applied anywhere in the write path, so multi-line content is possible —
 // same shape as evidence's OutputExcerpt and verification_output_excerpt
 // above). This was the last unwrapped multi-line free-text field in the
@@ -1187,7 +1187,7 @@ func wrapUntrustedVerificationOutputExcerpt(sess *worksession.Session) *worksess
 // neutralised (see neutralizeBoundaryMarkers) and wrapped in the
 // SESSION SUMMARY boundary markers above — the finish_work-summary sibling
 // of wrapUntrustedVerificationOutputExcerpt. finish_work's summary argument
-// is LLM-controlled free text (up to 5000 chars) with no CheckControlChars
+// is LLM-controlled free text (up to 5000 bytes) with no CheckControlChars
 // applied anywhere in the write path, so multi-line content — including a
 // forged closing/reopening fence pair — is possible without this wrap,
 // exactly like evidence's OutputExcerpt and

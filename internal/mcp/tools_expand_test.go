@@ -632,13 +632,22 @@ func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
 	// tool was not found (freshly expanded, schema not loaded yet), never for
 	// any failure: a blanket retry re-sends a failed non-idempotent write.
 	// [SEC211-02] Pin the whole clause up to its full stop, so a suffix such
-	// as "or fails" breaks it, and allow one retry instruction in total, so a
-	// separate sentence cannot add a broader one.
+	// as "or fails" breaks it, and allow one "retry" in total.
+	// [SEC211-03] Also reject the words "fail", "error" and "again", so a
+	// separate sentence such as "If any call fails, try again" turns this red.
+	// These three checks catch those shapes only; a rewording that avoids all
+	// of them can still slip through, so read any change to the sentence.
 	if !strings.Contains(mcpInstructions, "retry next turn if the tool is not found. ") {
 		t.Error("mcpInstructions does not scope its retry to a tool that is not found")
 	}
-	if n := strings.Count(strings.ToLower(mcpInstructions), "retry"); n != 1 {
+	lower := strings.ToLower(mcpInstructions)
+	if n := strings.Count(lower, "retry"); n != 1 {
 		t.Errorf("mcpInstructions mentions retry %d times, want exactly 1", n)
+	}
+	for _, w := range []string{"fail", "error", "again"} {
+		if strings.Contains(lower, w) {
+			t.Errorf("mcpInstructions contains %q, which can widen the retry instruction", w)
+		}
 	}
 	// [R1-S2] Only Claude Code needs expand_tools and ToolSearch before a
 	// hidden tool; the server itself accepts hidden tools by name, so the
