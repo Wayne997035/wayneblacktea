@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wayne997035/wayneblacktea/internal/safetext"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
 )
 
@@ -133,5 +134,22 @@ func TestValidateNoTagNoise_ExcerptIsBounded(t *testing.T) {
 	}
 	if strings.Contains(msg, strings.Repeat("x", 100)) || strings.Contains(msg, strings.Repeat("y", 100)) {
 		t.Errorf("error message leaked far more of the payload than the excerpt window should allow: %q", msg)
+	}
+}
+
+// TestValidateNoTagNoise_ExcerptStaysReadable is the reverse case for
+// [F1126-09]: ordinary input must come back readable, not replaced by the
+// boundary-marker placeholder.
+func TestValidateNoTagNoise_ExcerptStaysReadable(t *testing.T) {
+	err := sanitize.ValidateNoTagNoise("please see </rationale> for detail")
+	if err == nil {
+		t.Fatal("expected ErrTagNoise, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "see </rationale> for") {
+		t.Errorf("excerpt not readable: %q", msg)
+	}
+	if strings.Contains(msg, safetext.BoundaryMarkerPlaceholder) {
+		t.Errorf("excerpt wrongly carries placeholder: %q", msg)
 	}
 }
