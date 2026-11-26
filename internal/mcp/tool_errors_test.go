@@ -598,7 +598,7 @@ func TestStoreErrorResult_LogRetainsFullError(t *testing.T) {
 
 // TestStoreErrorText_TagNoiseVerbatim pins AC-1 / F0911-01: a chain that
 // errors.Is sanitize.ErrTagNoise must reach the caller as err.Error()
-// verbatim, not the flat "<op> failed" every other store error still gets.
+// verbatim, not the flat "<op> failed (ref <8 hex>)" every other store error still gets.
 // The chain already names the tool ("set_session_handoff: intent ..."), so
 // op is not prefixed a second time.
 func TestStoreErrorText_TagNoiseVerbatim(t *testing.T) {
@@ -614,7 +614,7 @@ func TestStoreErrorText_TagNoiseVerbatim(t *testing.T) {
 
 // TestStoreErrorText_NonTagNoiseStaysOpaque is AC-1's negative case: a
 // connection-level error (nothing sentinel, nothing tag-noise) must still
-// collapse to the flat "<op> failed" — the narrowing in F0911-01 must not
+// collapse to the flat "<op> failed (ref <8 hex>)" — the narrowing in F0911-01 must not
 // leak driver text for any OTHER error class.
 func TestStoreErrorText_NonTagNoiseStaysOpaque(t *testing.T) {
 	t.Parallel()

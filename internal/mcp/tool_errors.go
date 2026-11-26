@@ -81,7 +81,7 @@ import (
 //
 // op is a short present-participle description of what the server was doing
 // ("loading projects", "creating evaluation") — the same text that used to sit
-// before the colon in the old fmt.Sprintf. The client sees "<op> failed".
+// before the colon in the old fmt.Sprintf. The client sees "<op> failed (ref <8 hex>)".
 //
 // The full error is not dropped: it goes to the server log at Error level with
 // op as a field, so diagnosing a production failure still needs only the log,
@@ -166,7 +166,7 @@ func storeErrorText(op string, err error) string {
 
 // withTagNoiseDetail is storeErrorText's shape for a caller that has already
 // built its own success/partial-progress text (confirm_plan's
-// planResultText) instead of taking the flat "<op> failed" form: append the
+// planResultText) instead of taking the flat "<op> failed (ref <8 hex>)" form: append the
 // tag-noise chain's own message (field name + bounded excerpt, clipped here — [F175-02][F175-03]) when err
 // errors.Is sanitize.ErrTagNoise, and return text unchanged for every other
 // error class — F0911-02's narrowed U14 exception, same policy as

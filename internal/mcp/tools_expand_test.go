@@ -628,6 +628,15 @@ func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
 			t.Errorf("%s does not say to retry next turn", name)
 		}
 	}
+	// [SEC211-01] The always-on protocol may only ask for a retry when the
+	// tool was not found (freshly expanded, schema not loaded yet), never for
+	// any failure: a blanket retry re-sends a failed non-idempotent write.
+	if !strings.Contains(mcpInstructions, "retry next turn if it is not found") {
+		t.Error("mcpInstructions does not scope its retry to a tool that is not found")
+	}
+	if strings.Contains(mcpInstructions, "retry next turn if it fails") {
+		t.Error("mcpInstructions asks for a retry after any failure")
+	}
 	if !strings.HasPrefix(mcpProtocolFull, mcpInstructions) {
 		t.Error("mcpProtocolFull must start with mcpInstructions")
 	}
