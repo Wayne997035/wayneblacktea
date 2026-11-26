@@ -148,19 +148,74 @@ var reservedAuditActions = map[string]bool{
 //     was bypassed by a category the denylist hadn't enumerated yet.
 //  4. The result is folded to lowercase.
 func canonicalAuditAction(action string) string {
-	s := norm.NFKD.String(sanitize.Notes(action))
+	return canonFromDecomposed(norm.NFKD.String(sanitize.Notes(action)))
+}
+
+// canonFromDecomposed runs steps 3-4 on an already sanitised, NFKD string,
+// so the placeholder canon is not truncated a second time by sanitize.Notes
+// after NFKD has expanded it [F1125-06].
+func canonFromDecomposed(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsPunct(r) && !unicode.IsSymbol(r) {
-			continue
-		}
-		if unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || r == 0x2800 {
+		// [F1125-03] one shared predicate, so the placeholder pass below can
+		// never disagree with what this step drops.
+		if droppedByCanon(r) {
 			continue
 		}
 		b.WriteRune(r)
 	}
 	return strings.ToLower(b.String())
+}
+
+// droppedByCanon reports whether canonicalAuditAction's step 3 discards r:
+// anything outside Letter/Number/Punct/Symbol, plus
+// Other_Default_Ignorable_Code_Point runes and U+2800 [F1125-03].
+func droppedByCanon(r rune) bool {
+	if !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsPunct(r) && !unicode.IsSymbol(r) {
+		return true
+	}
+	return unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || r == 0x2800
+}
+
+// spacingCompatToPlaceholder returns action after NFKD with every rune that
+// canonicalAuditAction would drop, is not itself a combining mark (Mn/Me),
+// and is directly followed by a run of combining marks with at least one
+// visible mark in it (visibleMarkFollows) replaced by U+FFFD [F1125-01].
+// Compatibility characters such as U+2017 decompose to a space
+// plus a visible mark and render as ONE glyph, but canonicalAuditAction
+// drops both halves and the canon ends up one rune short; sending a dropped
+// character plus a visible mark directly does the same. The placeholder
+// stands for the base character's cell: isHomoglyphOf lets it match one name
+// character or none (a zero-width base occupies no cell). The
+// not-Mn/Me condition [F1125-02] stops U+0385 (space + two marks) from
+// getting a second placeholder for its first mark. A run whose marks are all
+// invisible renders nothing, so it gets no placeholder either [F1125-05];
+// otherwise it would make this canon one rune too long. The stored action is
+// never rewritten.
+func spacingCompatToPlaceholder(action string) string {
+	rs := []rune(norm.NFKD.String(sanitize.Notes(action)))
+	for i := 0; i+1 < len(rs); i++ {
+		if droppedByCanon(rs[i]) && !unicode.In(rs[i], unicode.Mn, unicode.Me) && visibleMarkFollows(rs[i+1:]) { // [F1125-02]
+			rs[i] = '\uFFFD'
+		}
+	}
+	return string(rs)
+}
+
+// visibleMarkFollows reports whether the combining-mark run at the start of
+// rs contains a mark that renders: one that is neither a Variation_Selector
+// nor Other_Default_Ignorable_Code_Point (U+FE0F, U+034F, ...) [F1125-05].
+func visibleMarkFollows(rs []rune) bool {
+	for _, r := range rs {
+		if !unicode.In(r, unicode.Mn, unicode.Me) {
+			return false
+		}
+		if !unicode.Is(unicode.Variation_Selector, r) && !unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // foldASCIIConfusable maps the common ASCII look-alikes onto the letter
@@ -178,34 +233,62 @@ func foldASCIIConfusable(r rune) rune {
 	return r
 }
 
-// isHomoglyphOf reports whether canon (already canonicalised) is a
-// same-length visual homoglyph of name (an ASCII reservedAuditActions key):
-// every rune must either equal name's rune at that position, or be a
-// non-ASCII rune belonging to Latin, Cyrillic, Greek, or Common (which
-// covers most digit/symbol/emoji code points too) — scripts outside that
-// set, e.g. CJK, are never treated as a wildcard match. ASCII mismatches pass
-// only when both runes fold to the same letter under foldASCIIConfusable
-// (i/1/| -> l, 0 -> o).
+// runeLooksLike reports whether canon rune r may stand in for ASCII rune want
+// [F1125-04]: equal; or, for ASCII r, equal after foldASCIIConfusable
+// (i/1/| -> l, 0 -> o); or, for non-ASCII r, a Latin, Cyrillic, Greek or
+// Common rune (Common covers most digit/symbol/emoji code points and U+FFFD).
+// Scripts outside those four, e.g. CJK, never match.
+func runeLooksLike(r, want rune) bool {
+	if r == want {
+		return true
+	}
+	if r < 0x80 {
+		return foldASCIIConfusable(r) == foldASCIIConfusable(want) // [F1124-02]
+	}
+	return unicode.Is(unicode.Latin, r) || unicode.Is(unicode.Cyrillic, r) || unicode.Is(unicode.Greek, r) || unicode.Is(unicode.Common, r)
+}
+
+// isHomoglyphOf reports whether canon (already canonicalised) reads as name
+// (an ASCII reservedAuditActions key). Each name rune is matched by one canon
+// rune via runeLooksLike, except that a name "d" may also be matched by two
+// canon runes that look like "c" then "l" [F1125-04]. A U+FFFD in canon (the
+// placeholder from spacingCompatToPlaceholder) may match one name rune or
+// none [F1125-07]: a zero-width base character plus a visible mark draws no
+// extra cell, a wide one draws one, and the placeholder does not record
+// which, so both readings are accepted and the number and position of
+// skipped placeholders is unlimited. The match is a
+// dynamic programme, ok[i][j] = canon[i:] reads as name[j:], costing
+// O(len(canon) * len(name)).
 func isHomoglyphOf(canon, name []rune) bool {
-	if len(canon) != len(name) {
+	n, m := len(canon), len(name)
+	ok := make([][]bool, n+1) // row n: canon used up; "cl" reads ok[i+2] only when i+2 <= n
+	for i := range ok {
+		ok[i] = make([]bool, m+1)
+	}
+	ok[n][m] = true
+	for i := n - 1; i >= 0; i-- {
+		for j := m; j >= 0; j-- {
+			ok[i][j] = readsFrom(canon, name, ok, i, j)
+		}
+	}
+	return ok[0][0]
+}
+
+// readsFrom computes one isHomoglyphOf cell: whether canon[i:] reads as
+// name[j:] given the already-computed later cells in ok.
+func readsFrom(canon, name []rune, ok [][]bool, i, j int) bool {
+	if canon[i] == '\uFFFD' && ok[i+1][j] { // [F1125-07] placeholder matches nothing
+		return true
+	}
+	if j == len(name) {
 		return false
 	}
-	for i, r := range canon {
-		if r == name[i] {
-			continue
-		}
-		if r < 0x80 {
-			// [F1124-02] ASCII look-alikes: compare after folding both sides.
-			if foldASCIIConfusable(r) == foldASCIIConfusable(name[i]) {
-				continue
-			}
-			return false
-		}
-		if !unicode.Is(unicode.Latin, r) && !unicode.Is(unicode.Cyrillic, r) && !unicode.Is(unicode.Greek, r) && !unicode.Is(unicode.Common, r) {
-			return false
-		}
+	if runeLooksLike(canon[i], name[j]) && ok[i+1][j+1] {
+		return true
 	}
-	return true
+	// [F1125-04] a name "d" drawn as "c" + "l"; U+FFFD may stand for either.
+	return name[j] == 'd' && i+1 < len(canon) &&
+		runeLooksLike(canon[i], 'c') && runeLooksLike(canon[i+1], 'l') && ok[i+2][j+1]
 }
 
 // containsBidiControl reports whether s contains any of the 12 Unicode bidi
@@ -227,9 +310,9 @@ func containsBidiControl(s string) bool {
 
 // IsReservedAuditAction reports whether action, after canonicalisation
 // (canonicalAuditAction), names one of reservedAuditActions exactly or is a
-// same-length visual homoglyph of one (isHomoglyphOf) — so "Project_Deleted"
+// visual homoglyph of one (isHomoglyphOf) — so "Project_Deleted"
 // or " project_deleted " are rejected like the bare literal, and so is a
-// same-length string built out of Cyrillic/Greek/fullwidth lookalikes for
+// string built out of Cyrillic/Greek/fullwidth lookalikes for
 // one of the three names (F191-14, P3's "variant bypass" note). Both
 // backends' LogActivity call this before writing any row.
 //
@@ -240,16 +323,26 @@ func containsBidiControl(s string) bool {
 // [F1124-01]. Plain RTL text without those code points is unaffected.
 //
 // ASCII look-alikes are folded before comparing (foldASCIIConfusable: i, 1, |
-// for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Residual gaps:
-// multi-character look-alikes ("rn" for m, "vv" for w) are not folded
-// (the reserved names contain no m or w), and other scripts' look-alikes of
-// these ASCII letters beyond the Latin/Cyrillic/Greek/Common wildcard are not
-// covered; the full Unicode confusables table is deliberately not used.
+// for l; 0 for o), so "task_deIeted" is rejected [F1124-02]. Two further
+// comparison forms [F1125-01] [F1125-04] [F1125-07]: a character the canon
+// drops followed by combining marks of which at least one is visible (a space
+// in the U+2017 / U+0385 cases, sent directly or produced by NFKD) is compared
+// as a placeholder (spacingCompatToPlaceholder) that matches one name
+// character or none, in any number and at any position (isHomoglyphOf), so a
+// zero-width or near-zero-width base plus a visible mark cannot hide a
+// reserved name; a literal U+FFFD typed by the caller is skippable the same
+// way. A reserved name's "d" also matches a "c" + "l" pair of look-alikes
+// ("task_cleleted", Cyrillic spellings too).
 //
-// Known residual gaps, accepted per SEC-PR191-R2-01's P3: homoglyphs outside
-// the four scripts above (e.g. some Armenian letters) are not caught, and
-// glyphs that render blank without carrying Other_Default_Ignorable_Code_Point
-// are not caught beyond the single U+2800 exclusion in canonicalAuditAction.
+// Residual gaps, accepted: a character that NFKD turns into one bare space
+// with no combining mark after it (U+00A0 etc., which render blank) is still
+// dropped; other multi-character look-alikes ("|<" for k, "()" for o, "rn"
+// for m) are not folded; homoglyphs outside Latin/Cyrillic/Greek/Common (e.g.
+// some Armenian letters) are not caught; and glyphs that render blank
+// without carrying Other_Default_Ignorable_Code_Point are not caught beyond
+// the U+2800 exclusion in droppedByCanon. The full Unicode confusables table
+// is deliberately not used.
+//
 // An accented spelling of a reserved name (e.g. "prôject_dèleted") is also
 // rejected, even though the accent is visually distinguishable and not a
 // homoglyph: NFKD decomposition splits the accent into a combining mark,
@@ -263,14 +356,21 @@ func IsReservedAuditAction(action string) bool {
 	if containsBidiControl(action) {
 		return true
 	}
-	canon := canonicalAuditAction(action)
-	if reservedAuditActions[canon] {
-		return true
-	}
-	canonRunes := []rune(canon)
-	for name := range reservedAuditActions {
-		if isHomoglyphOf(canonRunes, []rune(name)) {
+	// [F1125-01] two candidate canons: the plain one, and one where each
+	// dropped character + combining-mark run holding a visible mark was first
+	// collapsed to a placeholder. [F1125-06] the second skips another
+	// sanitize.Notes pass.
+	plain := canonicalAuditAction(action)
+	spacing := canonFromDecomposed(spacingCompatToPlaceholder(action))
+	for _, canon := range []string{plain, spacing} {
+		if reservedAuditActions[canon] {
 			return true
+		}
+		canonRunes := []rune(canon)
+		for name := range reservedAuditActions {
+			if isHomoglyphOf(canonRunes, []rune(name)) {
+				return true
+			}
 		}
 	}
 	return false
