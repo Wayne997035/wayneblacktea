@@ -76,8 +76,8 @@ func (s *Server) registerWorkSessionTools(ms *server.MCPServer) {
 				"Links the supplied task_ids as primary tasks and sets current_task_id to the first one.",
 		),
 		mcp.WithString("repo_name", mcp.Description("Repository name (required)"), mcp.Required()),
-		mcp.WithString("title", mcp.Description("Short title for this work session (required)"), mcp.Required(), mcp.MaxLength(200)),
-		mcp.WithString("goal", mcp.Description("One-paragraph goal for this session (required)"), mcp.Required(), mcp.MaxLength(2000)),
+		mcp.WithString("title", mcp.Description("Short title for this work session (required)"), mcp.Required()),
+		mcp.WithString("goal", mcp.Description("One-paragraph goal for this session (required)"), mcp.Required()),
 		mcp.WithString("task_ids",
 			mcp.Description(`JSON array of task UUIDs to link as primary (e.g. ["uuid1","uuid2"]) — max 50`),
 			mcp.MaxLength(8192)),
@@ -308,11 +308,16 @@ func validateStartWorkArgs(args map[string]any) (startWorkArgs, *mcp.CallToolRes
 
 	// Server-side length guards: mcp.MaxLength() is client-side advisory only
 	// and is not enforced by the mcp-go server runtime.
+	// [F1126-13] len() counts bytes, so the limits and messages are in bytes;
+	// a CJK character is 3 bytes in UTF-8. The schema declares no maxLength,
+	// which would count characters (decision ac0bcbda, same as summary).
 	if len(title) > 200 {
-		return startWorkArgs{}, mcp.NewToolResultError("title exceeds 200 character limit")
+		return startWorkArgs{}, mcp.NewToolResultError(fmt.Sprintf(
+			"title exceeds 200-byte limit (got %d bytes; about 66 CJK chars max)", len(title)))
 	}
 	if len(goal) > 2000 {
-		return startWorkArgs{}, mcp.NewToolResultError("goal exceeds 2000 character limit")
+		return startWorkArgs{}, mcp.NewToolResultError(fmt.Sprintf(
+			"goal exceeds 2000-byte limit (got %d bytes; about 666 CJK chars max)", len(goal)))
 	}
 
 	source := stringArg(args, "source")
@@ -426,7 +431,7 @@ func (s *Server) handleGetActiveWork(ctx context.Context, req mcp.CallToolReques
 	// ever echoes what THIS call just wrote), so it needs the same
 	// treatment get_work_session_trace already applies to the same
 	// *worksession.Session type. LastCheckpoint is the free-text summary
-	// argument checkpoint_work persists (5000 chars, no boundary-marker
+	// argument checkpoint_work persists (5000 bytes, no boundary-marker
 	// screening at write time) — neutralizePtr (boundary_markers.go) is the
 	// shared helper for exactly this "optional *string, nil-safe" shape.
 	if result != nil {
@@ -1094,7 +1099,7 @@ const (
 
 // sessionSummaryMarkerStart / sessionSummaryMarkerEnd are the bare boundary
 // marker strings for session.final_summary — the finish_work `summary`
-// argument (LLM-controlled free text, up to 5000 chars, no CheckControlChars
+// argument (LLM-controlled free text, up to 5000 bytes, no CheckControlChars
 // applied anywhere in the write path, so multi-line content is possible —
 // same shape as evidence's OutputExcerpt and verification_output_excerpt
 // above). This was the last unwrapped multi-line free-text field in the
@@ -1187,7 +1192,7 @@ func wrapUntrustedVerificationOutputExcerpt(sess *worksession.Session) *worksess
 // neutralised (see neutralizeBoundaryMarkers) and wrapped in the
 // SESSION SUMMARY boundary markers above — the finish_work-summary sibling
 // of wrapUntrustedVerificationOutputExcerpt. finish_work's summary argument
-// is LLM-controlled free text (up to 5000 chars) with no CheckControlChars
+// is LLM-controlled free text (up to 5000 bytes) with no CheckControlChars
 // applied anywhere in the write path, so multi-line content — including a
 // forged closing/reopening fence pair — is possible without this wrap,
 // exactly like evidence's OutputExcerpt and
@@ -1223,7 +1228,7 @@ func wrapUntrustedFinalSummary(sess *worksession.Session) *worksession.Session {
 // again):
 //   - Title, Goal, RepoName: LLM-controlled free text with NO
 //     CheckControlChars applied anywhere in the write path. handleStartWork
-//     only length-checks Title/Goal (200 / 2000 chars); RepoName has no
+//     only length-checks Title/Goal (200 / 2000 bytes); RepoName has no
 //     length cap at all (validateCreateParams in worksession/store.go only
 //     rejects the empty string — see worksession/store.go:130). Multi-line
 //     content, including a forged closing/reopening fence pair, is possible

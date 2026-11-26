@@ -150,14 +150,18 @@ func TestHandleStartWork_RejectsOversizedTitle(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	r := callStartWork(t, s, map[string]any{
 		"repo_name": "test-repo",
-		"title":     strings.Repeat("x", 201), // 201 chars > limit 200
-		"goal":      "valid goal",
+		// [F1126-13] 67 CJK characters are 201 bytes: far under 200
+		// characters, over the 200-byte limit the server enforces.
+		"title": strings.Repeat("中", 67),
+		"goal":  "valid goal",
 	})
 	if !r.IsError {
 		t.Fatal("expected error for oversized title")
 	}
-	if !strings.Contains(resultText(r), "exceeds 200 character limit") {
-		t.Errorf("error message should mention limit, got: %s", resultText(r))
+	for _, want := range []string{"exceeds 200-byte limit", "got 201 bytes"} {
+		if !strings.Contains(resultText(r), want) {
+			t.Errorf("error message should contain %q, got: %s", want, resultText(r))
+		}
 	}
 }
 
@@ -167,13 +171,16 @@ func TestHandleStartWork_RejectsOversizedGoal(t *testing.T) {
 	r := callStartWork(t, s, map[string]any{
 		"repo_name": "test-repo",
 		"title":     "valid title",
-		"goal":      strings.Repeat("y", 2001), // 2001 chars > limit 2000
+		// [F1126-13] 667 CJK characters are 2001 bytes.
+		"goal": strings.Repeat("中", 667),
 	})
 	if !r.IsError {
 		t.Fatal("expected error for oversized goal")
 	}
-	if !strings.Contains(resultText(r), "exceeds 2000 character limit") {
-		t.Errorf("error message should mention limit, got: %s", resultText(r))
+	for _, want := range []string{"exceeds 2000-byte limit", "got 2001 bytes"} {
+		if !strings.Contains(resultText(r), want) {
+			t.Errorf("error message should contain %q, got: %s", want, resultText(r))
+		}
 	}
 }
 
@@ -2694,6 +2701,29 @@ func TestWorksessionSummarySchema_NoCharMaxLength(t *testing.T) {
 		}
 		if v, has := summary["maxLength"]; has {
 			t.Errorf("%s summary schema declares maxLength %v; the server limit is in bytes", name, v)
+		}
+	}
+}
+
+// TestStartWorkSchema_NoCharMaxLength: [F1126-13] start_work caps title at
+// 200 bytes and goal at 2000 bytes, so a schema maxLength (which counts
+// characters) would promise CJK text the server rejects past about 66 and
+// 666 characters. The schema must not declare one (decision ac0bcbda).
+func TestStartWorkSchema_NoCharMaxLength(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	tool := s.MCPServer().GetTool("start_work")
+	if tool == nil {
+		t.Fatal("start_work not registered on MCPServer()")
+	}
+	for _, field := range []string{"title", "goal"} {
+		prop, ok := tool.Tool.InputSchema.Properties[field].(map[string]any)
+		if !ok {
+			t.Fatalf("start_work InputSchema.Properties[%q] = %#v, want map[string]any",
+				field, tool.Tool.InputSchema.Properties[field])
+		}
+		if v, has := prop["maxLength"]; has {
+			t.Errorf("start_work %s schema declares maxLength %v; the server limit is in bytes", field, v)
 		}
 	}
 }

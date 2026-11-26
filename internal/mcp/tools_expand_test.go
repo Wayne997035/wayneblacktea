@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -632,13 +633,29 @@ func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
 	// tool was not found (freshly expanded, schema not loaded yet), never for
 	// any failure: a blanket retry re-sends a failed non-idempotent write.
 	// [SEC211-02] Pin the whole clause up to its full stop, so a suffix such
-	// as "or fails" breaks it, and allow one retry instruction in total, so a
-	// separate sentence cannot add a broader one.
+	// as "or fails" breaks it, and allow one "retry" in total.
+	// [SEC211-03] Also reject "fail", "error" and "again", so a separate
+	// sentence such as "If any call fails, try again" turns this red.
+	// [SEC214-01] "again" is allowed only when an "s" follows, so
+	// "against" does not trip it.
+	// [SEC214-03] There is no leading boundary on purpose:
+	// identifiers such as isError, is_error, tryAgain and tryAgainLater must
+	// trip it too, and the cost is that words such as "terror" trip it as well.
+	// An identifier such as tryAgainStop is a known gap.
+	// [SEC214-02] These checks catch those shapes only. A rewording that
+	// avoids all of them can still slip through, and it can sit
+	// anywhere in mcpInstructions, not just in the retry sentence,
+	// so read any change to mcpInstructions.
 	if !strings.Contains(mcpInstructions, "retry next turn if the tool is not found. ") {
 		t.Error("mcpInstructions does not scope its retry to a tool that is not found")
 	}
-	if n := strings.Count(strings.ToLower(mcpInstructions), "retry"); n != 1 {
+	lower := strings.ToLower(mcpInstructions)
+	if n := strings.Count(lower, "retry"); n != 1 {
 		t.Errorf("mcpInstructions mentions retry %d times, want exactly 1", n)
+	}
+	retryWords := regexp.MustCompile(`fail|error|again([^s]|$)`)
+	for _, m := range retryWords.FindAllString(lower, -1) {
+		t.Errorf("mcpInstructions contains %q, which can widen the retry instruction", m)
 	}
 	// [R1-S2] Only Claude Code needs expand_tools and ToolSearch before a
 	// hidden tool; the server itself accepts hidden tools by name, so the
