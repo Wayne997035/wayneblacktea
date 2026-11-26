@@ -1280,7 +1280,7 @@ func TestHandleGetTodayContext_ErrorPriorityIsDeterministic(t *testing.T) {
 	}
 
 	for i := range 50 {
-		if got := callGetTodayContextErr(t, s); got != "loading goals failed" {
+		if got := callGetTodayContextErr(t, s); !failedWithRef("loading goals", got) {
 			t.Fatalf("iteration %d: error = %q, want %q", i, got, "loading goals failed")
 		}
 	}
@@ -1337,7 +1337,7 @@ func TestHandleGetTodayContext_SingleFailureMessages(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Server{gtd: tc.gtd, session: tc.session}
 			got := callGetTodayContextErr(t, s)
-			if got != tc.wantErr {
+			if !storeTextMatches(tc.wantErr, got) {
 				t.Errorf("error = %q, want %q", got, tc.wantErr)
 			}
 			if strings.Contains(got, "store exploded") {
@@ -1405,7 +1405,7 @@ func TestHandleGetTodayContext_PullForwardStoreError(t *testing.T) {
 		session: todayContextTestSessionStore{},
 	}
 	got := callGetTodayContextErr(t, s)
-	if got != "loading pull-forward tasks failed" {
+	if !failedWithRef("loading pull-forward tasks", got) {
 		t.Errorf("error = %q, want %q", got, "loading pull-forward tasks failed")
 	}
 	// U14: "context deadline exceeded" tells the caller nothing it can act on

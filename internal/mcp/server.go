@@ -458,8 +458,8 @@ func (s *Server) WithMergedPRsStore(store mergedprs.Store) *Server {
 // coreToolNames and vice versa (toolgroups.go, semantic-closure invariant).
 const mcpInstructions = `WAYNEBLACKTEA PERSONAL OS — CORE PROTOCOL
 
-tools/list = core set only; hidden tools stay callable by name, and
-expand_tools reveals more. Call initial_instructions only when the tool
+tools/list = core set only; hidden tools need expand_tools first; in Claude Code then load the
+tool's schema (ToolSearch) before calling, and retry next turn if it fails. Call initial_instructions only when the tool
 description you are currently reading says "See initial_instructions
 (Per-tool detail) for X" — never speculatively, never "just in case."
 

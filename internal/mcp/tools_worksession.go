@@ -457,7 +457,8 @@ func (s *Server) handleCheckpointWork(ctx context.Context, req mcp.CallToolReque
 
 	// Server-side length guard: mcp.MaxLength() is client-side advisory only.
 	if len(summary) > 5000 {
-		return mcp.NewToolResultError("summary exceeds 5000 character limit"), nil
+		// [F1126-06] bytes, not characters; same wording as validator.CheckField.
+		return mcp.NewToolResultError(validator.ByteLimitMessage("summary", len(summary))), nil
 	}
 
 	sessID, err := uuid.Parse(rawSessID)
@@ -853,7 +854,8 @@ func (s *Server) handleFinishWork(ctx context.Context, req mcp.CallToolRequest) 
 
 	// Server-side length guard: mcp.MaxLength() is client-side advisory only.
 	if len(summary) > 5000 {
-		return mcp.NewToolResultError("summary exceeds 5000 character limit"), nil
+		// [F1126-06] bytes, not characters; same wording as validator.CheckField.
+		return mcp.NewToolResultError(validator.ByteLimitMessage("summary", len(summary))), nil
 	}
 
 	sessID, err := uuid.Parse(rawSessID)

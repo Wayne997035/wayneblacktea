@@ -480,7 +480,7 @@ func TestAddTask_MissingTitle(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callAddTask(t, s, map[string]any{"due_date": "2026-12-31T00:00:00Z"})
-	if !r.IsError || resultText(r) != wantTitleRequired {
+	if !r.IsError || !strings.HasPrefix(resultText(r), wantTitleRequired) {
 		t.Errorf("got %q, want %q", resultText(r), wantTitleRequired)
 	}
 }

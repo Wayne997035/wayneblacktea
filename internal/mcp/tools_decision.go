@@ -141,8 +141,12 @@ func (s *Server) handleLogDecision(ctx context.Context, req mcp.CallToolRequest)
 	decCtx := stringArg(args, "context")
 	dec := stringArg(args, "decision")
 	rationale := stringArg(args, "rationale")
-	if title == "" || decCtx == "" || dec == "" || rationale == "" {
-		return mcp.NewToolResultError("title, context, decision and rationale are required"), nil
+	// [F1126-04] three-way report (received / missing / empty); the legacy
+	// text stays the prefix. A whitespace-only value now counts as empty,
+	// matching the seam's TrimSpace semantics.
+	if errResult := requireArgs(args, "title, context, decision and rationale are required",
+		"title", "context", "decision", "rationale"); errResult != nil {
+		return errResult, nil
 	}
 
 	if reason := checkDecisionNoise(title, decCtx, dec, rationale); reason != "" {

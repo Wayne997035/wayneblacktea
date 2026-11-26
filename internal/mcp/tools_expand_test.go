@@ -589,3 +589,46 @@ func TestExpansionStore_ConcurrentAccessIsSafe(t *testing.T) {
 		t.Errorf("all sessions reset but %d entries remain", st.size())
 	}
 }
+
+// [F1126-08] TestHiddenToolWording_MatchesClaudeCodeFlow: the four places that
+// explain hidden tools must describe the real Claude Code flow (expand, load
+// the schema with ToolSearch, retry next turn) and must not promise that a
+// hidden tool is simply callable at any time.
+func TestHiddenToolWording_MatchesClaudeCodeFlow(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	tool := s.MCPServer().GetTool(expandToolsName)
+	if tool == nil {
+		t.Fatal("expand_tools not registered")
+	}
+	places := map[string]string{
+		"mcpInstructions":          mcpInstructions,
+		"expandToolsNote":          expandToolsNote,
+		"expand_tools description": tool.Tool.Description,
+		"onboarding appendix":      mcpProtocolAppendix,
+	}
+	banned := []string{
+		"ALWAYS callable",
+		"callable by name at any time",
+		"stay callable by name",
+		"remain fully callable by name",
+	}
+	for name, text := range places {
+		if !strings.Contains(text, "ToolSearch") {
+			t.Errorf("%s does not mention ToolSearch", name)
+		}
+		for _, b := range banned {
+			if strings.Contains(text, b) {
+				t.Errorf("%s still contains %q", name, b)
+			}
+		}
+	}
+	for _, name := range []string{"mcpInstructions", "expandToolsNote", "onboarding appendix"} {
+		if !strings.Contains(places[name], "retry next turn") {
+			t.Errorf("%s does not say to retry next turn", name)
+		}
+	}
+	if !strings.HasPrefix(mcpProtocolFull, mcpInstructions) {
+		t.Error("mcpProtocolFull must start with mcpInstructions")
+	}
+}

@@ -579,3 +579,46 @@ func TestLogDecision_AlternativesTagNoise_CleanNotAnError(t *testing.T) {
 		t.Fatalf("clean alternatives must not be rejected, got: %s", resultText(r))
 	}
 }
+
+// [F1126-06] TestLogDecision_CJKOverLimitMessage: a 1,700-CJK-char context is
+// 5,100 bytes; the error says so in bytes (user journey 4).
+func TestLogDecision_CJKOverLimitMessage(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	r := callLogDecision(t, s, map[string]any{
+		"title": "t", "context": strings.Repeat("中", 1700), "decision": "d", "rationale": "r",
+	})
+	text := resultText(r)
+	if !r.IsError {
+		t.Fatalf("expected an error, got %q", text)
+	}
+	for _, want := range []string{"context exceeds 5000-byte limit", "got 5100 bytes", "1,600"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%q does not contain %q", text, want)
+		}
+	}
+	if strings.Contains(text, "5000-character") {
+		t.Errorf("old wording present: %q", text)
+	}
+}
+
+// [F1126-06] TestFieldDescriptions_NoPayloadLimitSentence: the limit lives in
+// the error message only; the always-paid core schema does not carry a
+// "(max 5000 bytes)" sentence on log_decision or set_session_handoff fields.
+func TestFieldDescriptions_NoPayloadLimitSentence(t *testing.T) {
+	t.Parallel()
+	s := newTestWorkSessionServer(t)
+	for _, name := range []string{"log_decision", "set_session_handoff"} {
+		tool := s.MCPServer().GetTool(name)
+		if tool == nil {
+			t.Fatalf("%s not registered", name)
+		}
+		raw, err := json.Marshal(tool.Tool)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", name, err)
+		}
+		if strings.Contains(string(raw), "max 5000 bytes") {
+			t.Errorf("%s schema carries the payload limit sentence: %s", name, raw)
+		}
+	}
+}

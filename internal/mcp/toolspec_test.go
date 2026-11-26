@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -132,7 +133,7 @@ func TestValidate_RequiredMissing_DefaultMessage(t *testing.T) {
 	if r == nil || !r.IsError {
 		t.Fatal("missing required field must error")
 	}
-	if resultText(r) != wantTitleRequired {
+	if !strings.HasPrefix(resultText(r), wantTitleRequired) {
 		t.Errorf("message = %q, want %q", resultText(r), wantTitleRequired)
 	}
 }
@@ -146,7 +147,7 @@ func TestValidate_RequiredEmptyString_TreatedAsMissing(t *testing.T) {
 	if r == nil || !r.IsError {
 		t.Fatal("empty required string must error")
 	}
-	if resultText(r) != wantTitleRequired {
+	if !strings.HasPrefix(resultText(r), wantTitleRequired) {
 		t.Errorf("message = %q, want %q", resultText(r), wantTitleRequired)
 	}
 }
@@ -181,7 +182,7 @@ func TestValidate_RequiredMessageOverride(t *testing.T) {
 	if r == nil || !r.IsError {
 		t.Fatal("missing name must error")
 	}
-	if resultText(r) != combined {
+	if !strings.HasPrefix(resultText(r), combined) {
 		t.Errorf("message = %q, want %q", resultText(r), combined)
 	}
 }
@@ -194,7 +195,7 @@ func TestValidate_RequiredUUID_DelegatesToRequireUUIDArg(t *testing.T) {
 
 	// Missing → "task_id is required" (requireUUIDArg's own default).
 	r := ts.validate(context.Background(), nil, map[string]any{})
-	if r == nil || !r.IsError || resultText(r) != "task_id is required" {
+	if r == nil || !r.IsError || !strings.HasPrefix(resultText(r), "task_id is required") {
 		t.Errorf("missing uuid required = %q, want %q", resultText(r), "task_id is required")
 	}
 

@@ -12,9 +12,27 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wayne997035/wayneblacktea/internal/db"
+	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/sanitize"
+	"github.com/Wayne997035/wayneblacktea/internal/session"
 	"github.com/google/uuid"
 )
+
+// [F1126-07] failedWithRef reports whether got is exactly "<op> failed (ref
+// <8 lowercase hex>)", the generic store-failure text.
+func failedWithRef(op, got string) bool {
+	return regexp.MustCompile("^" + regexp.QuoteMeta(op) + ` failed \(ref [0-9a-f]{8}\)$`).MatchString(got)
+}
+
+// storeTextMatches compares a client-facing text with its expectation: an
+// expectation ending in " failed" is the generic store failure and must carry
+// a ref (failedWithRef); anything else must match exactly.
+func storeTextMatches(want, got string) bool {
+	if op, ok := strings.CutSuffix(want, " failed"); ok {
+		return failedWithRef(op, got)
+	}
+	return got == want
+}
 
 // sentinelDriverError is shaped like the class of text U14 exists to keep out
 // of an LLM's context: a driver-level message naming the schema object that
@@ -601,8 +619,8 @@ func TestStoreErrorText_TagNoiseVerbatim(t *testing.T) {
 func TestStoreErrorText_NonTagNoiseStaysOpaque(t *testing.T) {
 	t.Parallel()
 	got := storeErrorText("setting handoff", errors.New("connection refused"))
-	if got != "setting handoff failed" {
-		t.Errorf("storeErrorText(op, connErr) = %q, want %q", got, "setting handoff failed")
+	if !failedWithRef("setting handoff", got) {
+		t.Errorf("storeErrorText(op, connErr) = %q, want %q plus a ref", got, "setting handoff failed")
 	}
 }
 
@@ -739,5 +757,117 @@ func TestHandler_StoreFailureDoesNotLeakDriverError(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "SQLSTATE 23505") {
 		t.Errorf("the error was suppressed instead of logged: %q", buf.String())
+	}
+}
+
+// [F1126-07] refInText extracts the 8-hex ref from a generic failure text.
+var refInTextRe = regexp.MustCompile(`\(ref ([0-9a-f]{8})\)`)
+
+// TestStoreErrorText_GenericFailureCarriesRef: the generic failure text from
+// storeErrorText, storeErrorResult and storeErrorResultf is exactly
+// "<op> failed (ref <8 hex>)" and carries no driver text.
+func TestStoreErrorText_GenericFailureCarriesRef(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
+	_ = bufferLogger(t)
+	err := errors.New(sentinelDriverError)
+
+	texts := map[string]string{
+		"storeErrorText":    storeErrorText("loading projects", err),
+		"storeErrorResult":  resultText(storeErrorResult("loading projects", err)),
+		"storeErrorResultf": resultText(storeErrorResultf(err, "loading %s", "projects")),
+	}
+	for name, got := range texts {
+		if !failedWithRef("loading projects", got) {
+			t.Errorf("%s = %q, want %q", name, got, "loading projects failed (ref <8 hex>)")
+		}
+		if strings.Contains(got, "SQLSTATE") || strings.Contains(got, "db.internal.example") {
+			t.Errorf("%s leaks driver text: %q", name, got)
+		}
+	}
+}
+
+// TestStoreErrorText_RefMatchesLog: the ref in the client text is the ref
+// attribute of the slog record that also holds the full error.
+func TestStoreErrorText_RefMatchesLog(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
+	buf := bufferLogger(t)
+	got := storeErrorText("setting handoff", errors.New(sentinelDriverError))
+
+	m := refInTextRe.FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no ref in client text %q", got)
+	}
+	var record string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "ref="+m[1]) {
+			record = line
+		}
+	}
+	if record == "" {
+		t.Fatalf("no log record carries ref=%s; log:\n%s", m[1], buf.String())
+	}
+	if !strings.Contains(record, "SQLSTATE 23505") || !strings.Contains(record, "setting handoff") {
+		t.Errorf("the record with the ref must also hold op and the full error: %q", record)
+	}
+}
+
+// TestStoreErrorText_RefsDiffer: two failures in a row do not share a ref.
+func TestStoreErrorText_RefsDiffer(t *testing.T) {
+	t.Parallel()
+	err := errors.New("boom")
+	seen := map[string]bool{}
+	for range 20 {
+		m := refInTextRe.FindStringSubmatch(storeErrorText("op", err))
+		if m == nil {
+			t.Fatal("no ref in generic failure text")
+		}
+		seen[m[1]] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("20 failures produced %d distinct ref(s), want a fresh ref each time", len(seen))
+	}
+}
+
+// TestStoreErrorText_CallerFacingBranchesHaveNoRef: the actionable branches
+// (caller-facing sentinel, tag-noise) keep their text and get no ref.
+func TestStoreErrorText_CallerFacingBranchesHaveNoRef(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
+	_ = bufferLogger(t)
+
+	got := storeErrorText("creating task", fmt.Errorf("wrapped: %w", gtd.ErrInvalidAssignee))
+	if want := "creating task: " + gtd.ErrInvalidAssignee.Error(); got != want {
+		t.Errorf("sentinel branch = %q, want %q", got, want)
+	}
+	noise := storeErrorText("log_decision", fmt.Errorf("log_decision: alternatives: %w", sanitize.ErrTagNoise))
+	for name, text := range map[string]string{"sentinel": got, "tag-noise": noise} {
+		if strings.Contains(text, "(ref ") {
+			t.Errorf("%s branch carries a ref: %q", name, text)
+		}
+	}
+}
+
+// failingSetHandoffStore fails SetHandoff with the sentinel driver error.
+type failingSetHandoffStore struct{ session.StoreIface }
+
+func (failingSetHandoffStore) SetHandoff(context.Context, session.HandoffParams) (*db.SessionHandoff, error) {
+	return nil, errors.New(sentinelDriverError)
+}
+
+// TestSetSessionHandoff_StoreFailureCarriesRef: end to end through the real
+// handler, a store failure reaches the client as "setting handoff failed (ref
+// <8 hex>)" and the same ref is in the log.
+func TestSetSessionHandoff_StoreFailureCarriesRef(t *testing.T) {
+	// Not parallel: swaps slog.Default() for a capture logger; parallel tests would write into the captured buffer.
+	buf := bufferLogger(t)
+	s := &Server{session: failingSetHandoffStore{}}
+
+	r := callSetSessionHandoff(t, s, map[string]any{"intent": "continue the work"})
+	text := resultText(r)
+	if !r.IsError || !failedWithRef("setting handoff", text) {
+		t.Fatalf("got %q, want setting handoff failed (ref <8 hex>)", text)
+	}
+	m := refInTextRe.FindStringSubmatch(text)
+	if !strings.Contains(buf.String(), "ref="+m[1]) {
+		t.Errorf("log lacks ref=%s: %s", m[1], buf.String())
 	}
 }

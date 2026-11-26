@@ -243,7 +243,7 @@ func TestCreateProject_MissingRequiredFields(t *testing.T) {
 			t.Fatalf("missing required field must error, args=%v", args)
 		}
 		want := "name, title and area are required"
-		if resultText(r) != want {
+		if !strings.HasPrefix(resultText(r), want) {
 			t.Errorf("message = %q, want %q", resultText(r), want)
 		}
 	}
@@ -326,7 +326,7 @@ func TestUpdateProject_MissingProjectID(t *testing.T) {
 	if !r.IsError {
 		t.Fatalf("missing project_id must error, got: %s", resultText(r))
 	}
-	if resultText(r) != "project_id is required" {
+	if !strings.HasPrefix(resultText(r), "project_id is required") {
 		t.Errorf("message = %q, want %q", resultText(r), "project_id is required")
 	}
 }
@@ -555,7 +555,7 @@ func TestCreateGoal_MissingRequiredFields(t *testing.T) {
 			t.Fatalf("missing required field must error, args=%v", args)
 		}
 		want := "title and area are required"
-		if resultText(r) != want {
+		if !strings.HasPrefix(resultText(r), want) {
 			t.Errorf("message = %q, want %q", resultText(r), want)
 		}
 	}
@@ -606,12 +606,12 @@ func TestUpdateProjectStatus_MissingFields(t *testing.T) {
 	id := seedProject(t, s, "proj-"+uuid.NewString()[:8])
 
 	r := callUpdateProjectStatus(t, s, map[string]any{"status": "completed"})
-	if !r.IsError || resultText(r) != "project_id is required" {
+	if !r.IsError || !strings.HasPrefix(resultText(r), "project_id is required") {
 		t.Errorf("missing project_id: got %q, want %q", resultText(r), "project_id is required")
 	}
 
 	r = callUpdateProjectStatus(t, s, map[string]any{"project_id": id.String()})
-	if !r.IsError || resultText(r) != "status is required" {
+	if !r.IsError || !strings.HasPrefix(resultText(r), "status is required") {
 		t.Errorf("missing status: got %q, want %q", resultText(r), "status is required")
 	}
 }
@@ -744,7 +744,7 @@ func TestGetProject_MissingName(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callGetProject(t, s, map[string]any{})
-	if !r.IsError || resultText(r) != "name is required" {
+	if !r.IsError || !strings.HasPrefix(resultText(r), "name is required") {
 		t.Errorf("got %q, want %q", resultText(r), "name is required")
 	}
 }
@@ -786,7 +786,7 @@ func TestLogActivity_MissingRequiredFields(t *testing.T) {
 	for _, args := range cases {
 		r := callLogActivity(t, s, args)
 		want := "actor and action are required"
-		if !r.IsError || resultText(r) != want {
+		if !r.IsError || !strings.HasPrefix(resultText(r), want) {
 			t.Errorf("args=%v: got %q, want %q", args, resultText(r), want)
 		}
 	}
@@ -856,7 +856,7 @@ func TestChecklistAddItem_MissingTaskID(t *testing.T) {
 	t.Parallel()
 	s := newTestWorkSessionServer(t)
 	r := callChecklistAddItem(t, s, map[string]any{"title": "step one"})
-	if !r.IsError || resultText(r) != "task_id is required" {
+	if !r.IsError || !strings.HasPrefix(resultText(r), "task_id is required") {
 		t.Errorf("got %q, want %q", resultText(r), "task_id is required")
 	}
 }
@@ -866,7 +866,7 @@ func TestChecklistAddItem_MissingTitle(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	id := seedTask(t, s)
 	r := callChecklistAddItem(t, s, map[string]any{"task_id": id.String()})
-	if !r.IsError || resultText(r) != wantTitleRequired {
+	if !r.IsError || !strings.HasPrefix(resultText(r), wantTitleRequired) {
 		t.Errorf("got %q, want %q", resultText(r), wantTitleRequired)
 	}
 }
@@ -966,7 +966,7 @@ func TestChecklistToggle_MissingDone(t *testing.T) {
 	taskID := seedTask(t, s)
 	itemID := seedChecklistItem(t, s, taskID)
 	r := callChecklistToggle(t, s, map[string]any{"task_id": taskID.String(), "item_id": itemID.String()})
-	if !r.IsError || resultText(r) != "done is required" {
+	if !r.IsError || !strings.HasPrefix(resultText(r), "done is required") {
 		t.Errorf("got %q, want %q", resultText(r), "done is required")
 	}
 }
@@ -1031,7 +1031,7 @@ func TestChecklistComplete_MissingItemID(t *testing.T) {
 	s := newTestWorkSessionServer(t)
 	taskID := seedTask(t, s)
 	r := callChecklistComplete(t, s, map[string]any{"task_id": taskID.String()})
-	if !r.IsError || resultText(r) != "item_id is required" {
+	if !r.IsError || !strings.HasPrefix(resultText(r), "item_id is required") {
 		t.Errorf("got %q, want %q", resultText(r), "item_id is required")
 	}
 }

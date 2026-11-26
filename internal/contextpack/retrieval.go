@@ -407,9 +407,11 @@ func (a *Assembler) retrieveSession(ctx context.Context, warnings *[]Warning) []
 // string downstream (tools_worksession.go) cannot fix that — by then the
 // error object is gone and only redaction at the source is possible.
 //
-// The "<op> failed" shape is deliberately byte-identical to storeErrorText
-// (internal/mcp/tool_errors.go), so the two redaction policies stay ONE
-// policy. If a caller-facing sentinel ever needs to survive this boundary,
+// The redaction policy is deliberately the same as storeErrorText's
+// (internal/mcp/tool_errors.go): the error text never crosses the wire.
+// [F1126-07] storeErrorText additionally appends a "(ref <8 hex>)" so a client
+// quote can be matched to its slog line; this Warning does not, because its
+// slog.Warn below carries no ref. If a caller-facing sentinel ever needs to survive this boundary,
 // mirror that function's errors.Is loop over callerFacingSentinels rather
 // than inventing a second rule here. The full error is not lost: it stays in
 // the slog.Warn line below, which never crosses the wire.

@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Wayne997035/wayneblacktea/internal/gtd"
 	"github.com/Wayne997035/wayneblacktea/internal/proposal"
@@ -133,7 +136,12 @@ const tagNoiseDetailMaxRunes = 500
 // Returning the text separately lets that indirection layer stay an
 // indirection layer instead of also being a hole.
 func storeErrorText(op string, err error) string {
-	logToolError(op, err)
+	// [F1126-07] One random ref per failure: it is logged in the same record
+	// as the full error and appended to the generic client text, so an
+	// operator can find the log line for a message the client quotes. The ref
+	// is random, so it carries nothing about err.
+	ref := newErrorRef()
+	logToolErrorRef(op, ref, err)
 	// F0911-01: narrowed U14 exception. A chain that errors.Is
 	// sanitize.ErrTagNoise is this package's own bounded validation text —
 	// a field name plus a bounded excerpt (clipped here to tagNoiseDetailMaxRunes runes — [F175-01][F175-03]) — never pgx
@@ -153,7 +161,7 @@ func storeErrorText(op string, err error) string {
 			return op + ": " + sentinel.Error()
 		}
 	}
-	return op + " failed"
+	return op + " failed (ref " + ref + ")"
 }
 
 // withTagNoiseDetail is storeErrorText's shape for a caller that has already
@@ -261,6 +269,23 @@ var callerFacingSentinels = []error{
 // this to make sure the error itself is still recorded rather than dropped.
 func logToolError(op string, err error) {
 	slog.Error("mcp tool operation failed", "op", op, "err", err)
+}
+
+// logToolErrorRef is logToolError plus the correlation ref that
+// storeErrorText also puts in the client text. [F1126-07]
+func logToolErrorRef(op, ref string, err error) {
+	slog.Error("mcp tool operation failed", "op", op, "ref", ref, "err", err)
+}
+
+// newErrorRef returns 8 lowercase hex characters from crypto/rand (4 bytes).
+// If the system randomness source fails it falls back to the low 32 bits of
+// the clock, so a failure report still carries a ref. [F1126-07]
+func newErrorRef() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xffffffff)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // storeErrorResultf is storeErrorResult with a formatted op, for the call
