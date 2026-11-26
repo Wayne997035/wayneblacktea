@@ -366,8 +366,10 @@ func containsBidiControl(s string) bool {
 // the U+2800 exclusion in droppedByCanon; spacing combining marks (Mc) are
 // dropped like other marks, so one that draws a visible glyph on its own is
 // not caught unless a visible Mn/Me directly follows it after NFKD (canonical
-// reordering moves a mark of lower combining class in front of U+1D16D,
-// U+302E or U+302F, so typing one after them does not help), including the ten
+// reordering moves a following mark of lower nonzero combining class in
+// front of any Mc whose own class is nonzero, such as U+1D165-U+1D166,
+// U+1D16D-U+1D172, U+302E and U+302F, so typing such a mark after one of
+// them does not help), including the ten
 // Common-script ones (U+1CE1, U+1CF7, U+1D165-U+1D166, U+1D16D-U+1D172;
 // U+1D165 draws a vertical stem that reads as l). The full Unicode
 // confusables table is deliberately not used.
