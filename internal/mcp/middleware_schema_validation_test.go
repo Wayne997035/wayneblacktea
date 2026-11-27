@@ -245,7 +245,7 @@ func TestDeriveToolSpec_EnumAsAnySlice(t *testing.T) {
 func TestSchemaValidation_FailClosed(t *testing.T) {
 	srv, ms := newTestMCPServer(t)
 
-	// RawInputSchema tool: InputSchema.Type is empty, so the schema is unreadable.
+	// RawInputSchema tool: Type stays "object"; the raw schema itself makes it unreadable.
 	rawName := "zz_raw_schema_tool"
 	rawN := schemaValAddSynthetic(ms, mcpmsg.NewTool(rawName,
 		mcpmsg.WithRawInputSchema(json.RawMessage(`{"type":"object","properties":{}}`))))
