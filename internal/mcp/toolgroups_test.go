@@ -56,6 +56,9 @@ func newTestMCPServer(t *testing.T) (*Server, *server.MCPServer) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// [F1127-08] Wait for background audit writes before the store closes.
+	// t.Cleanup is LIFO, so this runs before the stores.Close cleanup above.
+	t.Cleanup(srv.waitBackground)
 	return srv, srv.MCPServer()
 }
 
