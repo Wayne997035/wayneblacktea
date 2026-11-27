@@ -548,6 +548,8 @@ func (s *Server) MCPServer() *server.MCPServer {
 		// post-next() work on res.IsError being false, so neither of those
 		// two misrecords a rejected call as a successful one.
 		server.WithToolHandlerMiddleware(s.unknownArgsMiddleware()),
+		// [F1127-01] registered last = innermost, so unknown-argument is reported first.
+		server.WithToolHandlerMiddleware(s.schemaValidationMiddleware()),
 		// Declare resource and prompt capabilities (subscribe=false,
 		// listChanged=false — static read-only resources/prompts only).
 		server.WithResourceCapabilities(false, false),
