@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -23,7 +24,7 @@ import (
 type argSpec struct {
 	name      string
 	required  bool
-	typ       string // "string" | "number" | "boolean" (from schema "type")
+	typ       string // "string" | "number" | "boolean" | "array" | "object" (from schema "type")
 	enum      []string
 	maxLength int
 	isUUID    bool
@@ -73,34 +74,10 @@ var (
 // sourced from seam[T]'s own s argument — the *Server actually handling THIS
 // request, never a value frozen at some earlier registration.
 func registerToolSpec(tool mcp.Tool, opts ...specOption) *toolSpec {
-	ts := &toolSpec{args: map[string]*argSpec{}}
-
-	for name, raw := range tool.InputSchema.Properties {
-		propMap, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		a := &argSpec{name: name}
-		if t, ok := propMap["type"].(string); ok {
-			a.typ = t
-		}
-		if enumRaw, ok := propMap["enum"].([]string); ok {
-			a.enum = enumRaw
-		}
-		if ml, ok := propMap["maxLength"].(int); ok {
-			a.maxLength = ml
-		}
-		ts.args[name] = a
-		ts.orderedNames = append(ts.orderedNames, name)
-	}
-	sort.Strings(ts.orderedNames)
-
-	ts.requiredOrder = append([]string(nil), tool.InputSchema.Required...)
-	for _, name := range ts.requiredOrder {
-		if a, ok := ts.args[name]; ok {
-			a.required = true
-		}
-	}
+	// The seam tolerates every unreadable-schema case (same behaviour as
+	// before deriveToolSpec existed): fail-closed is the middleware's job,
+	// which runs deriveToolSpec on the same tool before any handler.
+	ts, _ := parseToolSpec(tool)
 
 	// opts MUST run before ts is published into toolSpecRegistry below: once
 	// the lock releases, a concurrent seam()/specFor() reader can reach this
@@ -115,6 +92,113 @@ func registerToolSpec(tool mcp.Tool, opts ...specOption) *toolSpec {
 	toolSpecRegistry[tool.Name] = ts
 	toolSpecMu.Unlock()
 	return ts
+}
+
+// validArgTypes are the JSON-schema "type" values the validation layer reads.
+var validArgTypes = map[string]bool{
+	argTypeString: true, argTypeNumber: true, argTypeBoolean: true, "array": true, "object": true,
+}
+
+// parseEnum reads a schema enum as []string, or as a []any whose elements are
+// all strings. Anything else is an error, never a silent drop. [F1127-03]
+func parseEnum(raw any) ([]string, error) {
+	switch e := raw.(type) {
+	case []string:
+		return e, nil
+	case []any:
+		out := make([]string, 0, len(e))
+		for _, item := range e {
+			sv, ok := item.(string)
+			if !ok {
+				return nil, errors.New("enum has a non-string member")
+			}
+			out = append(out, sv)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("enum has unsupported type %T", raw)
+	}
+}
+
+// parseToolSpec is the shared schema-reading helper behind registerToolSpec
+// and deriveToolSpec [F1127-03]. It always returns a usable spec, built
+// leniently (an unreadable piece is skipped), plus the first problem found
+// (nil when the whole schema is readable). enum is accepted as []string or as
+// a []any of strings (the latter converted); any other enum type is a
+// problem, never silently dropped.
+func parseToolSpec(tool mcp.Tool) (*toolSpec, error) {
+	ts := &toolSpec{args: map[string]*argSpec{}}
+	var problem error
+	note := func(format string, a ...any) {
+		if problem == nil {
+			problem = fmt.Errorf(format, a...)
+		}
+	}
+
+	names := make([]string, 0, len(tool.InputSchema.Properties))
+	for name := range tool.InputSchema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		propMap, ok := tool.InputSchema.Properties[name].(map[string]any)
+		if !ok {
+			note("property %q is not an object", name)
+			continue
+		}
+		a := &argSpec{name: name}
+		if t, ok := propMap["type"].(string); ok {
+			a.typ = t
+			if !validArgTypes[t] {
+				note("property %q has unsupported type %q", name, t)
+			}
+		} else {
+			note("property %q has no string type", name)
+		}
+		if enumRaw, present := propMap["enum"]; present {
+			enum, err := parseEnum(enumRaw)
+			if err != nil {
+				note("property %q: %v", name, err)
+			} else {
+				a.enum = enum
+			}
+		}
+		if ml, ok := propMap["maxLength"].(int); ok {
+			a.maxLength = ml
+		}
+		ts.args[name] = a
+		ts.orderedNames = append(ts.orderedNames, name)
+	}
+
+	ts.requiredOrder = append([]string(nil), tool.InputSchema.Required...)
+	for _, name := range ts.requiredOrder {
+		if a, ok := ts.args[name]; ok {
+			a.required = true
+		} else {
+			note("required name %q is not in properties", name)
+		}
+	}
+	return ts, problem
+}
+
+// deriveToolSpec builds a toolSpec from tool's own schema for the validation
+// middleware and fails closed on anything it cannot read [F1127-03]: a
+// RawInputSchema, an empty InputSchema.Type, or any parseToolSpec problem.
+// It never writes toolSpecRegistry and never applies a specOption: seam-only
+// metadata (uuidArgs, noEnum, requiredMsg) comes from the registry copy.
+func deriveToolSpec(tool mcp.Tool) (*toolSpec, error) {
+	if tool.RawInputSchema != nil {
+		return nil, errors.New("tool uses a raw input schema")
+	}
+	if tool.InputSchema.Type == "" {
+		return nil, errors.New("input schema has no type")
+	}
+	ts, err := parseToolSpec(tool)
+	if err != nil {
+		return nil, err
+	}
+	return ts, nil
 }
 
 // specFor returns the cached toolSpec for toolName. Panics if the tool was
@@ -326,6 +410,12 @@ func (ts *toolSpec) validateRequired(args map[string]any) *mcp.CallToolResult {
 // argTypeString is the schema "type" value of a string argument.
 const argTypeString = "string"
 
+// Other schema "type" values the validation layer reads.
+const (
+	argTypeNumber  = "number"
+	argTypeBoolean = "boolean"
+)
+
 // blankFor is the seam's blank test for the three-way required report
 // [F1126-03]: UUID arguments follow requireUUIDArg (empty string or non-string
 // = blank), other string arguments follow checkRequiredPresent (TrimSpace),
@@ -421,11 +511,11 @@ func checkRequiredPresent(args map[string]any, a *argSpec, required []string, bl
 				return mcp.NewToolResultError(a.name + " must be a string")
 			}
 			empty = strings.TrimSpace(sv) == ""
-		case "boolean":
+		case argTypeBoolean:
 			if _, ok := raw.(bool); !ok {
 				return mcp.NewToolResultError(a.name + " must be a boolean")
 			}
-		case "number":
+		case argTypeNumber:
 			if _, ok := raw.(float64); !ok {
 				return mcp.NewToolResultError(a.name + " must be a number")
 			}

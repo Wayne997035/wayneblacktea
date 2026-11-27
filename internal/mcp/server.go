@@ -81,6 +81,11 @@ type Server struct {
 	// autologSem caps concurrent background autoLog goroutines to 50 to
 	// prevent goroutine accumulation under burst MCP traffic.
 	autologSem chan struct{}
+	// bgWrites tracks the background audit writes started by
+	// disciplineMiddleware and both autoLogMiddleware launch paths, so tests
+	// can wait for them before closing the store. [F1127-08] Production never
+	// waits on it; the only difference there is one WaitGroup count.
+	bgWrites sync.WaitGroup
 	// atomizeFn is the function called inside the semaphore-guarded goroutine.
 	// nil means use atomizeAndPersist (the production default). Tests replace
 	// this with a lightweight fake to verify semaphore enforcement without
@@ -548,6 +553,8 @@ func (s *Server) MCPServer() *server.MCPServer {
 		// post-next() work on res.IsError being false, so neither of those
 		// two misrecords a rejected call as a successful one.
 		server.WithToolHandlerMiddleware(s.unknownArgsMiddleware()),
+		// [F1127-01] registered last = innermost, so unknown-argument is reported first.
+		server.WithToolHandlerMiddleware(s.schemaValidationMiddleware()),
 		// Declare resource and prompt capabilities (subscribe=false,
 		// listChanged=false — static read-only resources/prompts only).
 		server.WithResourceCapabilities(false, false),
@@ -716,3 +723,9 @@ func jsonText(v any) (*mcp.CallToolResult, error) {
 	}
 	return mcp.NewToolResultText(string(out)), nil
 }
+
+// waitBackground blocks until every background audit write tracked in
+// bgWrites has finished. [F1127-08] Test-only by convention: newTestMCPServer
+// calls it before closing the store; no handler or production shutdown path
+// may call it, or a response would wait on its own audit write.
+func (s *Server) waitBackground() { s.bgWrites.Wait() }

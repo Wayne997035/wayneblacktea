@@ -71,16 +71,18 @@ func (s *Server) autoLogMiddleware() server.ToolHandlerMiddleware {
 			// construction in unit tests), it falls back to an uncapped goroutine
 			// so existing tests are not affected by the cap.
 			launchAutolog := func(fn func()) {
+				// [F1127-08] both launch paths go through bgWrites so tests can
+				// wait for the write before closing the store.
 				if s.autologSem == nil {
-					go fn()
+					s.bgWrites.Go(fn)
 					return
 				}
 				select {
 				case s.autologSem <- struct{}{}:
-					go func() {
+					s.bgWrites.Go(func() {
 						defer func() { <-s.autologSem }()
 						fn()
-					}()
+					})
 				default:
 					slog.Warn("autoLogMiddleware: semaphore full, skipping autolog", "tool", tool)
 				}

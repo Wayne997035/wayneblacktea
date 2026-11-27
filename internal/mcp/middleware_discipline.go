@@ -158,8 +158,8 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 			// Background goroutine so the audit write cannot block / fail the
 			// tool response. context.Background() with a fresh timeout — never
 			// inherit the request ctx, which is about to be cancelled.
-			//nolint:gosec // G118: intentional — goroutine must outlive request ctx so the audit row survives
-			go func() {
+			// [F1127-08] bgWrites tracks it so tests can wait before closing the store.
+			s.bgWrites.Go(func() {
 				defer func() {
 					if r := recover(); r != nil {
 						slog.Warn(
@@ -181,7 +181,7 @@ func (s *Server) disciplineMiddleware() server.ToolHandlerMiddleware {
 						"error", insertErr,
 					)
 				}
-			}()
+			})
 
 			return res, err
 		}
